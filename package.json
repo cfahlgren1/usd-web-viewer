@@ -23,5 +23,8 @@
     "playwright": "1.64.0",
     "three": "^0.186.1",
     "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }
