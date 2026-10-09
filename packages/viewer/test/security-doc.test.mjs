@@ -17,7 +17,7 @@ const bytes = (text) => {
 };
 
 test('SECURITY.md defaults match the code', () => {
-  const rows = new Map([...read('SECURITY.md').matchAll(/^\s*\| (.+?) \| (.+?) \|$/gm)].map((m) => [m[1].replaceAll('`', ''), m[2]]));
+  const rows = new Map([...read('SECURITY.md').matchAll(/^\s*\|(.+)\|$/gm)].map((m) => m[1].split('|').map((cell) => cell.trim().replaceAll('`', ''))));
   const loadCore = read('packages/viewer/src/load-core.js');
   const worker = read('packages/viewer/src/worker.js');
   const resolver = read('crates/usd-wasm/src/resolver.rs');
@@ -26,6 +26,7 @@ test('SECURITY.md defaults match the code', () => {
   assert.equal(Number(rows.get('maxLayers')), number(loadCore, /maxLayers = (\d+),/));
   assert.equal(bytes(rows.get('maxTextureBytes')), number(worker, /maxTextureBytes = (\d+) \* 2 \*\* 20/) * 2 ** 20);
   assert.equal(rows.get('maxTriangles'), `${number(loadCore, /maxTriangles = (\d+)e6/)}M`);
+  assert.equal(Number(rows.get('maxInstances').replaceAll(',', '')), number(loadCore, /maxInstances = (\d+),/));
   assert.equal(rows.get('Image size'), `${number(worker, /MAX_IMAGE_SIZE = (\d+);/)} px per side`);
 
   const [, perFile, perPackage] = rows.get('Packaged zip entries').match(/^(.+) per file, (.+) per package$/);
