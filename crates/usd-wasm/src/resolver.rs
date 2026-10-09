@@ -48,7 +48,10 @@ fn split_innermost(path: &str) -> Option<(String, &str)> {
     let body = path.trim_end_matches(']');
     let depth = path.len() - body.len();
     let open = body.rfind('[').filter(|_| depth > 0)?;
-    Some((format!("{}{}", &body[..open], "]".repeat(depth - 1)), &body[open + 1..]))
+    Some((
+        format!("{}{}", &body[..open], "]".repeat(depth - 1)),
+        &body[open + 1..],
+    ))
 }
 
 /// A path inside `package`, which may itself be inside packages:
@@ -86,7 +89,10 @@ pub fn anchor_path(asset_path: &str, anchor: Option<&str>) -> Option<String> {
         }
         if let Some((package, inner)) = split_innermost(anchor) {
             let dir = inner.rsplit_once('/').map_or("", |(dir, _)| dir);
-            return Some(join_packaged(&package, &normalize(&format!("{dir}/{path}"))[1..]));
+            return Some(join_packaged(
+                &package,
+                &normalize(&format!("{dir}/{path}"))[1..],
+            ));
         }
     }
     let dir = anchor_rest.rsplit_once('/').map_or("", |(dir, _)| dir);
@@ -102,12 +108,16 @@ fn split_origin(id: &str) -> (&str, &str) {
     let scheme = &id[..colon];
     let is_scheme = scheme.len() > 1
         && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
-        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
     if !is_scheme {
         return ("", id);
     }
     let authority = colon + 3;
-    let end = id[authority..].find(['/', '?', '#']).map_or(id.len(), |i| authority + i);
+    let end = id[authority..]
+        .find(['/', '?', '#'])
+        .map_or(id.len(), |i| authority + i);
     id.split_at(end)
 }
 
@@ -144,7 +154,9 @@ pub fn check_package(package: &[u8]) -> io::Result<()> {
         if entry.compression() != zip::CompressionMethod::Stored {
             let name = entry.name().to_owned();
             if io::copy(&mut entry.take(declared + 1), &mut io::sink())? != declared {
-                return Err(io::Error::other(format!("{name} does not expand to the size its header declares")));
+                return Err(io::Error::other(format!(
+                    "{name} does not expand to the size its header declares"
+                )));
             }
         }
     }
@@ -161,7 +173,9 @@ pub fn read_packaged(package: &[u8], inner: &str, limit: u64) -> io::Result<Vec<
         .by_name(inner)
         .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
     if expanded_size(&entry) > limit {
-        return Err(io::Error::other(format!("resource limit exceeded: {inner} expands past {limit} bytes")));
+        return Err(io::Error::other(format!(
+            "resource limit exceeded: {inner} expands past {limit} bytes"
+        )));
     }
     let mut out = Vec::with_capacity(entry.size().min(package.len() as u64) as usize);
     entry.take(limit + 1).read_to_end(&mut out)?;
@@ -240,9 +254,17 @@ impl Store {
         let not_found = || io::Error::new(io::ErrorKind::NotFound, path.to_owned());
         let (package, inner) = split_innermost(path).ok_or_else(not_found)?;
         self.open_package(&package)?;
-        let source = self.nested.get(&package).or_else(|| self.bytes.get(&package)).ok_or_else(not_found)?;
+        let source = self
+            .nested
+            .get(&package)
+            .or_else(|| self.bytes.get(&package))
+            .ok_or_else(not_found)?;
         let budget = MAX_PACKAGED_TOTAL_BYTES.saturating_sub(self.expanded);
-        let bytes = read_packaged(source, inner, limit.min(MAX_PACKAGED_FILE_BYTES).min(budget))?;
+        let bytes = read_packaged(
+            source,
+            inner,
+            limit.min(MAX_PACKAGED_FILE_BYTES).min(budget),
+        )?;
         self.expanded += bytes.len() as u64;
         Ok(bytes)
     }
@@ -322,7 +344,11 @@ impl ar::Resolver for MemoryResolver {
         }))
     }
 
-    fn get_modification_timestamp(&self, _: &str, _: &ResolvedPath) -> Option<std::time::SystemTime> {
+    fn get_modification_timestamp(
+        &self,
+        _: &str,
+        _: &ResolvedPath,
+    ) -> Option<std::time::SystemTime> {
         None
     }
 
@@ -362,7 +388,9 @@ impl Asset for MemAsset {
 }
 
 pub(crate) fn lock(files: &Files) -> MutexGuard<'_, Store> {
-    files.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    files
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// A layer in the [`Store`], read in place. A full read in take mode moves
@@ -398,7 +426,10 @@ impl Seek for StoredAsset {
             SeekFrom::Current(n) => self.pos as i64 + n,
         };
         if next < 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek before start"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek before start",
+            ));
         }
         self.pos = next as u64;
         Ok(self.pos)
@@ -440,31 +471,68 @@ mod tests {
         let hub = "/huggingface.co/datasets/a/b/resolve/main/x/root.usd";
         // [authored, anchor, identifier]
         for (asset, anchor, expected) in [
-            ("./payloads/base.usda", hub, "/huggingface.co/datasets/a/b/resolve/main/x/payloads/base.usda"),
-            ("../tex/a.png", hub, "/huggingface.co/datasets/a/b/resolve/main/tex/a.png"),
-            ("http://cdn.example/a/./b%20c.usd?x=1", hub, "http://cdn.example/a/b%20c.usd"),
+            (
+                "./payloads/base.usda",
+                hub,
+                "/huggingface.co/datasets/a/b/resolve/main/x/payloads/base.usda",
+            ),
+            (
+                "../tex/a.png",
+                hub,
+                "/huggingface.co/datasets/a/b/resolve/main/tex/a.png",
+            ),
+            (
+                "http://cdn.example/a/./b%20c.usd?x=1",
+                hub,
+                "http://cdn.example/a/b%20c.usd",
+            ),
             ("../b.usd", "https://h/a/r.usd", "https://h/b.usd"),
             ("/c/d.usd", "https://h/a/r.usd", "https://h/c/d.usd"),
-            ("SubUSDs\\textures\\t.jpg", "/h/r.usd", "/h/SubUSDs/textures/t.jpg"),
+            (
+                "SubUSDs\\textures\\t.jpg",
+                "/h/r.usd",
+                "/h/SubUSDs/textures/t.jpg",
+            ),
             // Inside a package, and inside packages nested in it.
             ("t.png", "https://h/p.usdz", "https://h/p.usdz[t.png]"),
             ("a.usdc", "/h/p.usdz", "/h/p.usdz[a.usdc]"),
             ("tex/a.png", "/h/p.usdz[root.usdc]", "/h/p.usdz[tex/a.png]"),
             ("./p.usdz[x/y.usd]", "/h/r.usda", "/h/p.usdz[x/y.usd]"),
-            ("0/deep.usdz", "/h/a.usdz[0/mid.usdz]", "/h/a.usdz[0/mid.usdz[0/deep.usdz]]"),
-            ("0/t.png", "/h/a.usdz[0/mid.usdz[0/deep.usdz[root.usda]]]", "/h/a.usdz[0/mid.usdz[0/deep.usdz[0/t.png]]]"),
-            ("../t.png", "/h/a.usdz[b.usdz[x/r.usda]]", "/h/a.usdz[b.usdz[t.png]]"),
+            (
+                "0/deep.usdz",
+                "/h/a.usdz[0/mid.usdz]",
+                "/h/a.usdz[0/mid.usdz[0/deep.usdz]]",
+            ),
+            (
+                "0/t.png",
+                "/h/a.usdz[0/mid.usdz[0/deep.usdz[root.usda]]]",
+                "/h/a.usdz[0/mid.usdz[0/deep.usdz[0/t.png]]]",
+            ),
+            (
+                "../t.png",
+                "/h/a.usdz[b.usdz[x/r.usda]]",
+                "/h/a.usdz[b.usdz[t.png]]",
+            ),
         ] {
-            assert_eq!(anchor_path(asset, Some(anchor)).as_deref(), Some(expected), "{asset} from {anchor}");
+            assert_eq!(
+                anchor_path(asset, Some(anchor)).as_deref(),
+                Some(expected),
+                "{asset} from {anchor}"
+            );
         }
-        for (path, layer) in [("/h/p.usdz[x/y.usdc]", true), ("/h/a.usdz[0/mid.usdz[0/deep.usdz]]", true), ("/h/a.usdz[0/mid.usdz[0/t.png]]", false)] {
+        for (path, layer) in [
+            ("/h/p.usdz[x/y.usdc]", true),
+            ("/h/a.usdz[0/mid.usdz[0/deep.usdz]]", true),
+            ("/h/a.usdz[0/mid.usdz[0/t.png]]", false),
+        ] {
             assert_eq!(is_layer_path(path), layer, "{path}");
         }
     }
 
     fn zip_with(name: &str, data: &[u8]) -> Vec<u8> {
         let mut zip = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
-        zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
         io::Write::write_all(&mut zip, data).unwrap();
         zip.finish().unwrap().into_inner()
     }
@@ -472,7 +540,8 @@ mod tests {
     /// A package with one deflated entry of `size` zero bytes.
     fn zeros_package(size: usize) -> Vec<u8> {
         let mut zip = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
-        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
         zip.start_file("big.usdc", options).unwrap();
         io::Write::write_all(&mut zip, &vec![0; size]).unwrap();
         zip.finish().unwrap().into_inner()
@@ -483,25 +552,47 @@ mod tests {
         let package = zeros_package(1 << 20);
         assert!(package.len() < 4096, "a decompression bomb");
         let error = read_packaged(&package, "big.usdc", 1 << 16).unwrap_err();
-        assert!(error.to_string().contains("resource limit exceeded"), "{error}");
-        assert_eq!(read_packaged(&package, "big.usdc", 1 << 20).unwrap().len(), 1 << 20);
+        assert!(
+            error.to_string().contains("resource limit exceeded"),
+            "{error}"
+        );
+        assert_eq!(
+            read_packaged(&package, "big.usdc", 1 << 20).unwrap().len(),
+            1 << 20
+        );
     }
 
     #[test]
     fn packaged_files_share_one_expansion_budget() {
         let mut store = Store::default();
-        store.bytes.insert("/h/p.usdz".to_owned(), zeros_package(100));
+        store
+            .bytes
+            .insert("/h/p.usdz".to_owned(), zeros_package(100));
         store.expanded = MAX_PACKAGED_TOTAL_BYTES - 150;
-        assert_eq!(store.read_packaged("/h/p.usdz[big.usdc]").unwrap().len(), 100);
+        assert_eq!(
+            store.read_packaged("/h/p.usdz[big.usdc]").unwrap().len(),
+            100
+        );
         let error = store.read_packaged("/h/p.usdz[big.usdc]").unwrap_err();
-        assert!(error.to_string().contains("resource limit exceeded"), "{error}");
+        assert!(
+            error.to_string().contains("resource limit exceeded"),
+            "{error}"
+        );
 
         // A nested package is expanded and charged once, however many of its files are read.
         let inner = zeros_package(1 << 20);
         let mut store = Store::default();
-        store.bytes.insert("/h/o.usdz".to_owned(), zip_with("inner.usdz", &inner));
+        store
+            .bytes
+            .insert("/h/o.usdz".to_owned(), zip_with("inner.usdz", &inner));
         for _ in 0..4 {
-            assert_eq!(store.read_packaged("/h/o.usdz[inner.usdz[big.usdc]]").unwrap().len(), 1 << 20);
+            assert_eq!(
+                store
+                    .read_packaged("/h/o.usdz[inner.usdz[big.usdc]]")
+                    .unwrap()
+                    .len(),
+                1 << 20
+            );
         }
         assert_eq!(store.expanded, inner.len() as u64 + (4 << 20));
     }

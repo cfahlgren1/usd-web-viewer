@@ -74,7 +74,12 @@ fn selected_here(data: &dyn AbstractData, spec: &str) -> bool {
         let Ok(owner) = sdf::Path::new(&prefix) else {
             return false;
         };
-        let selection = match data.try_field(&owner, "variantSelection").ok().flatten().as_deref() {
+        let selection = match data
+            .try_field(&owner, "variantSelection")
+            .ok()
+            .flatten()
+            .as_deref()
+        {
             Some(Value::VariantSelectionMap(map)) => map.get(set).cloned(),
             _ => None,
         };

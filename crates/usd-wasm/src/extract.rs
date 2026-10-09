@@ -84,7 +84,10 @@ pub enum Read {
     /// Nothing drawable.
     Nothing,
     /// Left unread: more triangles than allowed.
-    OverBudget { path: String, triangles: usize },
+    OverBudget {
+        path: String,
+        triangles: usize,
+    },
 }
 
 pub struct Group {
@@ -177,25 +180,47 @@ impl Placer<'_> {
             return Ok(());
         }
         instancer.state = Placing::InProgress;
-        let (prim, hidden, enclosing) = (instancer.prim.clone(), instancer.hidden, instancer.enclosing);
+        let (prim, hidden, enclosing) = (
+            instancer.prim.clone(),
+            instancer.hidden,
+            instancer.enclosing,
+        );
         // Where the instancer itself is drawn, as instancer-to-world transforms.
         let bases = match enclosing {
             _ if hidden => Vec::new(),
-            None => vec![(String::new(), self.xforms.local_to_world_transform(&prim).unwrap_or(Matrix4d::IDENTITY))],
+            None => vec![(
+                String::new(),
+                self.xforms
+                    .local_to_world_transform(&prim)
+                    .unwrap_or(Matrix4d::IDENTITY),
+            )],
             Some(e) => {
                 self.resolve(e)?;
                 let prototype = &self.prototypes[e as usize];
-                let above_root = self.stage.prim(prototype.root.parent().unwrap_or_else(sdf::Path::abs_root))?;
+                let above_root = self
+                    .stage
+                    .prim(prototype.root.parent().unwrap_or_else(sdf::Path::abs_root))?;
                 let (to_root, _) = self
                     .xforms
                     .compute_relative_transform(&prim, &above_root)
                     .unwrap_or((Matrix4d::IDENTITY, false));
-                prototype.placements.iter().map(|(label, m)| (label.clone(), to_root * *m)).collect()
+                prototype
+                    .placements
+                    .iter()
+                    .map(|(label, m)| (label.clone(), to_root * *m))
+                    .collect()
             }
         };
         if !bases.is_empty() {
             let targets = std::mem::take(&mut self.instancers[i as usize].targets);
-            add_placements(&prim, &targets, &bases, &mut self.prototypes, self.max, &mut self.truncated)?;
+            add_placements(
+                &prim,
+                &targets,
+                &bases,
+                &mut self.prototypes,
+                self.max,
+                &mut self.truncated,
+            )?;
         }
         self.instancers[i as usize].state = Placing::Done;
         Ok(())
@@ -205,7 +230,10 @@ impl Placer<'_> {
 impl Instance {
     /// The material a geometry group is drawn with.
     pub fn material_for(&self, group: &Group) -> u32 {
-        let subset = group.subset.as_ref().and_then(|name| self.subsets.iter().find(|(n, _)| n == name));
+        let subset = group
+            .subset
+            .as_ref()
+            .and_then(|name| self.subsets.iter().find(|(n, _)| n == name));
         subset.map_or(self.material, |&(_, m)| m)
     }
 }
@@ -248,21 +276,34 @@ impl Scene {
         };
         let path = || source.prim.path().as_str().to_owned();
         let geometry = match source.prim.type_name()? {
-            Some(ty) if implicit::is_implicit(ty.as_str()) => implicit::read(&source.prim, ty.as_str()),
+            Some(ty) if implicit::is_implicit(ty.as_str()) => {
+                implicit::read(&source.prim, ty.as_str())
+            }
             _ => {
-                let triangles: usize = ints(source.prim.attribute("faceVertexCounts").get::<Value>()?)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|&n| (n.max(2) - 2) as usize)
-                    .sum();
+                let triangles: usize =
+                    ints(source.prim.attribute("faceVertexCounts").get::<Value>()?)
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|&n| (n.max(2) - 2) as usize)
+                        .sum();
                 if triangles > max_triangles {
-                    return Ok(Read::OverBudget { path: path(), triangles });
+                    return Ok(Read::OverBudget {
+                        path: path(),
+                        triangles,
+                    });
                 }
-                read_mesh(&source.prim, source.color_primvar.as_deref(), &source.uv_sets)?
+                read_mesh(
+                    &source.prim,
+                    source.color_primvar.as_deref(),
+                    &source.uv_sets,
+                )?
             }
         };
         Ok(match geometry {
-            Some(g) if g.indices.len() / 3 > max_triangles => Read::OverBudget { path: path(), triangles: g.indices.len() / 3 },
+            Some(g) if g.indices.len() / 3 > max_triangles => Read::OverBudget {
+                path: path(),
+                triangles: g.indices.len() / 3,
+            },
             Some(g) => Read::Geometry(g),
             None => Read::Nothing,
         })
@@ -274,7 +315,13 @@ impl Scene {
 /// at most `max_instances` mesh instances, PointInstancer placements included.
 pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
     let mut scene = Scene {
-        up_axis: stage.stage_metadata("upAxis").ok().flatten().as_ref().and_then(material::string).unwrap_or_else(|| "Y".to_owned()),
+        up_axis: stage
+            .stage_metadata("upAxis")
+            .ok()
+            .flatten()
+            .as_ref()
+            .and_then(material::string)
+            .unwrap_or_else(|| "Y".to_owned()),
         meters_per_unit: match stage.stage_metadata("metersPerUnit")? {
             Some(Value::Double(v)) => v,
             Some(Value::Float(v)) => v as f64,
@@ -284,7 +331,9 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
     };
 
     let mut paths = Vec::new();
-    stage.traverse(PrimPredicate::DEFAULT_PROXIES, |path| paths.push(path.clone()))?;
+    stage.traverse(PrimPredicate::DEFAULT_PROXIES, |path| {
+        paths.push(path.clone())
+    })?;
     scene.stats.prims = paths.len();
 
     let mut state: HashMap<sdf::Path, Inherited> = HashMap::with_capacity(paths.len());
@@ -298,7 +347,10 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
     let mut instancers = Vec::new();
     for path in &paths {
         let prim = stage.prim(path)?;
-        let mut own = path.parent().and_then(|p| state.get(&p).copied()).unwrap_or_default();
+        let mut own = path
+            .parent()
+            .and_then(|p| state.get(&p).copied())
+            .unwrap_or_default();
         if !own.invisible && token_attr(&prim, "visibility").as_deref() == Some("invisible") {
             own.invisible = true;
         }
@@ -323,7 +375,11 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
         let mut indices = Vec::new();
         for root in prim.relationship("prototypes").targets()? {
             let index = *prototype_index.entry(root.clone()).or_insert_with(|| {
-                prototypes.push(Prototype { root, placements: Vec::new(), instancers: Vec::new() });
+                prototypes.push(Prototype {
+                    root,
+                    placements: Vec::new(),
+                    instancers: Vec::new(),
+                });
                 prototypes.len() as u32 - 1
             });
             let instancers = &mut prototypes[index as usize].instancers;
@@ -339,41 +395,75 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
         .zip(targets)
         .map(|((prim, hidden), targets)| {
             // The nearest prototype at or above the instancer.
-            let enclosing = std::iter::successors(Some(prim.path().clone()), |p| p.parent()).find_map(|p| prototype_index.get(&p).copied());
-            Instancer { prim, hidden, targets, enclosing, state: Placing::Todo }
+            let enclosing = std::iter::successors(Some(prim.path().clone()), |p| p.parent())
+                .find_map(|p| prototype_index.get(&p).copied());
+            Instancer {
+                prim,
+                hidden,
+                targets,
+                enclosing,
+                state: Placing::Todo,
+            }
         })
         .collect();
-    let mut placer = Placer { stage, xforms: &mut xforms, instancers, prototypes, max: max_instances, truncated: None };
+    let mut placer = Placer {
+        stage,
+        xforms: &mut xforms,
+        instancers,
+        prototypes,
+        max: max_instances,
+        truncated: None,
+    };
     for p in 0..placer.prototypes.len() as u32 {
         placer.resolve(p)?;
     }
-    let Placer { prototypes, truncated, .. } = placer;
+    let Placer {
+        prototypes,
+        truncated,
+        ..
+    } = placer;
     let mut over_limit: Option<String> = None;
 
     for path in paths {
         let prim = stage.prim(&path)?;
-        let inherited = path.parent().and_then(|p| state.get(&p)).and_then(|s| s.prototype);
-        let Some(own) = state.get_mut(&path) else { continue };
+        let inherited = path
+            .parent()
+            .and_then(|p| state.get(&p))
+            .and_then(|s| s.prototype);
+        let Some(own) = state.get_mut(&path) else {
+            continue;
+        };
         own.prototype = prototype_index.get(&path).copied().or(inherited);
         let own = *own;
 
-        let Some(ty) = prim.type_name()? else { continue };
+        let Some(ty) = prim.type_name()? else {
+            continue;
+        };
         if ty.as_str() != "Mesh" && !implicit::is_implicit(ty.as_str()) {
             // Any other geometric prim (curves, points, implicit shapes,
             // volumes, Gaussian splats, ...) is left out, but not silently.
             if !own.invisible && !own.hidden_purpose && is_gprim(&prim, ty.as_str())? {
-                unsupported.entry(ty.as_str().to_owned()).or_insert_with(|| (0, path.as_str().to_owned())).0 += 1;
+                unsupported
+                    .entry(ty.as_str().to_owned())
+                    .or_insert_with(|| (0, path.as_str().to_owned()))
+                    .0 += 1;
             }
             continue;
         }
         if own.invisible {
             scene.stats.skipped_invisible += 1;
-            scene.stats.skipped.push((path.as_str().to_owned(), "invisible"));
+            scene
+                .stats
+                .skipped
+                .push((path.as_str().to_owned(), "invisible"));
             continue;
         }
         if own.hidden_purpose {
             scene.stats.skipped_purpose += 1;
-            scene.stats.skipped.push((path.as_str().to_owned(), "purpose"));
+            scene
+                .stats
+                .skipped
+                .push((path.as_str().to_owned(), "purpose"));
             continue;
         }
         let remaining = max_instances.saturating_sub(scene.instances.len());
@@ -390,28 +480,57 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
             Some(proto) => proto,
             None => prim.clone(),
         };
-        let binding = MaterialBindingAPI::from_prim_unchecked(prim.clone()).compute_bound_material("preview")?;
-        let mesh_material = shown_material(stage, &mut materials, &mut scene.materials, &prim, binding.as_ref())?;
+        let binding = MaterialBindingAPI::from_prim_unchecked(prim.clone())
+            .compute_bound_material("preview")?;
+        let mesh_material = shown_material(
+            stage,
+            &mut materials,
+            &mut scene.materials,
+            &prim,
+            binding.as_ref(),
+        )?;
         let mut subset_materials = HashMap::new();
         for child in prim.children()? {
             if is_material_subset(&child)?
-                && let Some(mat) = MaterialBindingAPI::from_prim_unchecked(child.clone()).compute_bound_material("preview")?
+                && let Some(mat) = MaterialBindingAPI::from_prim_unchecked(child.clone())
+                    .compute_bound_material("preview")?
                 && let Some(name) = child.path().name()
             {
-                let index = shown_material(stage, &mut materials, &mut scene.materials, &prim, Some(&mat))?;
+                let index = shown_material(
+                    stage,
+                    &mut materials,
+                    &mut scene.materials,
+                    &prim,
+                    Some(&mat),
+                )?;
                 subset_materials.insert(name.to_owned(), index);
             }
         }
         // What the materials sample: per-vertex colors when one still names
         // its color primvar, and the UV primvars their textures name.
-        let used = || std::iter::once(&mesh_material).chain(subset_materials.values()).map(|&m| &scene.materials[m as usize]);
+        let used = || {
+            std::iter::once(&mesh_material)
+                .chain(subset_materials.values())
+                .map(|&m| &scene.materials[m as usize])
+        };
         let color_primvar = used().find_map(|m| m.color_primvar.clone());
-        let mut uv_sets: Vec<String> = used().flat_map(|m| m.maps.iter().filter_map(|(_, t)| t.uv_set.clone())).collect();
+        let mut uv_sets: Vec<String> = used()
+            .flat_map(|m| m.maps.iter().filter_map(|(_, t)| t.uv_set.clone()))
+            .collect();
         uv_sets.sort();
         uv_sets.dedup();
-        let key = format!("{}|{}|{}", source.path().as_str(), color_primvar.as_deref().unwrap_or(""), uv_sets.join(","));
+        let key = format!(
+            "{}|{}|{}",
+            source.path().as_str(),
+            color_primvar.as_deref().unwrap_or(""),
+            uv_sets.join(",")
+        );
         let geometry = *geometry_by_source.entry(key).or_insert_with(|| {
-            scene.sources.push(Source { prim: source, color_primvar, uv_sets });
+            scene.sources.push(Source {
+                prim: source,
+                color_primvar,
+                uv_sets,
+            });
             scene.sources.len() as u32 - 1
         });
         let mut subsets: Vec<(String, u32)> = subset_materials.into_iter().collect();
@@ -420,19 +539,24 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
         let placed = match (own.prototype, placements) {
             (Some(index), Some(placements)) => {
                 let prototype = &prototypes[index as usize];
-                let above_root = stage.prim(prototype.root.parent().unwrap_or_else(sdf::Path::abs_root))?;
+                let above_root =
+                    stage.prim(prototype.root.parent().unwrap_or_else(sdf::Path::abs_root))?;
                 let (to_root, _) = xforms
                     .compute_relative_transform(&prim, &above_root)
                     .unwrap_or((Matrix4d::IDENTITY, false));
                 placements
                     .iter()
                     .take(remaining)
-                    .map(|(label, placement)| (format!("{}{label}", path.as_str()), to_root * *placement))
+                    .map(|(label, placement)| {
+                        (format!("{}{label}", path.as_str()), to_root * *placement)
+                    })
                     .collect()
             }
             _ => vec![(
                 path.as_str().to_owned(),
-                xforms.local_to_world_transform(&prim).unwrap_or(Matrix4d::IDENTITY),
+                xforms
+                    .local_to_world_transform(&prim)
+                    .unwrap_or(Matrix4d::IDENTITY),
             )],
         };
         let double_sided = matches!(prim.attribute("doubleSided").get::<bool>(), Ok(Some(true)));
@@ -464,11 +588,19 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
             path: Some(first),
         });
     }
-    let fallback: Vec<&str> = scene.materials.iter().filter(|m| m.kind == "fallback" && !m.path.is_empty()).map(|m| m.path.as_str()).collect();
+    let fallback: Vec<&str> = scene
+        .materials
+        .iter()
+        .filter(|m| m.kind == "fallback" && !m.path.is_empty())
+        .map(|m| m.path.as_str())
+        .collect();
     if let Some(first) = fallback.first() {
         scene.warnings.push(Warning {
             code: "material-fallback",
-            message: format!("{} material(s) have no UsdPreviewSurface or readable MDL and show as grey", fallback.len()),
+            message: format!(
+                "{} material(s) have no UsdPreviewSurface or readable MDL and show as grey",
+                fallback.len()
+            ),
             path: Some((*first).to_owned()),
         });
     }
@@ -478,7 +610,8 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
 /// A `GeomSubset` of the `materialBind` family: the subsets materials bind
 /// through, as Pixar's `GetMaterialBindSubsets` reads them.
 fn is_material_subset(prim: &usd::Prim) -> openusd::Result<bool> {
-    Ok(prim.type_name()?.as_deref() == Some("GeomSubset") && token_attr(prim, "familyName").as_deref() == Some("materialBind"))
+    Ok(prim.type_name()?.as_deref() == Some("GeomSubset")
+        && token_attr(prim, "familyName").as_deref() == Some("materialBind"))
 }
 
 /// Whether a prim is geometry. The UsdVol schemas are not registered (to keep
@@ -502,7 +635,12 @@ fn add_placements(
     let Some(proto_indices) = ints(prim.attribute("protoIndices").get::<Value>()?) else {
         return Ok(());
     };
-    let Some(positions) = prim.attribute("positions").get::<Value>()?.as_ref().and_then(vec3s) else {
+    let Some(positions) = prim
+        .attribute("positions")
+        .get::<Value>()?
+        .as_ref()
+        .and_then(vec3s)
+    else {
         return Ok(());
     };
     let orientations: Vec<[f64; 4]> = match prim.attribute("orientations").get::<Value>()? {
@@ -535,14 +673,18 @@ fn add_placements(
 
     // Stop once every target is full: a nested instancer multiplies placements.
     let distinct: HashSet<u32> = targets.iter().copied().collect();
-    let mut full = distinct.iter().filter(|&&t| prototypes[t as usize].placements.len() >= max).count();
+    let mut full = distinct
+        .iter()
+        .filter(|&&t| prototypes[t as usize].placements.len() >= max)
+        .count();
     for (label, base) in bases {
         for (i, &proto) in proto_indices.iter().enumerate() {
             if full == distinct.len() {
                 truncated.get_or_insert_with(|| prim.path().as_str().to_owned());
                 return Ok(());
             }
-            let (Some(&target), Some(&position)) = (targets.get(proto as usize), positions.get(i)) else {
+            let (Some(&target), Some(&position)) = (targets.get(proto as usize), positions.get(i))
+            else {
                 continue;
             };
             if hidden.contains(&ids.get(i).copied().unwrap_or(i as i64)) {
@@ -595,7 +737,12 @@ fn shown_material(
 }
 
 pub(crate) fn token_attr(prim: &usd::Prim, name: &str) -> Option<String> {
-    prim.attribute(name).get::<Value>().ok().flatten().as_ref().and_then(material::string)
+    prim.attribute(name)
+        .get::<Value>()
+        .ok()
+        .flatten()
+        .as_ref()
+        .and_then(material::string)
 }
 
 /// How a primvar's values map onto the mesh.
@@ -654,8 +801,16 @@ where
 fn vec3s(value: &Value) -> Option<Vec<[f32; 3]>> {
     match value {
         Value::Vec3fVec(v) => Some(v.iter().map(|p| [p.x, p.y, p.z]).collect()),
-        Value::Vec3dVec(v) => Some(v.iter().map(|p| [p.x as f32, p.y as f32, p.z as f32]).collect()),
-        Value::Vec3hVec(v) => Some(v.iter().map(|p| [p.x.to_f32(), p.y.to_f32(), p.z.to_f32()]).collect()),
+        Value::Vec3dVec(v) => Some(
+            v.iter()
+                .map(|p| [p.x as f32, p.y as f32, p.z as f32])
+                .collect(),
+        ),
+        Value::Vec3hVec(v) => Some(
+            v.iter()
+                .map(|p| [p.x.to_f32(), p.y.to_f32(), p.z.to_f32()])
+                .collect(),
+        ),
         _ => None,
     }
 }
@@ -679,8 +834,17 @@ fn ints(value: Option<Value>) -> Option<Vec<i32>> {
 /// Primvars tried, in order, for the default UV set.
 const UV_NAMES: [&str; 6] = ["st", "st0", "UVMap", "uv", "map1", "st_0"];
 
-fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) -> openusd::Result<Option<Geometry>> {
-    let Some(points) = prim.attribute("points").get::<Value>()?.as_ref().and_then(vec3s) else {
+fn read_mesh(
+    prim: &usd::Prim,
+    color_primvar: Option<&str>,
+    uv_sets: &[String],
+) -> openusd::Result<Option<Geometry>> {
+    let Some(points) = prim
+        .attribute("points")
+        .get::<Value>()?
+        .as_ref()
+        .and_then(vec3s)
+    else {
         return Ok(None);
     };
     let Some(counts) = ints(prim.attribute("faceVertexCounts").get::<Value>()?) else {
@@ -693,7 +857,11 @@ fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) 
         return Ok(None);
     }
     let corners: usize = counts.iter().map(|&c| c.max(0) as usize).sum();
-    if corners != face_indices.len() || face_indices.iter().any(|&i| i < 0 || i as usize >= points.len()) {
+    if corners != face_indices.len()
+        || face_indices
+            .iter()
+            .any(|&i| i < 0 || i as usize >= points.len())
+    {
         return Ok(None);
     }
     let left_handed = token_attr(prim, "orientation").as_deref() == Some("leftHanded");
@@ -706,21 +874,24 @@ fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) 
     // The default UV set first, then the ones bound textures name.
     let mut uvs = Vec::new();
     for name in UV_NAMES {
-        if let Some(uv) = read_primvar(prim, &format!("primvars:{name}"), Interp::Constant, vec2s)? {
+        if let Some(uv) = read_primvar(prim, &format!("primvars:{name}"), Interp::Constant, vec2s)?
+        {
             uvs.push((name.to_owned(), uv));
             break;
         }
     }
     for name in uv_sets {
         if !uvs.iter().any(|(n, _)| n == name)
-            && let Some(uv) = read_primvar(prim, &format!("primvars:{name}"), Interp::Constant, vec2s)?
+            && let Some(uv) =
+                read_primvar(prim, &format!("primvars:{name}"), Interp::Constant, vec2s)?
         {
             uvs.push((name.clone(), uv));
         }
     }
     // Per-vertex colors, only for meshes whose material shows them.
     let colors = match color_primvar {
-        Some(name) => read_primvar(prim, &format!("primvars:{name}"), Interp::Constant, vec3s)?.filter(|c| c.interp != Interp::Constant),
+        Some(name) => read_primvar(prim, &format!("primvars:{name}"), Interp::Constant, vec3s)?
+            .filter(|c| c.interp != Interp::Constant),
         None => None,
     };
     let fit = |interp, len| fits(interp, len, points.len(), counts.len(), corners);
@@ -730,15 +901,19 @@ fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) 
 
     // A polygonal mesh with no normals is drawn faceted; a subdivision surface
     // (the schema fallback) gets smooth normals as its approximation.
-    let faceted = normals.is_none() && token_attr(prim, "subdivisionScheme").as_deref() == Some("none");
+    let faceted =
+        normals.is_none() && token_attr(prim, "subdivisionScheme").as_deref() == Some("none");
     // Per-point layout when every attribute is per point; otherwise one vertex
     // per face corner, which faceVarying and uniform data need.
     let per_corner = faceted
-        || [normals.as_ref().map(|n| n.interp), colors.as_ref().map(|c| c.interp)]
-            .into_iter()
-            .flatten()
-            .chain(uvs.iter().map(|(_, uv)| uv.interp))
-            .any(|i| matches!(i, Interp::FaceVarying | Interp::Uniform));
+        || [
+            normals.as_ref().map(|n| n.interp),
+            colors.as_ref().map(|c| c.interp),
+        ]
+        .into_iter()
+        .flatten()
+        .chain(uvs.iter().map(|(_, uv)| uv.interp))
+        .any(|i| matches!(i, Interp::FaceVarying | Interp::Uniform));
 
     let vertex_count = if per_corner { corners } else { points.len() };
     // Maps an output vertex to (point index, face index, corner index).
@@ -778,7 +953,10 @@ fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) 
             attrs.push((&mut colors, 3));
         }
         let (remap, first_corner) = weld(&point_of, points.len(), &mut attrs);
-        let positions = first_corner.iter().flat_map(|&c| points[point_of[c as usize] as usize]).collect();
+        let positions = first_corner
+            .iter()
+            .flat_map(|&c| points[point_of[c as usize] as usize])
+            .collect();
         (positions, Some(remap))
     } else {
         (points.as_flattened().to_vec(), None)
@@ -806,28 +984,33 @@ fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) 
     };
     let mut indices = Vec::with_capacity((corners.saturating_sub(2 * counts.len())) * 3);
     let mut groups = Vec::new();
-    let mut emit = |faces: &mut dyn Iterator<Item = usize>, subset: Option<String>, indices: &mut Vec<u32>| {
-        let start = indices.len() as u32;
-        for face in faces {
-            let n = counts[face];
-            if n < 3 || hole[face] {
-                continue;
-            }
-            let base = face_start[face];
-            for k in 1..(n as u32 - 1) {
-                let (a, b, c) = (vertex(base), vertex(base + k), vertex(base + k + 1));
-                if left_handed {
-                    indices.extend_from_slice(&[a, c, b]);
-                } else {
-                    indices.extend_from_slice(&[a, b, c]);
+    let mut emit =
+        |faces: &mut dyn Iterator<Item = usize>, subset: Option<String>, indices: &mut Vec<u32>| {
+            let start = indices.len() as u32;
+            for face in faces {
+                let n = counts[face];
+                if n < 3 || hole[face] {
+                    continue;
+                }
+                let base = face_start[face];
+                for k in 1..(n as u32 - 1) {
+                    let (a, b, c) = (vertex(base), vertex(base + k), vertex(base + k + 1));
+                    if left_handed {
+                        indices.extend_from_slice(&[a, c, b]);
+                    } else {
+                        indices.extend_from_slice(&[a, b, c]);
+                    }
                 }
             }
-        }
-        let count = indices.len() as u32 - start;
-        if count > 0 {
-            groups.push(Group { start, count, subset });
-        }
-    };
+            let count = indices.len() as u32 - start;
+            if count > 0 {
+                groups.push(Group {
+                    start,
+                    count,
+                    subset,
+                });
+            }
+        };
     if subsets.is_empty() {
         emit(&mut (0..counts.len()), None, &mut indices);
     } else {
@@ -838,7 +1021,11 @@ fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) 
             }
             emit(&mut faces.iter().copied(), Some(name.clone()), &mut indices);
         }
-        emit(&mut (0..counts.len()).filter(|&f| !covered[f]), None, &mut indices);
+        emit(
+            &mut (0..counts.len()).filter(|&f| !covered[f]),
+            None,
+            &mut indices,
+        );
     }
     if indices.is_empty() {
         return Ok(None);
@@ -863,7 +1050,11 @@ const WELD_CHAIN: usize = 64;
 /// attributes, rewriting `attrs` (each with its width) in place. Returns the
 /// corner-to-vertex map and each vertex's first corner. Candidates are chained
 /// per point, so the search stays local.
-fn weld(point_of: &[u32], point_count: usize, attrs: &mut [(&mut Vec<f32>, usize)]) -> (Vec<u32>, Vec<u32>) {
+fn weld(
+    point_of: &[u32],
+    point_count: usize,
+    attrs: &mut [(&mut Vec<f32>, usize)],
+) -> (Vec<u32>, Vec<u32>) {
     const NONE: u32 = u32::MAX;
     let mut head = vec![NONE; point_count];
     let mut next: Vec<u32> = Vec::new();
@@ -872,7 +1063,10 @@ fn weld(point_of: &[u32], point_count: usize, attrs: &mut [(&mut Vec<f32>, usize
     for (corner, &point) in point_of.iter().enumerate() {
         let same = |other: usize| {
             attrs.iter().all(|(data, w)| {
-                let (a, b) = (&data[other * w..other * w + w], &data[corner * w..corner * w + w]);
+                let (a, b) = (
+                    &data[other * w..other * w + w],
+                    &data[corner * w..corner * w + w],
+                );
                 a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
             })
         };
@@ -989,7 +1183,9 @@ fn face_normals(
     face_of: &[u32],
     left_handed: bool,
 ) -> Vec<f32> {
-    let per_face: Vec<[f32; 3]> = faces(counts, face_indices).map(|face| unit(newell(points, face, left_handed))).collect();
+    let per_face: Vec<[f32; 3]> = faces(counts, face_indices)
+        .map(|face| unit(newell(points, face, left_handed)))
+        .collect();
     let mut out = Vec::with_capacity(face_of.len() * 3);
     for &f in face_of {
         out.extend_from_slice(&per_face[f as usize]);
@@ -1012,7 +1208,11 @@ fn newell(points: &[[f32; 3]], face: &[i32], left_handed: bool) -> [f32; 3] {
         normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
         normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
     }
-    if left_handed { normal.map(|v| -v) } else { normal }
+    if left_handed {
+        normal.map(|v| -v)
+    } else {
+        normal
+    }
 }
 
 fn unit([x, y, z]: [f32; 3]) -> [f32; 3] {
@@ -1032,7 +1232,9 @@ fn read_subsets(prim: &usd::Prim, face_count: usize) -> openusd::Result<Vec<(Str
     let mut out = Vec::new();
     let mut claimed = vec![false; face_count];
     for child in prim.children()? {
-        if !is_material_subset(&child)? || token_attr(&child, "elementType").is_some_and(|t| t != "face") {
+        if !is_material_subset(&child)?
+            || token_attr(&child, "elementType").is_some_and(|t| t != "face")
+        {
             continue;
         }
         let Some(indices) = ints(child.attribute("indices").get::<Value>()?) else {

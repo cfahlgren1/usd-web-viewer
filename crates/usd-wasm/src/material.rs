@@ -101,7 +101,12 @@ pub struct Cache {
 }
 
 impl Cache {
-    pub fn get(&mut self, stage: &Stage, path: &sdf::Path, out: &mut Vec<Material>) -> openusd::Result<u32> {
+    pub fn get(
+        &mut self,
+        stage: &Stage,
+        path: &sdf::Path,
+        out: &mut Vec<Material>,
+    ) -> openusd::Result<u32> {
         if let Some(&index) = self.by_path.get(path.as_str()) {
             return Ok(index);
         }
@@ -113,7 +118,12 @@ impl Cache {
     }
 
     /// `material` with its diffuse color taken from a mesh primvar value.
-    pub fn with_primvar_color(&mut self, material: u32, color: [f32; 3], out: &mut Vec<Material>) -> u32 {
+    pub fn with_primvar_color(
+        &mut self,
+        material: u32,
+        color: [f32; 3],
+        out: &mut Vec<Material>,
+    ) -> u32 {
         let key = (material, color.map(f32::to_bits));
         *self.by_primvar_color.entry(key).or_insert_with(|| {
             let mut m = out[material as usize].clone();
@@ -152,13 +162,21 @@ fn read_material(stage: &Stage, path: &sdf::Path) -> openusd::Result<Material> {
     }
     if let Some(shader) = surface_shader(stage, path, "outputs:mdl:surface")? {
         let prim = stage.prim(&shader)?;
-        if prim.attribute("inputs:diffuse_color_constant").has_authored_value()?
-            || prim.attribute("inputs:diffuse_texture").has_authored_value()?
+        if prim
+            .attribute("inputs:diffuse_color_constant")
+            .has_authored_value()?
+            || prim
+                .attribute("inputs:diffuse_texture")
+                .has_authored_value()?
         {
             return read_omnipbr(stage, &shader, name);
         }
-        if prim.attribute("inputs:base_color_factor").has_authored_value()?
-            || prim.attribute("inputs:base_color_texture").has_authored_value()?
+        if prim
+            .attribute("inputs:base_color_factor")
+            .has_authored_value()?
+            || prim
+                .attribute("inputs:base_color_texture")
+                .has_authored_value()?
         {
             return read_gltf_pbr(stage, &shader, name);
         }
@@ -167,8 +185,14 @@ fn read_material(stage: &Stage, path: &sdf::Path) -> openusd::Result<Material> {
 }
 
 /// The shader prim a material terminal connects to, through node graphs.
-fn surface_shader(stage: &Stage, material: &sdf::Path, output: &str) -> openusd::Result<Option<sdf::Path>> {
-    let attr = material.append_property(output).map_err(openusd::Error::from)?;
+fn surface_shader(
+    stage: &Stage,
+    material: &sdf::Path,
+    output: &str,
+) -> openusd::Result<Option<sdf::Path>> {
+    let attr = material
+        .append_property(output)
+        .map_err(openusd::Error::from)?;
     Ok(match follow(stage, &attr, 0)? {
         Source::Output(prim, _) => Some(prim),
         Source::Value(_) | Source::None => None,
@@ -189,7 +213,9 @@ enum Source {
 /// Follows an input or terminal through interface connections to a value or a
 /// shader output.
 fn follow(stage: &Stage, attr_path: &sdf::Path, depth: u32) -> openusd::Result<Source> {
-    let attr = stage.attribute(attr_path.clone()).map_err(openusd::Error::from)?;
+    let attr = stage
+        .attribute(attr_path.clone())
+        .map_err(openusd::Error::from)?;
     if let Some(target) = attr.connections()?.into_iter().next() {
         let name = property_name(&target);
         if let Some(output) = name.strip_prefix("outputs:") {
@@ -223,7 +249,9 @@ fn is_shader(stage: &Stage, prim: &sdf::Path) -> openusd::Result<bool> {
 }
 
 fn input(shader: &sdf::Path, name: &str) -> openusd::Result<sdf::Path> {
-    shader.append_property(format!("inputs:{name}")).map_err(openusd::Error::from)
+    shader
+        .append_property(format!("inputs:{name}"))
+        .map_err(openusd::Error::from)
 }
 
 /// The value input `name` of `node` resolves to, through interface
@@ -235,20 +263,40 @@ fn value(stage: &Stage, node: &sdf::Path, name: &str) -> openusd::Result<Option<
     })
 }
 
-fn read_preview_surface(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Result<Material> {
+fn read_preview_surface(
+    stage: &Stage,
+    shader: &sdf::Path,
+    path: String,
+) -> openusd::Result<Material> {
     let mut m = Material::neutral(path, "preview", [0.18, 0.18, 0.18]);
     // Packed maps (e.g. occlusion/roughness/metallic) read one texture node
     // through several outputs: read each node once.
     let mut nodes: HashMap<sdf::Path, Option<Texture>> = HashMap::new();
-    for name in ["diffuseColor", "emissiveColor", "roughness", "metallic", "occlusion", "opacity", "opacityThreshold", "normal"] {
+    for name in [
+        "diffuseColor",
+        "emissiveColor",
+        "roughness",
+        "metallic",
+        "occlusion",
+        "opacity",
+        "opacityThreshold",
+        "normal",
+    ] {
         let constant = match follow(stage, &input(shader, name)?, 0)? {
             Source::Value(v) => color_or_scalar(&v),
             Source::Output(node, output) => match shader_id(stage, &node)?.as_deref() {
                 Some("UsdUVTexture") => match texture_node(stage, &mut nodes, &node)? {
                     Some(mut texture) => {
                         texture.channel = output;
-                        let own = stage.attribute(input(shader, name)?).map_err(openusd::Error::from)?.get::<Value>()?;
-                        texture.value = Some(own.as_ref().and_then(color_or_scalar).unwrap_or(preview_default(name)));
+                        let own = stage
+                            .attribute(input(shader, name)?)
+                            .map_err(openusd::Error::from)?
+                            .get::<Value>()?;
+                        texture.value = Some(
+                            own.as_ref()
+                                .and_then(color_or_scalar)
+                                .unwrap_or(preview_default(name)),
+                        );
                         if name == "diffuseColor" {
                             m.color = [1.0; 3];
                         }
@@ -329,8 +377,13 @@ fn uv_texture(stage: &Stage, shader: &sdf::Path) -> openusd::Result<Option<Textu
     if let Some(v) = value(stage, shader, "bias")?.as_ref().and_then(vec4) {
         texture.bias = v;
     }
-    texture.color_space = value(stage, shader, "sourceColorSpace")?.as_ref().and_then(string);
-    texture.wrap = [value(stage, shader, "wrapS")?.as_ref().and_then(string), value(stage, shader, "wrapT")?.as_ref().and_then(string)];
+    texture.color_space = value(stage, shader, "sourceColorSpace")?
+        .as_ref()
+        .and_then(string);
+    texture.wrap = [
+        value(stage, shader, "wrapS")?.as_ref().and_then(string),
+        value(stage, shader, "wrapT")?.as_ref().and_then(string),
+    ];
     let Source::Output(mut reader, _) = follow(stage, &input(shader, "st")?, 0)? else {
         return Ok(Some(texture));
     };
@@ -339,8 +392,14 @@ fn uv_texture(stage: &Stage, shader: &sdf::Path) -> openusd::Result<Option<Textu
         if let Some(v) = value(stage, &reader, "scale")?.as_ref().and_then(vec2) {
             texture.uv_scale = v;
         }
-        texture.uv_rotation = value(stage, &reader, "rotation")?.as_ref().and_then(float).unwrap_or(0.0);
-        if let Some(v) = value(stage, &reader, "translation")?.as_ref().and_then(vec2) {
+        texture.uv_rotation = value(stage, &reader, "rotation")?
+            .as_ref()
+            .and_then(float)
+            .unwrap_or(0.0);
+        if let Some(v) = value(stage, &reader, "translation")?
+            .as_ref()
+            .and_then(vec2)
+        {
             texture.uv_translation = v;
         }
         match follow(stage, &input(&reader, "in")?, 0)? {
@@ -358,33 +417,67 @@ fn read_omnipbr(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Res
     if let Some(c) = get("diffuse_color_constant")?.as_ref().and_then(color) {
         m.color = c;
     }
-    if let Some(r) = get("reflection_roughness_constant")?.as_ref().and_then(float) {
+    if let Some(r) = get("reflection_roughness_constant")?
+        .as_ref()
+        .and_then(float)
+    {
         m.roughness = r;
     }
     if let Some(v) = get("metallic_constant")?.as_ref().and_then(float) {
         m.metallic = v;
     }
-    let scale = get("texture_scale")?.as_ref().and_then(vec2).unwrap_or([1.0, 1.0]);
-    let texture = |path| Texture { uv_scale: scale, ..Texture::new(path) };
+    let scale = get("texture_scale")?
+        .as_ref()
+        .and_then(vec2)
+        .unwrap_or([1.0, 1.0]);
+    let texture = |path| Texture {
+        uv_scale: scale,
+        ..Texture::new(path)
+    };
     if let Some(file) = get("diffuse_texture")?.as_ref().and_then(asset) {
         let constant = m.color;
-        m.maps.push(("diffuseColor", Texture { value: Some(constant), ..texture(file) }));
+        m.maps.push((
+            "diffuseColor",
+            Texture {
+                value: Some(constant),
+                ..texture(file)
+            },
+        ));
         // OmniPBR multiplies the texture by diffuse_tint, not the constant.
-        m.color = get("diffuse_tint")?.as_ref().and_then(color).unwrap_or([1.0; 3]);
+        m.color = get("diffuse_tint")?
+            .as_ref()
+            .and_then(color)
+            .unwrap_or([1.0; 3]);
     }
     if let Some(file) = get("normalmap_texture")?.as_ref().and_then(asset) {
         // OmniPBR normal maps are stored in [0, 1].
-        m.maps.push(("normal", Texture { scale: [2.0; 4], bias: [-1.0; 4], ..texture(file) }));
+        m.maps.push((
+            "normal",
+            Texture {
+                scale: [2.0; 4],
+                bias: [-1.0; 4],
+                ..texture(file)
+            },
+        ));
     }
     if get("enable_emission")?.as_ref().and_then(boolean) == Some(true) {
-        let c = get("emissive_color")?.as_ref().and_then(color).unwrap_or([1.0; 3]);
-        let k = get("emissive_intensity")?.as_ref().and_then(float).unwrap_or(0.0);
+        let c = get("emissive_color")?
+            .as_ref()
+            .and_then(color)
+            .unwrap_or([1.0; 3]);
+        let k = get("emissive_intensity")?
+            .as_ref()
+            .and_then(float)
+            .unwrap_or(0.0);
         // OmniPBR intensities are in nits-like units; squash into [0, 1].
         let k = (k / 1000.0).min(1.0);
         m.emissive = [c[0] * k, c[1] * k, c[2] * k];
     }
     if get("enable_opacity")?.as_ref().and_then(boolean) == Some(true) {
-        m.opacity = get("opacity_constant")?.as_ref().and_then(float).unwrap_or(1.0);
+        m.opacity = get("opacity_constant")?
+            .as_ref()
+            .and_then(float)
+            .unwrap_or(1.0);
     }
     Ok(m)
 }
@@ -400,13 +493,32 @@ fn read_gltf_pbr(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Re
             m.opacity = c.w;
         }
     }
-    m.roughness = get("roughness_factor")?.as_ref().and_then(float).unwrap_or(1.0);
-    m.metallic = get("metallic_factor")?.as_ref().and_then(float).unwrap_or(1.0);
+    m.roughness = get("roughness_factor")?
+        .as_ref()
+        .and_then(float)
+        .unwrap_or(1.0);
+    m.metallic = get("metallic_factor")?
+        .as_ref()
+        .and_then(float)
+        .unwrap_or(1.0);
     if let Some(t) = gltf_texture(stage, shader, "base_color_texture")? {
-        m.maps.push(("diffuseColor", Texture { value: Some(m.color), ..t }));
+        m.maps.push((
+            "diffuseColor",
+            Texture {
+                value: Some(m.color),
+                ..t
+            },
+        ));
     }
     if let Some(t) = gltf_texture(stage, shader, "normal_texture")? {
-        m.maps.push(("normal", Texture { scale: [2.0; 4], bias: [-1.0; 4], ..t }));
+        m.maps.push((
+            "normal",
+            Texture {
+                scale: [2.0; 4],
+                bias: [-1.0; 4],
+                ..t
+            },
+        ));
     }
     Ok(m)
 }

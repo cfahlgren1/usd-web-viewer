@@ -37,7 +37,11 @@ pub fn scene_meta(scene: &Scene) -> String {
         }
         o.push_str("{\"path\":");
         string(&mut o, &inst.path);
-        let _ = write!(o, ",\"geometry\":{},\"doubleSided\":{},\"matrix\":[", inst.geometry, inst.double_sided);
+        let _ = write!(
+            o,
+            ",\"geometry\":{},\"doubleSided\":{},\"matrix\":[",
+            inst.geometry, inst.double_sided
+        );
         for (j, v) in inst.matrix.iter().enumerate() {
             if j > 0 {
                 o.push(',');
@@ -141,7 +145,12 @@ fn texture(o: &mut String, t: &Texture) {
         o.push_str(",\"value\":");
         floats(o, value);
     }
-    let tokens = [("colorSpace", &t.color_space), ("uvSet", &t.uv_set), ("wrapS", &t.wrap[0]), ("wrapT", &t.wrap[1])];
+    let tokens = [
+        ("colorSpace", &t.color_space),
+        ("uvSet", &t.uv_set),
+        ("wrapS", &t.wrap[0]),
+        ("wrapT", &t.wrap[1]),
+    ];
     for (key, value) in tokens {
         if let Some(value) = value {
             let _ = write!(o, ",\"{key}\":");
@@ -150,7 +159,11 @@ fn texture(o: &mut String, t: &Texture) {
     }
     o.push_str(",\"uvScale\":");
     floats(o, &t.uv_scale);
-    let _ = write!(o, ",\"uvRotation\":{},\"uvTranslation\":", num(t.uv_rotation.into()));
+    let _ = write!(
+        o,
+        ",\"uvRotation\":{},\"uvTranslation\":",
+        num(t.uv_rotation.into())
+    );
     floats(o, &t.uv_translation);
     o.push('}');
 }
@@ -167,7 +180,11 @@ fn floats(o: &mut String, values: &[f32]) {
 }
 
 fn num(v: f64) -> String {
-    if v.is_finite() { format!("{v}") } else { "0".to_owned() }
+    if v.is_finite() {
+        format!("{v}")
+    } else {
+        "0".to_owned()
+    }
 }
 
 pub(crate) fn string(o: &mut String, s: &str) {

@@ -84,12 +84,19 @@ impl UsdLoader {
     /// Hands over the extracted scene and drops every stored layer.
     #[wasm_bindgen(js_name = takeScene)]
     pub fn take_scene(&mut self) -> Result<UsdScene, JsError> {
-        let scene = self.scene.take().ok_or_else(|| JsError::new("compose has not produced a scene"))?;
+        let scene = self
+            .scene
+            .take()
+            .ok_or_else(|| JsError::new("compose has not produced a scene"))?;
         // Textures inside a USDZ cannot be fetched by URL: keep their packages,
         // to read only the images the texture mode loads, each once.
         let packages = self.inner.take_texture_packages(&scene);
         self.inner.clear();
-        Ok(UsdScene { scene, current: None, packages })
+        Ok(UsdScene {
+            scene,
+            current: None,
+            packages,
+        })
     }
 }
 
@@ -115,20 +122,26 @@ impl UsdScene {
     /// left unread: `{"overBudget": triangles, "path": prim path}`.
     pub fn read(&mut self, index: usize, max_triangles: usize) -> Result<Option<String>, JsError> {
         self.current = None;
-        Ok(match self.scene.read_geometry(index, max_triangles).map_err(js_error)? {
-            Read::Geometry(geometry) => {
-                let json = crate::json::geometry_meta(&geometry);
-                self.current = Some(geometry);
-                Some(json)
-            }
-            Read::Nothing => None,
-            Read::OverBudget { path, triangles } => {
-                let mut json = format!("{{\"overBudget\":{triangles},\"path\":");
-                crate::json::string(&mut json, &path);
-                json.push('}');
-                Some(json)
-            }
-        })
+        Ok(
+            match self
+                .scene
+                .read_geometry(index, max_triangles)
+                .map_err(js_error)?
+            {
+                Read::Geometry(geometry) => {
+                    let json = crate::json::geometry_meta(&geometry);
+                    self.current = Some(geometry);
+                    Some(json)
+                }
+                Read::Nothing => None,
+                Read::OverBudget { path, triangles } => {
+                    let mut json = format!("{{\"overBudget\":{triangles},\"path\":");
+                    crate::json::string(&mut json, &path);
+                    json.push('}');
+                    Some(json)
+                }
+            },
+        )
     }
 
     /// Releases the stage once every geometry has been read.
@@ -149,7 +162,10 @@ impl UsdScene {
     pub fn uvs(&mut self, set: usize) -> Result<Vec<f32>, JsError> {
         let geometry = self.geometry()?;
         let count = geometry.uvs.len();
-        let (_, uvs) = geometry.uvs.get_mut(set).ok_or_else(|| JsError::new(&format!("no UV set {set}: the geometry has {count}")))?;
+        let (_, uvs) = geometry
+            .uvs
+            .get_mut(set)
+            .ok_or_else(|| JsError::new(&format!("no UV set {set}: the geometry has {count}")))?;
         Ok(std::mem::take(uvs))
     }
 
@@ -168,7 +184,11 @@ impl UsdScene {
             .into_iter()
             .map(u16::try_from)
             .collect::<Result<_, _>>()
-            .map_err(|_| JsError::new("an index does not fit in 16 bits: use indices() for 65536 vertices or more"))
+            .map_err(|_| {
+                JsError::new(
+                    "an index does not fit in 16 bits: use indices() for 65536 vertices or more",
+                )
+            })
     }
 
     /// A texture that lives inside a USDZ package, if `path` names one there.
@@ -187,6 +207,8 @@ impl UsdScene {
     }
 
     fn geometry(&mut self) -> Result<&mut crate::extract::Geometry, JsError> {
-        self.current.as_mut().ok_or_else(|| JsError::new("no geometry to read: call read() first"))
+        self.current
+            .as_mut()
+            .ok_or_else(|| JsError::new("no geometry to read: call read() first"))
     }
 }

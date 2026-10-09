@@ -13,11 +13,13 @@ use usd_wasm::material::{Material, Texture};
 
 #[test]
 fn fixtures() {
-    let dir = std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures")).expect("fixtures directory");
+    let dir = std::fs::canonicalize(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures"))
+        .expect("fixtures directory");
     let dir = format!("{}/", dir.display());
     insta::glob!("../../../fixtures", "*.usd*", |path| {
         let root = path.to_string_lossy().into_owned();
-        let loaded = common::compose(&root, |p| std::fs::read(p).ok()).unwrap_or_else(|e| panic!("{root}: {e}"));
+        let loaded = common::compose(&root, |p| std::fs::read(p).ok())
+            .unwrap_or_else(|e| panic!("{root}: {e}"));
         let mut out = summary(&loaded.scene);
         for path in &loaded.missing {
             writeln!(out, "missing layer: {path}").unwrap();
@@ -30,8 +32,19 @@ fn fixtures() {
 fn summary(s: &Scene) -> String {
     let mut o = String::new();
     let st = &s.stats;
-    writeln!(o, "upAxis {}, metersPerUnit {}", s.up_axis, num(s.meters_per_unit)).unwrap();
-    writeln!(o, "prims {}, meshes {}, triangles {}", st.prims, st.meshes, st.triangles).unwrap();
+    writeln!(
+        o,
+        "upAxis {}, metersPerUnit {}",
+        s.up_axis,
+        num(s.meters_per_unit)
+    )
+    .unwrap();
+    writeln!(
+        o,
+        "prims {}, meshes {}, triangles {}",
+        st.prims, st.meshes, st.triangles
+    )
+    .unwrap();
     for (path, why) in &st.skipped {
         writeln!(o, "skipped {path} ({why})").unwrap();
     }
@@ -47,8 +60,20 @@ fn summary(s: &Scene) -> String {
         let sided = if i.double_sided { " double-sided" } else { "" };
         let m = i.matrix;
         let [lo, hi] = world_bounds(&g.bounds, &m);
-        writeln!(o, "  {}: geometry {}, {materials}{sided}", i.path, i.geometry).unwrap();
-        writeln!(o, "    at {}, world {}..{}", vec(&m[12..15]), vec(&lo), vec(&hi)).unwrap();
+        writeln!(
+            o,
+            "  {}: geometry {}, {materials}{sided}",
+            i.path, i.geometry
+        )
+        .unwrap();
+        writeln!(
+            o,
+            "    at {}, world {}..{}",
+            vec(&m[12..15]),
+            vec(&lo),
+            vec(&hi)
+        )
+        .unwrap();
     }
 
     writeln!(o, "\ngeometries:").unwrap();
@@ -65,7 +90,11 @@ fn summary(s: &Scene) -> String {
         writeln!(o, "\nwarnings:").unwrap();
     }
     for w in &s.warnings {
-        let path = w.path.as_deref().map(|p| format!(" ({p})")).unwrap_or_default();
+        let path = w
+            .path
+            .as_deref()
+            .map(|p| format!(" ({p})"))
+            .unwrap_or_default();
         writeln!(o, "  {}: {}{path}", w.code, w.message).unwrap();
     }
     o
@@ -74,22 +103,59 @@ fn summary(s: &Scene) -> String {
 fn geometry(o: &mut String, k: usize, g: &Geometry) {
     let vertices = g.positions.len() / 3;
     // What every geometry must hold, whatever the file.
-    assert_eq!(g.normals.len(), g.positions.len(), "{}: a normal per vertex", g.source);
-    assert!(g.uvs.iter().all(|(_, uv)| uv.len() == vertices * 2), "{}: a UV per vertex", g.source);
-    assert!(g.colors.is_empty() || g.colors.len() == vertices * 3, "{}: no color or one per vertex", g.source);
-    assert!(g.indices.iter().all(|&i| (i as usize) < vertices), "{}: indices in range", g.source);
+    assert_eq!(
+        g.normals.len(),
+        g.positions.len(),
+        "{}: a normal per vertex",
+        g.source
+    );
+    assert!(
+        g.uvs.iter().all(|(_, uv)| uv.len() == vertices * 2),
+        "{}: a UV per vertex",
+        g.source
+    );
+    assert!(
+        g.colors.is_empty() || g.colors.len() == vertices * 3,
+        "{}: no color or one per vertex",
+        g.source
+    );
+    assert!(
+        g.indices.iter().all(|&i| (i as usize) < vertices),
+        "{}: indices in range",
+        g.source
+    );
     let mut next = 0;
     for group in &g.groups {
         assert_eq!(group.start, next, "{}: groups are contiguous", g.source);
         next += group.count;
     }
-    assert_eq!(next as usize, g.indices.len(), "{}: groups cover every index", g.source);
+    assert_eq!(
+        next as usize,
+        g.indices.len(),
+        "{}: groups cover every index",
+        g.source
+    );
 
     let triangles = g.indices.len() / 3;
-    let inward = g.indices.chunks_exact(3).filter(|t| faces_away(g, t)).count();
-    let winding = if inward == 0 { "all outward".to_owned() } else { format!("{inward} facing inward") };
+    let inward = g
+        .indices
+        .chunks_exact(3)
+        .filter(|t| faces_away(g, t))
+        .count();
+    let winding = if inward == 0 {
+        "all outward".to_owned()
+    } else {
+        format!("{inward} facing inward")
+    };
     let [lo, hi] = g.bounds;
-    writeln!(o, "  {k} {}: {triangles} triangles ({winding}), {vertices} vertices, bounds {}..{}", g.source, vec(&lo), vec(&hi)).unwrap();
+    writeln!(
+        o,
+        "  {k} {}: {triangles} triangles ({winding}), {vertices} vertices, bounds {}..{}",
+        g.source,
+        vec(&lo),
+        vec(&hi)
+    )
+    .unwrap();
     writeln!(o, "    normals {}", values(&g.normals, 3)).unwrap();
     for (name, uv) in &g.uvs {
         writeln!(o, "    uv {name} {}", values(uv, 2)).unwrap();
@@ -101,7 +167,18 @@ fn geometry(o: &mut String, k: usize, g: &Geometry) {
         let groups: Vec<String> = g
             .groups
             .iter()
-            .map(|group| format!("{}+{}{}", group.start, group.count, group.subset.as_deref().map(|s| format!(" {s}")).unwrap_or_default()))
+            .map(|group| {
+                format!(
+                    "{}+{}{}",
+                    group.start,
+                    group.count,
+                    group
+                        .subset
+                        .as_deref()
+                        .map(|s| format!(" {s}"))
+                        .unwrap_or_default()
+                )
+            })
             .collect();
         writeln!(o, "    groups {}", groups.join(", ")).unwrap();
     }
@@ -112,15 +189,35 @@ fn faces_away(g: &Geometry, t: &[u32]) -> bool {
     let p = |i: u32| [0, 1, 2].map(|k| g.positions[i as usize * 3 + k]);
     let n = |i: u32| [0, 1, 2].map(|k| g.normals[i as usize * 3 + k]);
     let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
-    let (u, v) = ([0, 1, 2].map(|k| b[k] - a[k]), [0, 1, 2].map(|k| c[k] - a[k]));
-    let face = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    let (u, v) = (
+        [0, 1, 2].map(|k| b[k] - a[k]),
+        [0, 1, 2].map(|k| c[k] - a[k]),
+    );
+    let face = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
     let normal = [0, 1, 2].map(|k| n(t[0])[k] + n(t[1])[k] + n(t[2])[k]);
     (0..3).map(|k| face[k] * normal[k]).sum::<f32>() < 0.0
 }
 
 fn material(o: &mut String, k: usize, m: &Material) {
-    let path = if m.path.is_empty() { "(unbound)" } else { &m.path };
-    write!(o, "  {k} {path} {}: color {}, opacity {}, roughness {}, metallic {}", m.kind, vec(&m.color), num(m.opacity), num(m.roughness), num(m.metallic)).unwrap();
+    let path = if m.path.is_empty() {
+        "(unbound)"
+    } else {
+        &m.path
+    };
+    write!(
+        o,
+        "  {k} {path} {}: color {}, opacity {}, roughness {}, metallic {}",
+        m.kind,
+        vec(&m.color),
+        num(m.opacity),
+        num(m.roughness),
+        num(m.metallic)
+    )
+    .unwrap();
     if m.emissive != [0.0; 3] {
         write!(o, ", emissive {}", vec(&m.emissive)).unwrap();
     }
@@ -144,13 +241,25 @@ fn texture(o: &mut String, input: &str, t: &Texture) {
     if t.scale != [1.0; 4] || t.bias != [0.0; 4] {
         write!(o, ", scale {}, bias {}", vec(&t.scale), vec(&t.bias)).unwrap();
     }
-    for (key, value) in [("uv", &t.uv_set), ("colorSpace", &t.color_space), ("wrapS", &t.wrap[0]), ("wrapT", &t.wrap[1])] {
+    for (key, value) in [
+        ("uv", &t.uv_set),
+        ("colorSpace", &t.color_space),
+        ("wrapS", &t.wrap[0]),
+        ("wrapT", &t.wrap[1]),
+    ] {
         if let Some(value) = value {
             write!(o, ", {key} {value}").unwrap();
         }
     }
     if t.uv_scale != [1.0; 2] || t.uv_rotation != 0.0 || t.uv_translation != [0.0; 2] {
-        write!(o, ", uv scale {} rotation {} translation {}", vec(&t.uv_scale), num(t.uv_rotation), vec(&t.uv_translation)).unwrap();
+        write!(
+            o,
+            ", uv scale {} rotation {} translation {}",
+            vec(&t.uv_scale),
+            num(t.uv_rotation),
+            vec(&t.uv_translation)
+        )
+        .unwrap();
     }
     writeln!(o).unwrap();
 }
@@ -169,7 +278,10 @@ fn values(data: &[f32], width: usize) -> String {
             distinct.push((value, 1));
         }
     }
-    let shown: Vec<String> = distinct.into_iter().map(|(v, n)| if n > 1 { format!("{v} x{n}") } else { v }).collect();
+    let shown: Vec<String> = distinct
+        .into_iter()
+        .map(|(v, n)| if n > 1 { format!("{v} x{n}") } else { v })
+        .collect();
     shown.join(", ")
 }
 

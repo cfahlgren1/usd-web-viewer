@@ -53,13 +53,18 @@ impl Loader {
         if bytes.starts_with(b"PK\x03\x04") {
             resolver::check_package(&bytes)?;
         }
-        resolver::lock(&self.files).bytes.insert(path.to_owned(), bytes);
+        resolver::lock(&self.files)
+            .bytes
+            .insert(path.to_owned(), bytes);
         let layer = sdf::Layer::open_with(self.resolver(false, None), path)?;
         let real_path = layer.resolved_path().unwrap_or(path).to_owned();
         let mut deps = deps::layer_dependencies(layer.data(), &real_path);
         // Files inside a package we hold need no fetching.
         let files = resolver::lock(&self.files);
-        deps.retain(|d| resolver::split_packaged(d).is_none_or(|(package, _)| !files.bytes.contains_key(package)));
+        deps.retain(|d| {
+            resolver::split_packaged(d)
+                .is_none_or(|(package, _)| !files.bytes.contains_key(package))
+        });
         // Arcs to formats nothing here reads (MaterialX) are not worth fetching.
         deps.retain(|d| resolver::is_layer_path(d));
         Ok(deps)
@@ -101,11 +106,19 @@ impl Loader {
         let mut scene = extract::plan(&stage, max_instances)?;
         let diagnostics = stage.composition_errors();
         for d in diagnostics.iter().take(5) {
-            scene.warnings.push(extract::Warning { code: "composition", message: d.to_string(), path: None });
+            scene.warnings.push(extract::Warning {
+                code: "composition",
+                message: d.to_string(),
+                path: None,
+            });
         }
         if diagnostics.len() > 5 {
             let message = format!("{} more composition diagnostics", diagnostics.len() - 5);
-            scene.warnings.push(extract::Warning { code: "composition", message, path: None });
+            scene.warnings.push(extract::Warning {
+                code: "composition",
+                message,
+                path: None,
+            });
         }
         Ok(Composed::Scene(scene))
     }
@@ -126,7 +139,10 @@ impl Loader {
         let nested = std::mem::take(&mut files.nested);
         packages.nested = nested
             .into_iter()
-            .filter(|(path, _)| resolver::split_packaged(path).is_some_and(|(package, _)| packages.bytes.contains_key(package)))
+            .filter(|(path, _)| {
+                resolver::split_packaged(path)
+                    .is_some_and(|(package, _)| packages.bytes.contains_key(package))
+            })
             .collect();
         packages.restart_budget();
         packages

@@ -17,7 +17,10 @@ const SEGMENTS: usize = 32;
 const BANDS: usize = 16;
 
 pub fn is_implicit(ty: &str) -> bool {
-    matches!(ty, "Cube" | "Sphere" | "Cylinder" | "Cone" | "Capsule" | "Plane")
+    matches!(
+        ty,
+        "Cube" | "Sphere" | "Cylinder" | "Cone" | "Capsule" | "Plane"
+    )
 }
 
 /// The mesh of an implicit gprim of type `ty`; `None` for a zero-sized one.
@@ -55,7 +58,13 @@ pub fn read(prim: &usd::Prim, ty: &str) -> Option<Geometry> {
         "Capsule" => {
             let (r, h) = (size("radius", 0.5), size("height", 1.0) / 2.0);
             let half = BANDS / 2;
-            mesh.lathe(&[arc(r, 0.0, FRAC_PI_2, half, -h), arc(r, FRAC_PI_2, PI, half, h)].concat());
+            mesh.lathe(
+                &[
+                    arc(r, 0.0, FRAC_PI_2, half, -h),
+                    arc(r, FRAC_PI_2, PI, half, h),
+                ]
+                .concat(),
+            );
             mesh.align(axis);
         }
         "Plane" => {
@@ -96,7 +105,11 @@ fn arc(r: f32, from: f32, to: f32, bands: usize, z: f32) -> Vec<Row> {
 /// top like the rest of a profile.
 fn cap(r: f32, z: f32) -> Vec<Row> {
     let n = z.signum();
-    if n < 0.0 { vec![(0.0, z, 0.0, n), (r, z, 0.0, n)] } else { vec![(r, z, 0.0, n), (0.0, z, 0.0, n)] }
+    if n < 0.0 {
+        vec![(0.0, z, 0.0, n), (r, z, 0.0, n)]
+    } else {
+        vec![(r, z, 0.0, n), (0.0, z, 0.0, n)]
+    }
 }
 
 #[derive(Default)]
@@ -125,7 +138,12 @@ impl Mesh {
                 continue;
             }
             for j in 0..SEGMENTS {
-                let (a0, a1, b0, b1) = (at(row, j), at(row, j + 1), at(row + 1, j), at(row + 1, j + 1));
+                let (a0, a1, b0, b1) = (
+                    at(row, j),
+                    at(row, j + 1),
+                    at(row + 1, j),
+                    at(row + 1, j + 1),
+                );
                 // A ring on the axis is a single point: one triangle per segment.
                 if pair[0].0 != 0.0 {
                     self.indices.extend([a0, a1, b1]);
@@ -147,7 +165,11 @@ impl Mesh {
                 n[k] = sign;
                 let center = n.map(|c| c * h);
                 // Swapping u and v turns the face to look the other way.
-                if sign > 0.0 { self.quad(center, u, v, n) } else { self.quad(center, v, u, n) }
+                if sign > 0.0 {
+                    self.quad(center, u, v, n)
+                } else {
+                    self.quad(center, v, u, n)
+                }
             }
         }
     }
@@ -156,10 +178,12 @@ impl Mesh {
     fn quad(&mut self, center: [f32; 3], u: [f32; 3], v: [f32; 3], n: [f32; 3]) {
         let base = self.positions.len() as u32;
         for (su, sv) in [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)] {
-            self.positions.push([0, 1, 2].map(|k| center[k] + su * u[k] + sv * v[k]));
+            self.positions
+                .push([0, 1, 2].map(|k| center[k] + su * u[k] + sv * v[k]));
             self.normals.push(n);
         }
-        self.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        self.indices
+            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
     /// Turns a mesh built about +Z to run along `axis` (a rotation).
@@ -197,7 +221,11 @@ impl Mesh {
             normals: self.normals.into_iter().flatten().collect(),
             uvs: Vec::new(),
             colors: Vec::new(),
-            groups: vec![Group { start: 0, count: self.indices.len() as u32, subset: None }],
+            groups: vec![Group {
+                start: 0,
+                count: self.indices.len() as u32,
+                subset: None,
+            }],
             indices: self.indices,
         })
     }

@@ -9,7 +9,10 @@ use usd_wasm::{Composed, Loader};
 
 fn main() {
     for root in std::env::args().skip(1) {
-        let root = std::fs::canonicalize(&root).expect("root path").to_string_lossy().into_owned();
+        let root = std::fs::canonicalize(&root)
+            .expect("root path")
+            .to_string_lossy()
+            .into_owned();
         if let Err(e) = inspect(&root) {
             println!("{root}: error: {e}");
         }
@@ -39,7 +42,10 @@ fn inspect(root: &str) -> Result<(), Box<dyn std::error::Error>> {
         rounds += 1;
         let tc = Instant::now();
         let composed = loader.compose(root, usize::MAX)?;
-        println!("  compose round {rounds}: {:.1} ms", tc.elapsed().as_secs_f64() * 1000.0);
+        println!(
+            "  compose round {rounds}: {:.1} ms",
+            tc.elapsed().as_secs_f64() * 1000.0
+        );
         match composed {
             Composed::Scene(scene) => break scene.read_all()?,
             Composed::Missing(missing) => queue.extend(missing),
@@ -70,11 +76,26 @@ fn inspect(root: &str) -> Result<(), Box<dyn std::error::Error>> {
             m.path,
             m.kind,
             m.color,
-            m.maps.iter().map(|(input, t)| format!("{input}<-{}.{}", t.path.rsplit('/').next().unwrap_or(""), t.channel)).collect::<Vec<_>>()
+            m.maps
+                .iter()
+                .map(|(input, t)| format!(
+                    "{input}<-{}.{}",
+                    t.path.rsplit('/').next().unwrap_or(""),
+                    t.channel
+                ))
+                .collect::<Vec<_>>()
         );
     }
     for w in &scene.warnings {
-        println!("    warning [{}] {}{}", w.code, w.message, w.path.as_deref().map(|p| format!(" ({p})")).unwrap_or_default());
+        println!(
+            "    warning [{}] {}{}",
+            w.code,
+            w.message,
+            w.path
+                .as_deref()
+                .map(|p| format!(" ({p})"))
+                .unwrap_or_default()
+        );
     }
     for (path, why) in &s.skipped {
         println!("    skipped ({why}) {path}");
@@ -83,9 +104,16 @@ fn inspect(root: &str) -> Result<(), Box<dyn std::error::Error>> {
         for i in &scene.instances {
             let g = &scene.geometries[i.geometry as usize];
             let materials: Vec<u32> = g.groups.iter().map(|group| i.material_for(group)).collect();
-            println!("    mesh {} tris {} mats {materials:?}", i.path, g.indices.len() / 3);
+            println!(
+                "    mesh {} tris {} mats {materials:?}",
+                i.path,
+                g.indices.len() / 3
+            );
             if std::env::var("MATRIX").is_ok() {
-                println!("      matrix {:?}", i.matrix.map(|v| (v * 1000.0).round() / 1000.0));
+                println!(
+                    "      matrix {:?}",
+                    i.matrix.map(|v| (v * 1000.0).round() / 1000.0)
+                );
             }
         }
     }

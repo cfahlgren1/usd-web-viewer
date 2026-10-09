@@ -40,8 +40,16 @@ pub fn compose(root: &str, read: impl Fn(&str) -> Option<Vec<u8>>) -> Result<Loa
                 }
             }
         }
-        match loader.compose(root, usize::MAX).map_err(|e| e.to_string())? {
-            Composed::Scene(scene) => return Ok(Loaded { scene: scene.read_all().map_err(|e| e.to_string())?, missing }),
+        match loader
+            .compose(root, usize::MAX)
+            .map_err(|e| e.to_string())?
+        {
+            Composed::Scene(scene) => {
+                return Ok(Loaded {
+                    scene: scene.read_all().map_err(|e| e.to_string())?,
+                    missing,
+                });
+            }
             Composed::Missing(paths) => queue.extend(paths),
         }
     }

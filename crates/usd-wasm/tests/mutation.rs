@@ -11,14 +11,20 @@ const MUTATIONS: usize = 300;
 fn damaged_binary_files_error_and_never_panic() {
     let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     for name in FIXTURES {
-        let original = std::fs::read(format!("{}/../../fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).expect("fixture");
+        let original = std::fs::read(format!(
+            "{}/../../fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .expect("fixture");
         let root = format!("/h/{name}");
         for i in 0..MUTATIONS {
             let mut bytes = original.clone();
             for _ in 0..=rng.below(3) {
                 mutate(&mut bytes, &mut rng);
             }
-            let loaded = std::panic::catch_unwind(|| common::compose(&root, |path| (path == root).then(|| bytes.clone())));
+            let loaded = std::panic::catch_unwind(|| {
+                common::compose(&root, |path| (path == root).then(|| bytes.clone()))
+            });
             assert!(loaded.is_ok(), "{name}: mutation {i} panicked");
         }
     }
@@ -44,7 +50,14 @@ fn mutate(bytes: &mut Vec<u8>, rng: &mut Rng) {
             bytes[at..end].fill(fill);
         }
         2 => {
-            let extreme = [0, 1, 0x7fff_ffff, 0xffff_ffff, 0x8000_0000, bytes.len() as u32][rng.below(6)];
+            let extreme = [
+                0,
+                1,
+                0x7fff_ffff,
+                0xffff_ffff,
+                0x8000_0000,
+                bytes.len() as u32,
+            ][rng.below(6)];
             let at = at.min(bytes.len() - 4);
             bytes[at..at + 4].copy_from_slice(&extreme.to_le_bytes());
         }
