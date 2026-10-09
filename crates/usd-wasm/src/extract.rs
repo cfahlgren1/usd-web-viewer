@@ -40,8 +40,12 @@ pub struct Geometry {
     pub points: usize,
     pub positions: Vec<f32>,
     pub normals: Vec<f32>,
-    /// Empty when the mesh has no texture coordinates.
-    pub uvs: Vec<f32>,
+    /// UV sets by primvar name: the default set first, then the ones bound
+    /// textures name. Empty when the mesh has no texture coordinates.
+    pub uvs: Vec<(String, Vec<f32>)>,
+    /// Per-vertex `displayColor`; empty unless authored per vertex/face and
+    /// the bound material shows it.
+    pub colors: Vec<f32>,
     pub indices: Vec<u32>,
     /// Index ranges, one per material subset; a single range without subsets.
     pub groups: Vec<Group>,
@@ -131,10 +135,27 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
             Some(proto) => proto,
             None => prim.clone(),
         };
-        let key = source.path().as_str().to_owned();
+        let mesh_material = bound_material(stage, &mut materials, &mut scene.materials, &prim)?;
+        let mut subset_materials = HashMap::new();
+        for child in prim.children()? {
+            if child.type_name()?.as_deref() == Some("GeomSubset")
+                && let Some(mat) = MaterialBindingAPI::from_prim_unchecked(child.clone()).compute_bound_material("preview")?
+                && let Some(name) = child.path().name()
+            {
+                subset_materials.insert(name.to_owned(), materials.get(stage, &mat, &mut scene.materials)?);
+            }
+        }
+        // What the materials sample: per-vertex colors when a material still
+        // names its color primvar, and the UV primvars their textures name.
+        let used = || std::iter::once(&mesh_material).chain(subset_materials.values()).map(|&m| &scene.materials[m as usize]);
+        let want_colors = scene.materials[mesh_material as usize].color_primvar.is_some();
+        let mut uv_sets: Vec<String> = used().flat_map(|m| m.maps.iter().filter_map(|(_, t)| t.uv_set.clone())).collect();
+        uv_sets.sort();
+        uv_sets.dedup();
+        let key = format!("{}|{want_colors}|{}", source.path().as_str(), uv_sets.join(","));
         let geometry = match geometry_by_source.get(&key) {
             Some(&index) => Some(index),
-            None => match read_mesh(&source)? {
+            None => match read_mesh(&source, want_colors, &uv_sets)? {
                 Some(geometry) => {
                     let index = scene.geometries.len() as u32;
                     scene.geometries.push(geometry);
@@ -151,21 +172,10 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
         };
 
         let groups = &scene.geometries[geometry as usize].groups;
-        let mesh_material = bound_material(stage, &path, &mut materials, &mut scene.materials, &prim)?;
         let mut instance_materials = Vec::with_capacity(groups.len());
         for group in groups {
-            let index = match &group.subset {
-                Some(name) => {
-                    let subset_path = path.append_path(name.as_str()).map_err(openusd::Error::from)?;
-                    let subset = stage.prim(&subset_path)?;
-                    match MaterialBindingAPI::from_prim_unchecked(subset).compute_bound_material("preview")? {
-                        Some(mat) => materials.get(stage, &mat, &mut scene.materials)?,
-                        None => mesh_material,
-                    }
-                }
-                None => mesh_material,
-            };
-            instance_materials.push(index);
+            let subset = group.subset.as_ref().and_then(|name| subset_materials.get(name));
+            instance_materials.push(subset.copied().unwrap_or(mesh_material));
         }
 
         let matrix = xforms
@@ -185,44 +195,32 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
     Ok(scene)
 }
 
-/// The material bound to `path` for preview rendering, or a fallback built from
-/// `displayColor` (or neutral grey) so geometry always shows.
+/// The material bound to `prim` for preview rendering, or one showing its
+/// `displayColor` (neutral grey without one) so geometry always shows. A
+/// material reading a color primvar is tinted by a constant value, or left to
+/// per-vertex colors (it keeps `color_primvar`) when the primvar varies.
 fn bound_material(
     stage: &Stage,
-    path: &sdf::Path,
     cache: &mut material::Cache,
     out: &mut Vec<Material>,
     prim: &usd::Prim,
 ) -> openusd::Result<u32> {
     let binding = MaterialBindingAPI::from_prim_unchecked(prim.clone()).compute_bound_material("preview")?;
-    if let Some(mat) = binding {
-        let index = cache.get(stage, &mat, out)?;
-        // Per-mesh colors read through a primvar reader: use the first value
-        // (vertex colors are not supported yet).
-        if let Some(name) = out[index as usize].color_primvar.clone() {
-            let value = prim.attribute(format!("primvars:{name}").as_str()).get::<Value>()?;
-            if let Some(color) = value.as_ref().and_then(first_color) {
-                return Ok(cache.with_primvar_color(index, color, out));
-            }
-        }
-        return Ok(index);
-    }
-    let color = match prim.attribute("primvars:displayColor").get::<Value>()? {
-        Some(value) => first_color(&value),
-        None => None,
+    let index = match &binding {
+        Some(mat) => cache.get(stage, mat, out)?,
+        None => cache.display_color(out),
     };
-    let _ = path;
-    Ok(cache.display_color(color, out))
+    let Some(name) = out[index as usize].color_primvar.clone() else {
+        return Ok(index);
+    };
+    match read_primvar(prim, &format!("primvars:{name}"), Interp::Constant, vec3s)? {
+        Some(pv) if pv.interp != Interp::Constant && pv.values.len() > 1 => Ok(index),
+        Some(pv) if !pv.values.is_empty() => Ok(cache.with_primvar_color(index, pv.values[0], out)),
+        _ if binding.is_none() => Ok(cache.fallback(out)),
+        _ => Ok(index),
+    }
 }
 
-fn first_color(value: &Value) -> Option<[f32; 3]> {
-    match value {
-        Value::Vec3fVec(v) => v.first().map(|c| [c.x, c.y, c.z]),
-        Value::Vec3f(c) => Some([c.x, c.y, c.z]),
-        Value::Vec3dVec(v) => v.first().map(|c| [c.x as f32, c.y as f32, c.z as f32]),
-        _ => None,
-    }
-}
 
 pub(crate) fn token_attr(prim: &usd::Prim, name: &str) -> Option<String> {
     match prim.attribute(name).get::<Value>() {
@@ -318,9 +316,10 @@ fn ints(value: Option<Value>) -> Option<Vec<i32>> {
     }
 }
 
-const UV_NAMES: [&str; 6] = ["primvars:st", "primvars:st0", "primvars:UVMap", "primvars:uv", "primvars:map1", "primvars:st_0"];
+/// Primvars tried, in order, for the default UV set.
+const UV_NAMES: [&str; 6] = ["st", "st0", "UVMap", "uv", "map1", "st_0"];
 
-fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
+fn read_mesh(prim: &usd::Prim, want_colors: bool, uv_sets: &[String]) -> openusd::Result<Option<Geometry>> {
     let Some(points) = prim.attribute("points").get::<Value>()?.as_ref().and_then(vec3s) else {
         return Ok(None);
     };
@@ -343,21 +342,36 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
         Some(n) => Some(n),
         None => read_primvar(prim, "normals", Interp::Vertex, vec3s)?,
     };
-    let mut uvs = None;
+    let mut uvs = Vec::new();
     for name in UV_NAMES {
-        if let Some(uv) = read_primvar(prim, name, Interp::FaceVarying, vec2s)? {
-            uvs = Some(uv);
+        if let Some(uv) = read_primvar(prim, &format!("primvars:{name}"), Interp::FaceVarying, vec2s)? {
+            uvs.push((name.to_owned(), uv));
             break;
         }
     }
-    let normals = normals.filter(|n| fits(n.interp, n.values.len(), points.len(), counts.len(), corners));
-    let uvs = uvs.filter(|uv| fits(uv.interp, uv.values.len(), points.len(), counts.len(), corners));
+    for name in uv_sets {
+        if !uvs.iter().any(|(n, _)| n == name)
+            && let Some(uv) = read_primvar(prim, &format!("primvars:{name}"), Interp::FaceVarying, vec2s)?
+        {
+            uvs.push((name.clone(), uv));
+        }
+    }
+    // Per-vertex display colors, only for meshes whose material shows them.
+    let colors = match want_colors {
+        true => read_primvar(prim, "primvars:displayColor", Interp::Constant, vec3s)?.filter(|c| c.interp != Interp::Constant),
+        false => None,
+    };
+    let fit = |interp, len| fits(interp, len, points.len(), counts.len(), corners);
+    let normals = normals.filter(|n| fit(n.interp, n.values.len()));
+    uvs.retain(|(_, uv)| fit(uv.interp, uv.values.len()));
+    let colors = colors.filter(|c| fit(c.interp, c.values.len()));
 
     // Per-point layout when every attribute is per point; otherwise one vertex
     // per face corner, which faceVarying and uniform data need.
-    let per_corner = [normals.as_ref().map(|n| n.interp), uvs.as_ref().map(|u| u.interp)]
+    let per_corner = [normals.as_ref().map(|n| n.interp), colors.as_ref().map(|c| c.interp)]
         .into_iter()
         .flatten()
+        .chain(uvs.iter().map(|(_, uv)| uv.interp))
         .any(|i| matches!(i, Interp::FaceVarying | Interp::Uniform));
 
     let vertex_count = if per_corner { corners } else { points.len() };
@@ -383,21 +397,25 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
         Some(n) => expand3(&n, &point_of, &face_of, per_corner),
         None => smooth_normals(&points, &counts, &face_indices, &point_of, left_handed),
     };
-    let mut uvs = match uvs {
-        Some(uv) => expand2(&uv, &point_of, &face_of, per_corner),
+    let mut uvs: Vec<(String, Vec<f32>)> = uvs
+        .into_iter()
+        .map(|(name, uv)| (name, expand2(&uv, &point_of, &face_of, per_corner)))
+        .collect();
+
+    let mut colors = match colors {
+        Some(c) => expand3(&c, &point_of, &face_of, per_corner),
         None => Vec::new(),
     };
 
-    // Corners that agree on point, normal and UV become one vertex again.
-    let remap = if per_corner {
-        let welded = weld(&point_of, points.len(), &positions, &normals, &uvs);
-        positions = welded.positions;
-        normals = welded.normals;
-        uvs = welded.uvs;
-        Some(welded.remap)
-    } else {
-        None
-    };
+    // Corners that agree on point, normal, UV and color become one vertex again.
+    let remap = per_corner.then(|| {
+        let mut attrs = vec![(&mut positions, 3), (&mut normals, 3)];
+        attrs.extend(uvs.iter_mut().map(|(_, uv)| (uv, 2)));
+        if !colors.is_empty() {
+            attrs.push((&mut colors, 3));
+        }
+        weld(&point_of, points.len(), &mut attrs)
+    });
 
     // Triangle fans, ordered by subset so each subset is one contiguous range.
     let subsets = read_subsets(prim, counts.len())?;
@@ -459,34 +477,31 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
         positions,
         normals,
         uvs,
+        colors,
         indices,
         groups,
     }))
 }
 
-struct Welded {
-    remap: Vec<u32>,
-    positions: Vec<f32>,
-    normals: Vec<f32>,
-    uvs: Vec<f32>,
-}
-
 /// Merges per-corner vertices that share a point and have bit-identical
-/// normal and UV. Candidates are chained per point, so the search stays local.
-fn weld(point_of: &[u32], point_count: usize, positions: &[f32], normals: &[f32], uvs: &[f32]) -> Welded {
+/// attributes, rewriting `attrs` (each with its width) in place and returning
+/// the corner-to-vertex map. Candidates are chained per point, so the search
+/// stays local.
+fn weld(point_of: &[u32], point_count: usize, attrs: &mut [(&mut Vec<f32>, usize)]) -> Vec<u32> {
     const NONE: u32 = u32::MAX;
-    let has_uv = !uvs.is_empty();
     let mut head = vec![NONE; point_count];
     let mut next: Vec<u32> = Vec::new();
     let mut first_corner: Vec<u32> = Vec::new();
     let mut remap = Vec::with_capacity(point_of.len());
-    let same = |a: usize, b: usize| {
-        normals[a * 3..a * 3 + 3].iter().zip(&normals[b * 3..b * 3 + 3]).all(|(x, y)| x.to_bits() == y.to_bits())
-            && (!has_uv || uvs[a * 2..a * 2 + 2].iter().zip(&uvs[b * 2..b * 2 + 2]).all(|(x, y)| x.to_bits() == y.to_bits()))
-    };
     for (corner, &point) in point_of.iter().enumerate() {
+        let same = |other: usize| {
+            attrs.iter().all(|(data, w)| {
+                let (a, b) = (&data[other * w..other * w + w], &data[corner * w..corner * w + w]);
+                a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+            })
+        };
         let mut candidate = head[point as usize];
-        while candidate != NONE && !same(first_corner[candidate as usize] as usize, corner) {
+        while candidate != NONE && !same(first_corner[candidate as usize] as usize) {
             candidate = next[candidate as usize];
         }
         if candidate == NONE {
@@ -497,19 +512,15 @@ fn weld(point_of: &[u32], point_count: usize, positions: &[f32], normals: &[f32]
         }
         remap.push(candidate);
     }
-    let gather = |src: &[f32], width: usize| -> Vec<f32> {
-        let mut out = Vec::with_capacity(first_corner.len() * width);
+    for (data, w) in attrs.iter_mut() {
+        let w = *w;
+        let mut out = Vec::with_capacity(first_corner.len() * w);
         for &c in &first_corner {
-            out.extend_from_slice(&src[c as usize * width..c as usize * width + width]);
+            out.extend_from_slice(&data[c as usize * w..c as usize * w + w]);
         }
-        out
-    };
-    Welded {
-        positions: gather(positions, 3),
-        normals: gather(normals, 3),
-        uvs: if has_uv { gather(uvs, 2) } else { Vec::new() },
-        remap,
+        **data = out;
     }
+    remap
 }
 
 fn fits(interp: Interp, len: usize, points: usize, faces: usize, corners: usize) -> bool {

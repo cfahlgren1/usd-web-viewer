@@ -5,7 +5,7 @@ import init, { UsdLoader } from '../wasm/usd_wasm.js';
 import { composeStage, pathToUrl, takeGeometries, takePackagedTextures, texturePaths } from './load-core.js';
 
 self.onmessage = async (event) => {
-  const { url, wasmModule, maxTextureSize = 1024, normalMaps = false, prefetchVariants = false } = event.data;
+  const { url, wasmModule, maxTextureSize = 1024, normalMaps = true, prefetchVariants = false } = event.data;
   try {
     const t0 = performance.now();
     const wasm = await init({ module_or_path: wasmModule });
@@ -20,11 +20,14 @@ self.onmessage = async (event) => {
     stats.wasmMemoryBytes = wasm.memory.buffer.byteLength;
 
     const transfer = [];
-    for (const g of geometries) for (const a of [g.positions, g.normals, g.uvs, g.indices]) if (a) transfer.push(a.buffer);
+    for (const g of geometries) for (const a of [g.positions, g.normals, g.colors, g.indices, ...g.uvs]) if (a) transfer.push(a.buffer);
     self.postMessage({ type: 'scene', meta, geometries, stats }, transfer);
 
-    await Promise.all(
-      texturePaths(meta, { normalMaps }).map(async (path) => {
+    // A few at a time, base colors first: decoding a large image briefly
+    // holds it at full size, so unbounded parallelism spikes memory.
+    const queue = texturePaths(meta, { normalMaps });
+    const next = async () => {
+      for (let path = queue.shift(); path; path = queue.shift()) {
         try {
           const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await fetchBlob(pathToUrl(path, protocols));
           const bitmap = await decodeTexture(blob, maxTextureSize);
@@ -32,8 +35,9 @@ self.onmessage = async (event) => {
         } catch (error) {
           self.postMessage({ type: 'texture', path, error: String(error?.message || error) });
         }
-      }),
-    );
+      }
+    };
+    await Promise.all(Array.from({ length: 4 }, next));
     self.postMessage({ type: 'done' });
   } catch (error) {
     self.postMessage({ type: 'error', message: String(error?.stack || error?.message || error) });

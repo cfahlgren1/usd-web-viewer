@@ -25,11 +25,18 @@ pub fn scene_meta(scene: &Scene) -> String {
         }
         let _ = write!(
             o,
-            "{{\"vertices\":{},\"points\":{},\"hasUvs\":{},\"groups\":[",
+            "{{\"vertices\":{},\"points\":{},\"hasColors\":{},\"uvSets\":[",
             g.positions.len() / 3,
             g.points,
-            !g.uvs.is_empty()
+            !g.colors.is_empty()
         );
+        for (j, (name, _)) in g.uvs.iter().enumerate() {
+            if j > 0 {
+                o.push(',');
+            }
+            string(&mut o, name);
+        }
+        o.push_str("],\"groups\":[");
         for (j, group) in g.groups.iter().enumerate() {
             if j > 0 {
                 o.push(',');
@@ -77,52 +84,73 @@ pub fn scene_meta(scene: &Scene) -> String {
         string(&mut o, &m.path);
         o.push_str(",\"kind\":");
         string(&mut o, m.kind);
+        o.push_str(",\"color\":");
+        floats(&mut o, &m.color);
+        o.push_str(",\"emissive\":");
+        floats(&mut o, &m.emissive);
         let _ = write!(
             o,
-            ",\"color\":[{},{},{}],\"opacity\":{},\"roughness\":{},\"metallic\":{},\"emissive\":[{},{},{}]",
-            num(m.color[0].into()),
-            num(m.color[1].into()),
-            num(m.color[2].into()),
+            ",\"opacity\":{},\"opacityThreshold\":{},\"roughness\":{},\"metallic\":{}",
             num(m.opacity.into()),
+            num(m.opacity_threshold.into()),
             num(m.roughness.into()),
-            num(m.metallic.into()),
-            num(m.emissive[0].into()),
-            num(m.emissive[1].into()),
-            num(m.emissive[2].into())
+            num(m.metallic.into())
         );
-        texture(&mut o, "colorMap", m.color_map.as_ref());
-        texture(&mut o, "normalMap", m.normal_map.as_ref());
-        o.push('}');
+        if let Some(name) = &m.color_primvar {
+            o.push_str(",\"colorPrimvar\":");
+            string(&mut o, name);
+        }
+        o.push_str(",\"maps\":{");
+        for (j, (input, t)) in m.maps.iter().enumerate() {
+            if j > 0 {
+                o.push(',');
+            }
+            string(&mut o, input);
+            o.push(':');
+            texture(&mut o, t);
+        }
+        o.push_str("}}");
     }
     o.push_str("]}");
     o
 }
 
-fn texture(o: &mut String, key: &str, t: Option<&Texture>) {
-    let Some(t) = t else {
-        return;
-    };
-    let _ = write!(o, ",\"{key}\":{{\"path\":");
+fn texture(o: &mut String, t: &Texture) {
+    o.push_str("{\"path\":");
     string(o, &t.path);
-    for (key, wrap) in ["wrapS", "wrapT"].into_iter().zip(&t.wrap) {
-        if let Some(wrap) = wrap {
+    o.push_str(",\"channel\":");
+    string(o, &t.channel);
+    o.push_str(",\"scale\":");
+    floats(o, &t.scale);
+    o.push_str(",\"bias\":");
+    floats(o, &t.bias);
+    if let Some(fallback) = &t.fallback {
+        o.push_str(",\"fallback\":");
+        floats(o, fallback);
+    }
+    let tokens = [("colorSpace", &t.color_space), ("uvSet", &t.uv_set), ("wrapS", &t.wrap[0]), ("wrapT", &t.wrap[1])];
+    for (key, value) in tokens {
+        if let Some(value) = value {
             let _ = write!(o, ",\"{key}\":");
-            string(o, wrap);
+            string(o, value);
         }
     }
-    if let Some(uv) = &t.uv_set {
-        o.push_str(",\"uvSet\":");
-        string(o, uv);
+    o.push_str(",\"uvScale\":");
+    floats(o, &t.uv_scale);
+    let _ = write!(o, ",\"uvRotation\":{},\"uvTranslation\":", num(t.uv_rotation.into()));
+    floats(o, &t.uv_translation);
+    o.push('}');
+}
+
+fn floats(o: &mut String, values: &[f32]) {
+    o.push('[');
+    for (i, v) in values.iter().enumerate() {
+        if i > 0 {
+            o.push(',');
+        }
+        o.push_str(&num((*v).into()));
     }
-    let _ = write!(
-        o,
-        ",\"scale\":[{},{}],\"rotation\":{},\"translation\":[{},{}]}}",
-        num(t.scale[0].into()),
-        num(t.scale[1].into()),
-        num(t.rotation.into()),
-        num(t.translation[0].into()),
-        num(t.translation[1].into())
-    );
+    o.push(']');
 }
 
 fn num(v: f64) -> String {

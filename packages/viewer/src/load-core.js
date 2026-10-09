@@ -94,7 +94,8 @@ export function takeGeometries(scene, meta) {
   return meta.geometries.map((g, i) => ({
     positions: scene.positions(i),
     normals: scene.normals(i),
-    uvs: g.hasUvs ? scene.uvs(i) : null,
+    uvs: g.uvSets.map((_, k) => scene.uvs(i, k)),
+    colors: g.hasColors ? scene.colors(i) : null,
     indices: g.vertices < 65536 ? scene.indices16(i) : scene.indices(i),
   }));
 }
@@ -102,7 +103,7 @@ export function takeGeometries(scene, meta) {
 /** Textures stored inside a USDZ package, by path: they cannot be fetched by URL. */
 export function takePackagedTextures(scene, meta) {
   const out = new Map();
-  for (const path of texturePaths(meta, { normalMaps: true })) {
+  for (const path of texturePaths(meta)) {
     if (!path.includes('[')) continue;
     const bytes = scene.packagedFile(path);
     if (bytes) out.set(path, bytes);
@@ -110,10 +111,9 @@ export function takePackagedTextures(scene, meta) {
   return out;
 }
 
-/** Distinct texture files the materials sample, base color first. */
-export function texturePaths(meta, { normalMaps = false } = {}) {
-  const paths = [];
-  for (const m of meta.materials) if (m.colorMap && !paths.includes(m.colorMap.path)) paths.push(m.colorMap.path);
-  if (normalMaps) for (const m of meta.materials) if (m.normalMap && !paths.includes(m.normalMap.path)) paths.push(m.normalMap.path);
-  return paths;
+/** Distinct texture files the materials sample: base colors first, normal maps last. */
+export function texturePaths(meta, { normalMaps = true } = {}) {
+  const tiers = [['diffuseColor'], ['opacity', 'emissiveColor', 'roughness', 'metallic', 'occlusion'], normalMaps ? ['normal'] : []];
+  const paths = tiers.flatMap((inputs) => meta.materials.flatMap((m) => inputs.filter((i) => m.maps[i]).map((i) => m.maps[i].path)));
+  return [...new Set(paths)];
 }

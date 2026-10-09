@@ -72,7 +72,7 @@ impl UsdLoader {
         // before the package bytes are dropped.
         let mut packaged = std::collections::HashMap::new();
         for m in &scene.materials {
-            for t in [&m.color_map, &m.normal_map].into_iter().flatten() {
+            for (_, t) in &m.maps {
                 if let Some(bytes) = self.inner.packaged_file(&t.path) {
                     packaged.insert(t.path.clone(), bytes);
                 }
@@ -111,8 +111,13 @@ impl UsdScene {
         std::mem::take(&mut self.scene.geometries[geometry].normals)
     }
 
-    pub fn uvs(&mut self, geometry: usize) -> Vec<f32> {
-        std::mem::take(&mut self.scene.geometries[geometry].uvs)
+    /// UV set `set` (in the order of the geometry's `uvSets`).
+    pub fn uvs(&mut self, geometry: usize, set: usize) -> Vec<f32> {
+        std::mem::take(&mut self.scene.geometries[geometry].uvs[set].1)
+    }
+
+    pub fn colors(&mut self, geometry: usize) -> Vec<f32> {
+        std::mem::take(&mut self.scene.geometries[geometry].colors)
     }
 
     pub fn indices(&mut self, geometry: usize) -> Vec<u32> {
