@@ -30,6 +30,7 @@ function compileWasm(url = WASM_URL) {
  * @param {() => void} [options.onTexture]  called after each texture is applied
  * @param {string | URL} [options.wasmUrl]  override where the WASM binary lives
  * @returns {Promise<{ root: THREE.Group, info: object, textures: Promise<void>, dispose: () => void }>}
+ *   `dispose` also stops any textures still streaming and settles `textures`.
  */
 export async function loadUsd(url, options = {}) {
   const { maxTextureSize = 1024, normalMaps = false, prefetchVariants = false, maxConcurrentFetches, maxLayerBytes, onTexture = () => {} } = options;
@@ -41,8 +42,18 @@ export async function loadUsd(url, options = {}) {
   const scenePromise = new Promise((resolve, reject) => ((resolveScene = resolve), (rejectScene = reject)));
   const textures = new Promise((resolve) => (resolveTextures = resolve));
   let built = null;
+  let disposed = false;
+  const finish = () => {
+    worker.terminate();
+    resolveTextures();
+  };
 
   worker.onmessage = ({ data }) => {
+    // Messages already queued when the model was disposed.
+    if (disposed) {
+      data.bitmap?.close();
+      return;
+    }
     switch (data.type) {
       case 'scene':
         built = buildScene(data.meta, data.geometries, normalMaps);
@@ -58,25 +69,27 @@ export async function loadUsd(url, options = {}) {
         }
         break;
       case 'done':
-        worker.terminate();
-        resolveTextures();
+        finish();
         break;
       case 'error':
-        worker.terminate();
         rejectScene(new Error(data.message));
-        resolveTextures();
+        finish();
         break;
     }
   };
   worker.onerror = (event) => {
-    worker.terminate();
     rejectScene(new Error(event.message || 'worker failed to start'));
-    resolveTextures();
+    finish();
   };
   worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, normalMaps, prefetchVariants, maxConcurrentFetches, maxLayerBytes });
 
   const scene = await scenePromise;
-  return { root: scene.root, info: scene.info, textures, dispose: scene.dispose };
+  const dispose = () => {
+    disposed = true;
+    finish();
+    scene.dispose();
+  };
+  return { root: scene.root, info: scene.info, textures, dispose };
 }
 
 function buildScene(meta, arrays, normalMaps) {

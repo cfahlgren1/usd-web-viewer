@@ -64,6 +64,8 @@ async function load(matrix = IDENTITY) {
   return { ...result, worker, textureCount: () => textures };
 }
 
+const fakeBitmap = () => ({ width: 4, height: 4, closed: false, close() { this.closed = true; } });
+
 test('a rotated child under a non-uniformly scaled parent keeps its shear', async () => {
   // USD row vectors: rotate 45 degrees about Z, then scale x by 2.
   const c = Math.SQRT1_2;
@@ -75,4 +77,22 @@ test('a rotated child under a non-uniformly scaled parent keeps its shear', asyn
   root.updateMatrixWorld(true);
   const mesh = root.children[0];
   mesh.matrixWorld.elements.forEach((v, i) => assert.ok(Math.abs(v - matrix[i]) < 1e-9, `element ${i}: ${v} vs ${matrix[i]}`));
+});
+
+test('dispose stops the worker and settles the textures promise', async () => {
+  const { worker, textures, dispose } = await load();
+  dispose();
+  assert.equal(worker.terminated, true);
+  const settled = await Promise.race([textures.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 50))]);
+  assert.equal(settled, true);
+});
+
+test('a texture arriving after dispose is closed, not applied', async () => {
+  const { root, worker, dispose, textureCount } = await load();
+  dispose();
+  const bitmap = fakeBitmap();
+  worker.send({ type: 'texture', path: 'https://example.test/t.png', bitmap });
+  assert.equal(bitmap.closed, true);
+  assert.equal(root.children[0].material.map, null);
+  assert.equal(textureCount(), 0);
 });
