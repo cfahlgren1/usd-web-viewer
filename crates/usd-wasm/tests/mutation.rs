@@ -9,7 +9,7 @@ const MUTATIONS: usize = 300;
 
 #[test]
 fn damaged_binary_files_error_and_never_panic() {
-    let mut rng = Rng(0x5eed_0f_f11e5);
+    let mut rng = Rng(0x9e37_79b9_7f4a_7c15);
     for name in FIXTURES {
         let original = std::fs::read(format!("{}/../../fixtures/{name}", env!("CARGO_MANIFEST_DIR"))).expect("fixture");
         let root = format!("/h/{name}");
