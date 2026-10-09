@@ -12,6 +12,10 @@ pub fn scene_meta(scene: &Scene) -> String {
     o.push_str("\"upAxis\":");
     string(&mut o, &scene.up_axis);
     let _ = write!(o, ",\"metersPerUnit\":{}", num(scene.meters_per_unit));
+    if let Some([min, max]) = scene.bounds {
+        let [a, b, c, d, e, f] = [min[0], min[1], min[2], max[0], max[1], max[2]].map(num);
+        let _ = write!(o, ",\"bounds\":[{a},{b},{c},{d},{e},{f}]");
+    }
 
     o.push_str(",\"warnings\":[");
     for (i, w) in scene.warnings.iter().enumerate() {

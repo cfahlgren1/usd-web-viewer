@@ -24,6 +24,9 @@ pub struct Scene {
     /// Triangle data, shared by every instance that draws it (after [`Scene::read_all`]).
     pub geometries: Vec<Geometry>,
     pub instances: Vec<Instance>,
+    /// World bounding box of every instance from authored extents (min, then
+    /// max), known before any triangle is read; `None` when a mesh has none.
+    pub bounds: Option<[[f64; 3]; 2]>,
     pub materials: Vec<Material>,
     pub stats: Stats,
     /// What the viewer could not show faithfully, for the host to surface.
@@ -339,6 +342,9 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
     let mut state: HashMap<sdf::Path, Inherited> = HashMap::with_capacity(paths.len());
     let mut xforms = XformCache::new(None);
     let mut geometry_by_source: HashMap<String, u32> = HashMap::new();
+    // Each source's local extent, and the world box of the instances so far.
+    let mut extents: Vec<Option<[[f32; 3]; 2]>> = Vec::new();
+    let mut bounds = Some([[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]]);
     let mut materials = material::Cache::default();
     // Prim type -> (count, first path).
     let mut unsupported: HashMap<String, (usize, String)> = HashMap::new();
@@ -526,6 +532,7 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
             uv_sets.join(",")
         );
         let geometry = *geometry_by_source.entry(key).or_insert_with(|| {
+            extents.push(extent(&source, ty.as_str()));
             scene.sources.push(Source {
                 prim: source,
                 color_primvar,
@@ -561,6 +568,9 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
         };
         let double_sided = matches!(prim.attribute("doubleSided").get::<bool>(), Ok(Some(true)));
         for (path, matrix) in placed {
+            bounds = bounds
+                .zip(extents[geometry as usize])
+                .map(|(b, e)| grow(b, e, &matrix.0));
             scene.stats.meshes += 1;
             scene.instances.push(Instance {
                 path,
@@ -572,6 +582,7 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
             });
         }
     }
+    scene.bounds = bounds.filter(|_| !scene.instances.is_empty());
     if let Some(path) = over_limit.or(truncated) {
         scene.warnings.push(Warning {
             code: "instance-limit",
@@ -605,6 +616,31 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
         });
     }
     Ok(scene)
+}
+
+/// A gprim's local bounding box: its authored `extent`, or for an implicit
+/// shape the bounds of its mesh.
+fn extent(prim: &usd::Prim, ty: &str) -> Option<[[f32; 3]; 2]> {
+    if implicit::is_implicit(ty) {
+        return implicit::read(prim, ty).map(|g| g.bounds);
+    }
+    match vec3s(&prim.attribute("extent").get::<Value>().ok()??)?[..] {
+        [min, max] => Some([min, max]),
+        _ => None,
+    }
+}
+
+/// `bounds` grown to hold the corners of `extent` placed by `matrix`.
+fn grow(mut bounds: [[f64; 3]; 2], extent: [[f32; 3]; 2], matrix: &[f64; 16]) -> [[f64; 3]; 2] {
+    for corner in 0..8 {
+        let p = [0, 1, 2].map(|k| extent[(corner >> k) & 1][k] as f64);
+        for k in 0..3 {
+            let v = p[0] * matrix[k] + p[1] * matrix[4 + k] + p[2] * matrix[8 + k] + matrix[12 + k];
+            bounds[0][k] = bounds[0][k].min(v);
+            bounds[1][k] = bounds[1][k].max(v);
+        }
+    }
+    bounds
 }
 
 /// A `GeomSubset` of the `materialBind` family: the subsets materials bind

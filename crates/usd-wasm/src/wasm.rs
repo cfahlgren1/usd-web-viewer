@@ -75,7 +75,7 @@ impl UsdLoader {
         match self.inner.compose(root, max_instances).map_err(js_error)? {
             Composed::Missing(missing) => Ok(missing),
             Composed::Scene(scene) => {
-                self.scene = Some(scene);
+                self.scene = Some(*scene);
                 Ok(Vec::new())
             }
         }

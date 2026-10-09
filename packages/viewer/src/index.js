@@ -160,7 +160,7 @@ export async function loadUsd(url, options = {}) {
       case 'meta':
         if (signal?.aborted) return abort();
         built = buildScene(data.meta);
-        options[SHOW]?.(built.root);
+        options[SHOW]?.(built.root, data.meta);
         break;
       case 'geometry':
         built.addGeometry(data.index, data.meta, data.arrays);
@@ -532,13 +532,21 @@ export function createViewer(target, options = {}) {
       if (callerSignal?.aborted) controller.abort(callerSignal.reason);
       callerSignal?.addEventListener('abort', () => controller.abort(callerSignal.reason), { once: true, signal: controller.signal });
       // Meshes show as they stream in: the new stage replaces the old one as
-      // soon as its first mesh arrives, framed then and again when complete.
+      // soon as it is composed. It is framed then on its authored extents when
+      // every mesh has them, else once complete (and again if a mesh in those
+      // extents was left out): framing the meshes streamed so far would zoom
+      // in on the first and jump out again.
       let streaming = null;
-      const show = (root) => {
+      let planned = 0;
+      const show = (root, meta) => {
         if (controller.signal.aborted) return;
         clear();
         streaming = root;
         scene.add(root);
+        if (!meta.bounds) return;
+        root.updateMatrixWorld();
+        frameBox(camera, controls, new THREE.Box3().setFromArray(meta.bounds).applyMatrix4(root.matrixWorld));
+        planned = meta.instances.length;
       };
       // Aborted (superseded, cleared or disposed): what streamed in goes at once.
       const hide = () => {
@@ -547,11 +555,7 @@ export function createViewer(target, options = {}) {
       };
       controller.signal.addEventListener('abort', hide, { once: true });
       const onProgress = (progress) => {
-        if (progress.stage === 'geometry' && streaming) {
-          if (progress.loaded === 1) frame(camera, controls, streaming);
-          requestRender();
-        }
-        if (progress.stage === 'textures') requestRender();
+        if (progress.stage === 'geometry' || progress.stage === 'textures') requestRender();
         loadOptions.onProgress?.(progress);
       };
       try {
@@ -563,7 +567,7 @@ export function createViewer(target, options = {}) {
         }
         current = result;
         if (!streaming) scene.add(result.root);
-        frame(camera, controls, result.root);
+        if (result.info.meshes < planned || !planned) frame(camera, controls, result.root);
         requestRender();
         result.complete.then(requestRender, () => {});
         return result;
@@ -636,7 +640,10 @@ export function createViewer(target, options = {}) {
 
 /** Points the camera at the visible bounds of `object`. */
 export function frame(camera, controls, object) {
-  const box = new THREE.Box3().setFromObject(object);
+  frameBox(camera, controls, new THREE.Box3().setFromObject(object));
+}
+
+function frameBox(camera, controls, box) {
   if (box.isEmpty()) return;
   const center = box.getCenter(new THREE.Vector3());
   const radius = box.getSize(new THREE.Vector3()).length() / 2 || 1;
