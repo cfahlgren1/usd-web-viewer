@@ -3,14 +3,14 @@
 // terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { lastPanic, UsdLoader } from '../wasm/usd_wasm.js';
 import { hubPackageLayers } from './hub-prefetch.js';
-import { canonicalUrl, composeStage, fetchLimited, fetchWithPolicy, imageInfo, limiter, loadFailure, readGeometries, requestPolicy, takePackagedTextures, textureJobs } from './load-core.js';
+import { DEFAULTS, canonicalUrl, composeStage, fetchLimited, fetchWithPolicy, imageInfo, limiter, loadFailure, readGeometries, requestPolicy, takePackagedTextures, textureJobs } from './load-core.js';
 
 // Textures in flight at once (fetch and decode): decoding a large image
 // briefly holds it at full size, so wide parallelism spikes memory.
 const TEXTURE_CONCURRENCY = 4;
 // Longest side of an image read at all: larger ones are refused from their
 // header, before decoding (WebGL's own limit is commonly 16384 too).
-const MAX_IMAGE_SIZE = 16384;
+const MAX_IMAGE_SIZE = DEFAULTS.maxImageSize;
 
 // Requests answered by the page, for a caller-supplied `fetch`. The page sends
 // the body one chunk per pull, so byte budgets apply as it arrives and
@@ -59,7 +59,7 @@ self.onmessage = async ({ data }) => {
     return;
   }
   if (data.type === 'chunk') return receiveChunk(data);
-  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes, maxTextureBytes = 512 * 2 ** 20, maxLayers, maxInstances, maxTriangles, allowedOrigins, headers, proxyFetch } = data;
+  const { url, wasmModule, maxTextureSize = DEFAULTS.maxTextureSize, textures = DEFAULTS.textures, maxConcurrentFetches = DEFAULTS.maxConcurrentFetches, maxLayerBytes, maxTextureBytes = DEFAULTS.maxTextureBytes, maxLayers, maxInstances, maxTriangles, allowedOrigins, headers, proxyFetch } = data;
   // Every request (layer, texture, Hub listing) goes through here, and
   // through the request policy first. The caller's headers go only where
   // cookies may, and never through a redirect off the Hub; a custom fetch on

@@ -13,6 +13,7 @@
 // Safe to import where there is no DOM (server rendering): the element is
 // only defined in a browser.
 import { createViewer, UsdLoadError } from './index.js';
+import { DEFAULTS } from './load-core.js';
 
 const Base = globalThis.HTMLElement ?? class {};
 const ATTRIBUTES = {
@@ -27,8 +28,8 @@ const ATTRIBUTES = {
 };
 // Property values of attributes that are missing or not one of their values.
 const READ = {
-  textures: (value) => (['none', 'preview', 'full'].includes(value) ? value : 'preview'),
-  maxTextureSize: (value) => Number(value) || 1024,
+  textures: (value) => (['none', 'preview', 'full'].includes(value) ? value : DEFAULTS.textures),
+  maxTextureSize: (value) => Number(value) || DEFAULTS.maxTextureSize,
   loading: (value) => (value === 'eager' ? 'eager' : 'lazy'),
   reveal: (value) => (value === 'interaction' ? 'interaction' : 'auto'),
 };

@@ -6,6 +6,19 @@
 // relative references do not inherit it.
 import { UsdLoadError } from './errors.js';
 
+/** The load options' defaults, and the largest image side read at all. SECURITY.md documents the limits. */
+export const DEFAULTS = {
+  textures: 'preview',
+  maxTextureSize: 1024,
+  maxConcurrentFetches: 16,
+  maxLayerBytes: 768 * 2 ** 20,
+  maxLayers: 1024,
+  maxInstances: 100000,
+  maxTriangles: 20e6,
+  maxTextureBytes: 512 * 2 ** 20,
+  maxImageSize: 16384,
+};
+
 /**
  * Loads and composes the stage at `rootUrl`.
  *
@@ -32,10 +45,10 @@ export async function composeStage({
   UsdLoader,
   fetchBytes,
   rootUrl,
-  maxConcurrentFetches = 16,
-  maxLayerBytes = 768 * 2 ** 20,
-  maxLayers = 1024,
-  maxInstances = 100000,
+  maxConcurrentFetches = DEFAULTS.maxConcurrentFetches,
+  maxLayerBytes = DEFAULTS.maxLayerBytes,
+  maxLayers = DEFAULTS.maxLayers,
+  maxInstances = DEFAULTS.maxInstances,
   allowedOrigins,
   preload,
   onProgress = () => {},
@@ -492,7 +505,7 @@ export async function fetchWithPolicy(fetchFn, url, policy, headers, init = {}) 
  * Releases the stage afterwards. Returns warnings: `triangle-limit` for
  * meshes left out, `nothing-drawable` when no mesh had anything to draw.
  */
-export function readGeometries(scene, meta, onGeometry, { maxTriangles = 20e6 } = {}) {
+export function readGeometries(scene, meta, onGeometry, { maxTriangles = DEFAULTS.maxTriangles } = {}) {
   const instances = new Array(meta.geometryCount).fill(0);
   for (const { geometry } of meta.instances) instances[geometry]++;
   let drawn = 0;
