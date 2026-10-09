@@ -32,8 +32,15 @@ self.onmessage = async ({ data }) => {
   }
   const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', prefetchVariants = false, maxConcurrentFetches = 16, maxLayerBytes = 2 ** 30, headers, proxyFetch } = data;
   // Every request, layer or texture, goes through here.
-  const fetchOptions = { headers, fetchFn: proxyFetch ? proxiedFetch : fetch };
+  const fetchFn = proxyFetch ? proxiedFetch : fetch;
+  const fetchOptions = { headers, fetchFn };
   const fetchBytes = (target, maxBytes) => fetchLimited(target, maxBytes, fetchOptions);
+  // Images stay a Blob (the browser may keep it off the JS heap) until decoded.
+  const fetchBlob = async (target) => {
+    const response = await fetchFn(target, { headers });
+    if (!response.ok) throw new Error(`HTTP ${response.status} for ${target}`);
+    return response.blob();
+  };
   const progress = (p) => self.postMessage({ type: 'progress', progress: p });
 
   try {
@@ -71,10 +78,9 @@ self.onmessage = async ({ data }) => {
       jobs.map(({ path, size }) =>
         throttle(async () => {
           try {
-            const body = packaged.get(path) ?? (await fetchBytes(path, maxLayerBytes));
-            if (!body) throw new Error(`not found: ${path}`);
-            bytes += body.byteLength;
-            const bitmap = await decodeTexture(new Blob([body]), size);
+            const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await fetchBlob(path);
+            bytes += blob.size;
+            const bitmap = await decodeTexture(blob, size);
             self.postMessage({ type: 'texture', path, bitmap }, [bitmap]);
           } catch (error) {
             self.postMessage({ type: 'texture', path, error: String(error?.message || error) });
