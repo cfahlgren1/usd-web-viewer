@@ -4,8 +4,16 @@ use wasm_bindgen::prelude::*;
 
 use crate::{Composed, Loader, Scene, resolver};
 
-fn js_error(e: impl std::fmt::Display) -> JsError {
-    JsError::new(&e.to_string())
+/// The error with its causes: "failed to decode field ..." alone does not say
+/// that reading it ran out of memory.
+fn js_error(e: impl std::error::Error) -> JsError {
+    let mut message = e.to_string();
+    let mut source = e.source();
+    while let Some(cause) = source {
+        message = format!("{message}: {cause}");
+        source = cause.source();
+    }
+    JsError::new(&message)
 }
 
 #[wasm_bindgen]

@@ -31,7 +31,8 @@ pub struct Scene {
 
 /// Something the viewer could not show faithfully.
 pub struct Warning {
-    /// `prim-unsupported`, `material-fallback` or `composition`.
+    /// `prim-unsupported`, `material-fallback` or `composition` (the page adds
+    /// layer, texture and `nothing-drawable` warnings).
     pub code: &'static str,
     pub message: String,
     /// An example prim or material path, when there is one.
@@ -223,15 +224,14 @@ pub fn plan(stage: &Stage) -> openusd::Result<Scene> {
         }
         state.insert(path.clone(), own);
 
-        match prim.type_name()?.as_deref() {
-            Some("Mesh") => {}
-            Some(ty @ ("Points" | "BasisCurves" | "NurbsCurves" | "NurbsPatch" | "Cube" | "Sphere" | "Cylinder" | "Cone" | "Capsule" | "Plane" | "Volume")) => {
-                if !own.invisible && !own.hidden_purpose {
-                    unsupported.entry(ty.to_owned()).or_insert_with(|| (0, path.as_str().to_owned())).0 += 1;
-                }
-                continue;
+        let Some(ty) = prim.type_name()? else { continue };
+        if ty.as_str() != "Mesh" {
+            // Any other geometric prim (curves, points, implicit shapes,
+            // volumes, Gaussian splats, ...) is left out, but not silently.
+            if !own.invisible && !own.hidden_purpose && is_gprim(&prim, ty.as_str())? {
+                unsupported.entry(ty.as_str().to_owned()).or_insert_with(|| (0, path.as_str().to_owned())).0 += 1;
             }
-            _ => continue,
+            continue;
         }
         if own.invisible {
             scene.stats.skipped_invisible += 1;
@@ -326,6 +326,12 @@ pub fn plan(stage: &Stage) -> openusd::Result<Scene> {
         });
     }
     Ok(scene)
+}
+
+/// Whether a prim is geometry. The UsdVol schemas are not registered (to keep
+/// the module small), so their gprims are known by name.
+fn is_gprim(prim: &usd::Prim, ty: &str) -> openusd::Result<bool> {
+    Ok(ty == "Volume" || ty.starts_with("ParticleField") || prim.is_a("Gprim")?)
 }
 
 /// Records where a PointInstancer places each of its prototypes:

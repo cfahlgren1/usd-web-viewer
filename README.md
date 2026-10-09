@@ -72,7 +72,7 @@ scene.add(root);   // THREE.Group, Y-up, metres
 | `maxConcurrentFetches` | `16` | Requests in flight at once, a positive integer (textures: at most 4 fetched and decoded at once) |
 | `maxLayerBytes` | 1 GiB | Total size of USD layers to fetch before failing with a `fetch` error |
 
-Errors are `UsdLoadError`s with a `code` (`aborted`, `fetch`, `compose`, `worker`, `webgl`), the failing `url` and, for a root layer that could not be fetched, the HTTP `status` (401 / 403 for a gated or private repo, 404 when missing). A missing sublayer, reference or payload is not an error: it is left out with a warning. `complete` rejects too if the load is aborted or disposed, or the worker dies after the geometry arrived.
+Errors are `UsdLoadError`s with a `code` (`aborted`, `fetch`, `compose`, `worker`, `webgl`), the failing `url` and, for a root layer that could not be fetched, the HTTP `status` (401 / 403 for a gated or private repo, 404 when missing). A scene that runs out of WebAssembly memory (4 GiB at most) fails with a `compose` error whose message starts with `scene too large to load`. A missing sublayer, reference or payload is not an error: it is left out with a warning. `complete` rejects too if the load is aborted or disposed, or the worker dies after the geometry arrived.
 
 The compiled WASM module is shared by every load in the page. Serve `usd_wasm_bg.wasm` with `Content-Type: application/wasm` (for streaming compilation) and, when the file name carries a content hash (bundlers add one), `Cache-Control: public, max-age=31536000, immutable`; otherwise `Cache-Control: no-cache` with an `ETag`, so repeat visits revalidate instead of downloading it again. Compiling takes about 8 ms in Chromium (lazy tier-up), so fetching the root layer in parallel with it was measured and not worth the extra code.
 
@@ -80,7 +80,7 @@ Meshes stream out of the worker one at a time, so only one mesh's arrays are in 
 
 Geometry is kept on the GPU only: once three.js has uploaded a mesh, its CPU-side arrays are released (bounds are precomputed, so framing and culling never need them). The trade-off: a lost WebGL context cannot be restored without reloading, and CPU raycasting against the meshes is not available.
 
-`info.warnings` lists `{ code, message, path? }` for what could not be shown faithfully: `layer-missing`, `layer-unreadable`, `prim-unsupported` (e.g. `BasisCurves`, implicit `Sphere` / `Cube`), `material-fallback` (MDL other than OmniPBR/glTF, MaterialX), `texture-failed` and `composition`. It grows until `complete` settles. TypeScript declarations ship with the package.
+`info.warnings` lists `{ code, message, path? }` for what could not be shown faithfully: `layer-missing`, `layer-unreadable`, `prim-unsupported` (any visible geometry other than meshes, e.g. `BasisCurves`, `Points`, `Volume`, Gaussian splats), `nothing-drawable` (no visible mesh had anything to draw), `material-fallback` (MDL other than OmniPBR/glTF, MaterialX), `texture-failed` and `composition`. It grows until `complete` settles. TypeScript declarations ship with the package.
 
 ### On the Hub
 

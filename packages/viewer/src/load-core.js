@@ -136,6 +136,22 @@ export async function composeStage({
   return { scene, meta, stats };
 }
 
+/**
+ * What the page is told about a failed load. Fetch and resource-limit errors
+ * keep their code, url and status; anything the WASM side throws is a
+ * composition failure. Running out of WASM memory (4 GiB at most) reads as a
+ * scene too large to load: an allocation that fails while reading a layer
+ * reports "out of memory", one that aborts traps as `unreachable`.
+ */
+export function loadFailure(error, wasmMemoryBytes) {
+  const { code = 'compose', url, status } = error ?? {};
+  const message = String(error?.message || error);
+  const outOfMemory = /out of memory|memory allocation/i.test(message) || (error instanceof WebAssembly.RuntimeError && wasmMemoryBytes > 3 * 2 ** 30);
+  if (code !== 'compose' || !outOfMemory) return { code, message, url, status };
+  const gib = (wasmMemoryBytes / 2 ** 30).toFixed(1);
+  return { code, message: `scene too large to load: ran out of memory (${gib} GiB of WebAssembly memory in use): ${message}`, url, status };
+}
+
 function resourceLimit(detail) {
   return new UsdLoadError('fetch', `resource limit exceeded: ${detail}`);
 }
@@ -232,15 +248,18 @@ export function sameOrigin(url, root) {
  * Reads each geometry out of WASM in turn, so only one mesh's arrays are in
  * WASM memory at a time, and calls `onGeometry(index, meta, arrays)` with
  * JS-owned typed arrays (`meta` and `arrays` are null for a mesh with nothing
- * drawable). Releases the stage afterwards.
+ * drawable). Releases the stage afterwards. Returns warnings: a
+ * `nothing-drawable` one when no mesh had anything to draw.
  */
 export function readGeometries(scene, meta, onGeometry) {
+  let drawn = 0;
   for (let i = 0; i < meta.geometryCount; i++) {
     const json = scene.read(i);
     if (!json) {
       onGeometry(i, null, null);
       continue;
     }
+    drawn++;
     const g = JSON.parse(json);
     onGeometry(i, g, {
       positions: scene.positions(),
@@ -251,6 +270,8 @@ export function readGeometries(scene, meta, onGeometry) {
     });
   }
   scene.finish();
+  if (drawn) return [];
+  return [{ code: 'nothing-drawable', message: 'nothing to draw: the stage has no visible meshes with geometry' }];
 }
 
 /**

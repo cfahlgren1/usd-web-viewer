@@ -185,3 +185,40 @@ fn point_instancer_prototypes_are_never_drawn_by_themselves() {
     assert!(drawn(include_str!("../../../conformance/fixtures/instancer_empty.usda")).is_empty());
     assert_eq!(drawn(include_str!("../../../conformance/fixtures/instancer_unused.usda")), ["/I/A[0]"]);
 }
+
+fn warnings(usda: &str) -> Vec<(String, String)> {
+    let s = scene(usda);
+    s.warnings
+        .into_iter()
+        .map(|w| (w.code.to_owned(), w.message))
+        .collect()
+}
+
+#[test]
+fn every_visible_gprim_type_not_drawn_is_reported() {
+    let w = warnings(
+        r#"#usda 1.0
+def ParticleField3DGaussianSplat "Splat" {}
+def Volume "NuRec" {}
+def TetMesh "Tet" {}
+def BasisCurves "Hair" {}
+def Points "Hidden" { token visibility = "invisible" }
+def Points "Guide" { uniform token purpose = "guide" }
+def Xform "NotAGprim" {}
+"#,
+    );
+    let unsupported: Vec<&str> = w
+        .iter()
+        .filter(|(code, _)| code == "prim-unsupported")
+        .map(|(_, m)| m.as_str())
+        .collect();
+    assert_eq!(
+        unsupported,
+        [
+            "1 BasisCurves prim(s) not drawn (unsupported type)",
+            "1 ParticleField3DGaussianSplat prim(s) not drawn (unsupported type)",
+            "1 TetMesh prim(s) not drawn (unsupported type)",
+            "1 Volume prim(s) not drawn (unsupported type)",
+        ]
+    );
+}

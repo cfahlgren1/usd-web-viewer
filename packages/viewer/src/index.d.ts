@@ -33,7 +33,7 @@ export interface LoadOptions {
   maxLayerBytes?: number | undefined;
 }
 
-export type WarningCode = 'layer-missing' | 'layer-unreadable' | 'prim-unsupported' | 'material-fallback' | 'texture-failed' | 'composition';
+export type WarningCode = 'layer-missing' | 'layer-unreadable' | 'prim-unsupported' | 'nothing-drawable' | 'material-fallback' | 'texture-failed' | 'composition';
 
 export interface LoadWarning {
   readonly code: WarningCode;

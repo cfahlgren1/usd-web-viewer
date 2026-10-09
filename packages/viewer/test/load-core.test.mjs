@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { initSync, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, readGeometries, takePackagedTextures } from '../src/load-core.js';
+import { composeStage, fetchLimited, loadFailure, readGeometries, takePackagedTextures } from '../src/load-core.js';
+import { UsdLoadError } from '../src/errors.js';
 
 initSync({ module: readFileSync(new URL('../wasm/usd_wasm_bg.wasm', import.meta.url)) });
 
@@ -268,4 +269,29 @@ test('layers that reference each other compose instead of waiting on each other 
   scene.free();
   assert.equal(stats.layers, 3);
   assert.deepEqual(s.requested.sort(), ['https://h/a.usda', 'https://h/b.usda', 'https://h/root.usda']);
+});
+
+test('a stage with nothing to draw says so, after naming what it could not draw', async () => {
+  const read = async (usda) => {
+    const s = server({ 'https://h/root.usda': `#usda 1.0\n${usda}` });
+    const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+    const warnings = readGeometries(scene, meta, () => {});
+    scene.free();
+    return [...meta.warnings, ...warnings].map((w) => w.code);
+  };
+  assert.deepEqual(await read('def ParticleField3DGaussianSplat "Splat" {}'), ['prim-unsupported', 'nothing-drawable']);
+  assert.deepEqual(await read('def Mesh "Empty" {}'), ['nothing-drawable']);
+  assert.deepEqual(await read(QUAD), []);
+});
+
+test('running out of WASM memory fails as a scene too large to load', () => {
+  const GiB = 2 ** 30;
+  const oom = new Error('failed to decode field "default" at /W/body.normals: failed to read vec: out of memory');
+  assert.match(loadFailure(oom, 1 * GiB).message, /^scene too large to load: ran out of memory.*body\.normals/);
+  assert.equal(loadFailure(oom, 1 * GiB).code, 'compose');
+  // An allocation that aborts traps; near the 4 GiB ceiling that is memory, not a bug.
+  assert.match(loadFailure(new WebAssembly.RuntimeError('unreachable'), 3.9 * GiB).message, /^scene too large to load/);
+  assert.deepEqual(loadFailure(new WebAssembly.RuntimeError('unreachable'), 0.1 * GiB), { code: 'compose', message: 'unreachable', url: undefined, status: undefined });
+  const fetchError = loadFailure(new UsdLoadError('fetch', 'HTTP 404 for https://h/a.usd', { url: 'https://h/a.usd', status: 404 }), 4 * GiB);
+  assert.deepEqual(fetchError, { code: 'fetch', message: 'HTTP 404 for https://h/a.usd', url: 'https://h/a.usd', status: 404 });
 });
