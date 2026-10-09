@@ -69,8 +69,9 @@ fn subdivision_mesh_without_normals_stays_smooth() {
     assert_eq!(vertex_normals(&s).len(), 6, "points are shared");
 }
 
+/// The default UV set.
 fn uvs(s: &Scene) -> Vec<[f32; 2]> {
-    s.geometries[0].uvs.chunks(2).map(|uv| [uv[0], uv[1]]).collect()
+    s.geometries[0].uvs[0].1.chunks(2).map(|uv| [uv[0], uv[1]]).collect()
 }
 
 #[test]

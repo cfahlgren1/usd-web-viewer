@@ -28,6 +28,8 @@ globalThis.fetch = async () => new Response(new Uint8Array());
 WebAssembly.compileStreaming = async () => ({});
 const { loadUsd } = await import('../src/index.js');
 
+const TEXTURE = { path: 'https://example.test/t.png', channel: 'rgb', scale: [1, 1, 1, 1], bias: [0, 0, 0, 0], uvScale: [1, 1], uvRotation: 0, uvTranslation: [0, 0] };
+
 /** One triangle drawn once with `matrix`, using a material with a color map. */
 function sceneMessage(matrix) {
   return {
@@ -37,15 +39,16 @@ function sceneMessage(matrix) {
       upAxis: 'Y',
       metersPerUnit: 1,
       stats: { triangles: 1 },
-      geometries: [{ groups: [[0, 3]], bounds: [0, 0, 0, 1, 1, 0] }],
+      geometries: [{ groups: [[0, 3]], bounds: [0, 0, 0, 1, 1, 0], uvSets: [], hasColors: false }],
       instances: [{ path: '/M', geometry: 0, materials: [0], doubleSided: false, matrix }],
-      materials: [{ path: '/Mat', kind: 'preview', color: [1, 1, 1], emissive: [0, 0, 0], roughness: 0.5, metallic: 0, opacity: 1, colorMap: { path: 'https://example.test/t.png' } }],
+      materials: [{ path: '/Mat', kind: 'preview', color: [1, 1, 1], emissive: [0, 0, 0], roughness: 0.5, metallic: 0, opacity: 1, opacityThreshold: 0, maps: { diffuseColor: TEXTURE } }],
     },
     geometries: [
       {
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
-        uvs: null,
+        uvs: [],
+        colors: null,
         indices: new Uint16Array([0, 1, 2]),
       },
     ],

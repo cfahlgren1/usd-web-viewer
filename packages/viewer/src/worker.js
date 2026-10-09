@@ -2,10 +2,14 @@
 // base-color textures as downscaled ImageBitmaps. One worker per load: the
 // page terminates it when done, which releases all WASM memory at once.
 import init, { UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, limiter, takeGeometries, takePackagedTextures, texturePaths } from './load-core.js';
+import { composeStage, fetchLimited, limiter, takeGeometries, takePackagedTextures, textureJobs } from './load-core.js';
+
+// Textures in flight at once (fetch and decode): decoding a large image
+// briefly holds it at full size, so wide parallelism spikes memory.
+const TEXTURE_CONCURRENCY = 4;
 
 self.onmessage = async (event) => {
-  const { url, wasmModule, maxTextureSize = 1024, normalMaps = false, prefetchVariants = false, maxConcurrentFetches = 16, maxLayerBytes } = event.data;
+  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', prefetchVariants = false, maxConcurrentFetches = 16, maxLayerBytes } = event.data;
   try {
     const t0 = performance.now();
     const wasm = await init({ module_or_path: wasmModule });
@@ -27,20 +31,23 @@ self.onmessage = async (event) => {
     stats.wasmMemoryBytes = wasm.memory.buffer.byteLength;
 
     const transfer = [];
-    for (const g of geometries) for (const a of [g.positions, g.normals, g.uvs, g.indices]) if (a) transfer.push(a.buffer);
+    for (const g of geometries) for (const a of [g.positions, g.normals, g.colors, g.indices, ...g.uvs]) if (a) transfer.push(a.buffer);
     self.postMessage({ type: 'scene', meta, geometries, stats }, transfer);
 
-    const throttle = limiter(maxConcurrentFetches);
+    // The limiter runs jobs in order, so base colors come first.
+    const throttle = limiter(Math.min(maxConcurrentFetches, TEXTURE_CONCURRENCY));
     await Promise.all(
-      texturePaths(meta, { normalMaps }).map(async (path) => {
-        try {
-          const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await throttle(() => fetchBlob(path));
-          const bitmap = await decodeTexture(blob, maxTextureSize);
-          self.postMessage({ type: 'texture', path, bitmap }, [bitmap]);
-        } catch (error) {
-          self.postMessage({ type: 'texture', path, error: String(error?.message || error) });
-        }
-      }),
+      textureJobs(meta, { textures, maxSize: maxTextureSize }).map(({ path, size }) =>
+        throttle(async () => {
+          try {
+            const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await fetchBlob(path);
+            const bitmap = await decodeTexture(blob, size);
+            self.postMessage({ type: 'texture', path, bitmap }, [bitmap]);
+          } catch (error) {
+            self.postMessage({ type: 'texture', path, error: String(error?.message || error) });
+          }
+        }),
+      ),
     );
     self.postMessage({ type: 'done' });
   } catch (error) {

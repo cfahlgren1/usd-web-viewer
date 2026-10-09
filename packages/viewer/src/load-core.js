@@ -161,7 +161,8 @@ export function takeGeometries(scene, meta) {
   return meta.geometries.map((g, i) => ({
     positions: scene.positions(i),
     normals: scene.normals(i),
-    uvs: g.hasUvs ? scene.uvs(i) : null,
+    uvs: g.uvSets.map((_, k) => scene.uvs(i, k)),
+    colors: g.hasColors ? scene.colors(i) : null,
     indices: g.vertices < 65536 ? scene.indices16(i) : scene.indices(i),
   }));
 }
@@ -169,7 +170,7 @@ export function takeGeometries(scene, meta) {
 /** Textures stored inside a USDZ package, by path: they cannot be fetched by URL. */
 export function takePackagedTextures(scene, meta) {
   const out = new Map();
-  for (const path of texturePaths(meta, { normalMaps: true })) {
+  for (const { path } of textureJobs(meta, { textures: 'full' })) {
     if (!path.includes('[')) continue;
     const bytes = scene.packagedFile(path);
     if (bytes) out.set(path, bytes);
@@ -177,10 +178,31 @@ export function takePackagedTextures(scene, meta) {
   return out;
 }
 
-/** Distinct texture files the materials sample, base color first. */
-export function texturePaths(meta, { normalMaps = false } = {}) {
-  const paths = [];
-  for (const m of meta.materials) if (m.colorMap && !paths.includes(m.colorMap.path)) paths.push(m.colorMap.path);
-  if (normalMaps) for (const m of meta.materials) if (m.normalMap && !paths.includes(m.normalMap.path)) paths.push(m.normalMap.path);
-  return paths;
+/** Long-side cap for data maps (roughness, metallic, occlusion, ...) in `preview` mode. */
+const PREVIEW_DATA_SIZE = 512;
+
+/**
+ * The texture files to load and the size to decode each to, base colors first.
+ * `preview`: base color up to `maxSize`, other maps up to 512 px, no normal
+ * maps. `full`: every map, including normals, up to `maxSize`.
+ */
+export function textureJobs(meta, { textures = 'preview', maxSize = 1024 } = {}) {
+  const full = textures === 'full';
+  const dataSize = full ? maxSize : Math.min(maxSize, PREVIEW_DATA_SIZE);
+  const tiers = [
+    [['diffuseColor'], maxSize],
+    [['opacity', 'emissiveColor', 'roughness', 'metallic', 'occlusion'], dataSize],
+    [full ? ['normal'] : [], maxSize],
+  ];
+  const jobs = new Map();
+  for (const [inputs, size] of tiers) {
+    for (const m of meta.materials) {
+      for (const input of inputs) {
+        const path = m.maps[input]?.path;
+        // A file shared by several inputs is decoded once, at the largest size asked.
+        if (path) jobs.set(path, Math.max(jobs.get(path) ?? 0, size));
+      }
+    }
+  }
+  return [...jobs].map(([path, size]) => ({ path, size }));
 }

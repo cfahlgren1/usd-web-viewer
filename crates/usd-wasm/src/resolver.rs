@@ -360,9 +360,6 @@ mod tests {
         assert_eq!(anchor_path("/c/d.usd", Some("https://h/a/r.usd")).unwrap(), "https://h/c/d.usd");
         assert_eq!(anchor_path("t.png", Some("https://h/p.usdz")).unwrap(), "https://h/p.usdz[t.png]");
         assert_eq!(anchor_path("SubUSDs\\textures\\t.jpg", Some("/h/r.usd")).unwrap(), "/h/SubUSDs/textures/t.jpg");
-        assert_eq!(anchor_path("tex/a.png", Some("/h/p.usdz[root.usdc]")).unwrap(), "/h/p.usdz[tex/a.png]");
-        assert_eq!(anchor_path("a.usdc", Some("/h/p.usdz")).unwrap(), "/h/p.usdz[a.usdc]");
-        assert_eq!(anchor_path("./p.usdz[x/y.usd]", Some("/h/r.usda")).unwrap(), "/h/p.usdz[x/y.usd]");
         assert!(is_layer_path("/h/p.usdz[x/y.usdc]"));
         assert_eq!(anchor_path("tex/a.png", Some("/h/p.usdz[root.usdc]")).unwrap(), "/h/p.usdz[tex/a.png]");
         assert_eq!(anchor_path("a.usdc", Some("/h/p.usdz")).unwrap(), "/h/p.usdz[a.usdc]");
