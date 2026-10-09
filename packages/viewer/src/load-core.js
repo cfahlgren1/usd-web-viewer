@@ -106,7 +106,7 @@ export function takeGeometries(scene, meta) {
 /** Textures stored inside a USDZ package, by path: they cannot be fetched by URL. */
 export function takePackagedTextures(scene, meta) {
   const out = new Map();
-  for (const path of texturePaths(meta, { normalMaps: true })) {
+  for (const path of texturePaths(meta, { textures: 'full' })) {
     if (!path.includes('[')) continue;
     const bytes = scene.packagedFile(path);
     if (bytes) out.set(path, bytes);
@@ -115,9 +115,9 @@ export function takePackagedTextures(scene, meta) {
 }
 
 /** Distinct texture files the materials sample, base color first. */
-export function texturePaths(meta, { normalMaps = false } = {}) {
+export function texturePaths(meta, { textures = 'preview' } = {}) {
   const paths = [];
   for (const m of meta.materials) if (m.colorMap && !paths.includes(m.colorMap.path)) paths.push(m.colorMap.path);
-  if (normalMaps) for (const m of meta.materials) if (m.normalMap && !paths.includes(m.normalMap.path)) paths.push(m.normalMap.path);
+  if (textures === 'full') for (const m of meta.materials) if (m.normalMap && !paths.includes(m.normalMap.path)) paths.push(m.normalMap.path);
   return paths;
 }

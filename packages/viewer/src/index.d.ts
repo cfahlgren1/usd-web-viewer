@@ -14,8 +14,11 @@ export interface LoadProgress {
 export interface LoadOptions {
   /** Long-side cap for decoded textures, in pixels. Default 1024. */
   maxTextureSize?: number;
-  /** Also fetch and apply normal maps. Default false. */
-  normalMaps?: boolean;
+  /**
+   * `preview` (default): base color up to `maxTextureSize`, roughness / metallic / occlusion maps up to 512 px, no normal maps.
+   * `full`: every map, normals included, up to `maxTextureSize`.
+   */
+  textures?: 'preview' | 'full';
   /** Fetch layers named inside variants the layer itself doesn't select. Default false. */
   prefetchVariants?: boolean;
   /** Headers for every request (layers and textures), e.g. `{ Authorization: 'Bearer hf_…' }`. */

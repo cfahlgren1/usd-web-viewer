@@ -14,7 +14,7 @@ self.onmessage = async ({ data }) => {
     proxied.delete(data.id);
     return;
   }
-  const { url, wasmModule, maxTextureSize = 1024, normalMaps = false, prefetchVariants = false, headers, proxyFetch } = data;
+  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', prefetchVariants = false, headers, proxyFetch } = data;
   // Every request goes through here: the caller's headers, or the page's fetch.
   const request = (target) => {
     if (!proxyFetch) {
@@ -47,7 +47,7 @@ self.onmessage = async ({ data }) => {
     for (const g of geometries) for (const a of [g.positions, g.normals, g.uvs, g.indices]) if (a) transfer.push(a.buffer);
     self.postMessage({ type: 'scene', meta, geometries, stats }, transfer);
 
-    const paths = texturePaths(meta, { normalMaps });
+    const paths = texturePaths(meta, { textures });
     let loaded = 0;
     let bytes = 0;
     progress({ stage: 'textures', loaded, total: paths.length, bytes });

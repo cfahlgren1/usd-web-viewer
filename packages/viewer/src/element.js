@@ -3,12 +3,12 @@
 //   <script type="module">import 'usd-web-viewer/element';</script>
 //   <usd-viewer src="https://huggingface.co/datasets/…/resolve/main/model.usd"></usd-viewer>
 //
-// Attributes: src, max-texture-size, background, normal-maps.
+// Attributes: src, max-texture-size, background, textures (`preview` | `full`).
 // Events: progress (detail: progress), load (detail: LoadResult), error (detail: Error).
 import { createViewer } from './index.js';
 
 export class UsdViewerElement extends HTMLElement {
-  static observedAttributes = ['src', 'max-texture-size', 'background', 'normal-maps'];
+  static observedAttributes = ['src', 'max-texture-size', 'background', 'textures'];
 
   #viewer = null;
   #ready = null;
@@ -51,7 +51,7 @@ export class UsdViewerElement extends HTMLElement {
     try {
       const result = await this.#viewer.load(src, {
         maxTextureSize: Number(this.getAttribute('max-texture-size')) || 1024,
-        normalMaps: this.hasAttribute('normal-maps'),
+        textures: this.getAttribute('textures') === 'full' ? 'full' : 'preview',
         signal: abort.signal,
         onProgress: (detail) => this.dispatchEvent(new CustomEvent('progress', { detail })),
       });

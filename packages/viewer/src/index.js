@@ -26,7 +26,7 @@ function compileWasm(url) {
  * @returns {Promise<import('./index.js').LoadResult>}
  */
 export async function loadUsd(url, options = {}) {
-  const { maxTextureSize = 1024, normalMaps = false, prefetchVariants = false, onTexture, onProgress, signal, headers } = options;
+  const { maxTextureSize = 1024, textures: textureMode = 'preview', prefetchVariants = false, onTexture, onProgress, signal, headers } = options;
   signal?.throwIfAborted();
   const absoluteUrl = new URL(url, location.href).href;
   const module = await compileWasm(options.wasmUrl);
@@ -60,7 +60,7 @@ export async function loadUsd(url, options = {}) {
         onProgress?.(data.progress);
         break;
       case 'scene':
-        built = buildScene(data.meta, data.geometries, normalMaps);
+        built = buildScene(data.meta, data.geometries, textureMode === 'full');
         built.info.stats = data.stats;
         built.info.warnings = [...data.meta.warnings, ...data.stats.warnings];
         built.delivered = true;
@@ -88,7 +88,7 @@ export async function loadUsd(url, options = {}) {
     finish();
     rejectScene(new Error(event.message || 'worker failed to start'));
   };
-  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, normalMaps, prefetchVariants, headers, proxyFetch: !!options.fetch });
+  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, prefetchVariants, headers, proxyFetch: !!options.fetch });
 
   const scene = await scenePromise;
   return { root: scene.root, info: scene.info, textures, dispose: scene.dispose };

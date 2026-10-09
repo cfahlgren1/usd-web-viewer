@@ -27,7 +27,7 @@ Drop-in element (works as is in Vite and other bundlers; see [`examples/vite`](e
 | `src` | root layer URL; changing it reloads | `progress` | `{ stage, loaded, total, bytes }` |
 | `max-texture-size` | long-side cap, default 1024 | `load` | `{ root, info, textures, dispose }` |
 | `background` | CSS color | `error` | `Error` |
-| `normal-maps` | present = load normal maps | | |
+| `textures` | `preview` (default) or `full` | | |
 
 The element sizes itself to its box, aborts an in-flight load when `src` changes, and frees the renderer and WASM worker when removed.
 
@@ -61,7 +61,7 @@ scene.add(root);   // THREE.Group, Y-up, metres
 | Option (`load` / `loadUsd`) | Default | |
 |---|---|---|
 | `maxTextureSize` | `1024` | Long-side cap; textures are decoded straight to this size in the worker |
-| `normalMaps` | `false` | Also fetch and apply normal maps |
+| `textures` | `'preview'` | `'preview'`: base color up to `maxTextureSize`, roughness / metallic / occlusion up to 512 px, no normal maps. `'full'`: every map, normals included, up to `maxTextureSize` |
 | `prefetchVariants` | `false` | Fetch layers inside variants the layer doesn't select |
 | `signal` | – | `AbortSignal`: cancels fetches, terminates the worker, rejects with `AbortError` |
 | `onProgress` | – | `({ stage: 'layers' \| 'compose' \| 'textures', loaded, total, bytes })` |

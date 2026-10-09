@@ -7,7 +7,7 @@ export interface UsdViewerEventMap extends HTMLElementEventMap {
 }
 
 /**
- * `<usd-viewer src max-texture-size background normal-maps>`.
+ * `<usd-viewer src max-texture-size background textures="preview|full">`.
  * Events: `progress` (detail: LoadProgress), `load` (detail: LoadResult), `error` (detail: Error).
  */
 export class UsdViewerElement extends HTMLElement {
