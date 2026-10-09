@@ -82,6 +82,9 @@ fn inspect(root: &str) -> Result<(), Box<dyn std::error::Error>> {
             m.color_map.as_ref().map(|t| &t.path)
         );
     }
+    for w in &scene.warnings {
+        println!("    warning: {w}");
+    }
     for (path, why) in &s.skipped {
         println!("    skipped ({why}) {path}");
     }

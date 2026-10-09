@@ -22,7 +22,7 @@ export function pathToUrl(path, protocols) {
  * @param {(url: string) => Promise<Uint8Array | null>} o.fetchBytes  null when missing
  * @param {string} o.rootUrl
  * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
- * @param {(stage: string, detail?: object) => void} [o.onProgress]
+ * @param {(progress: { stage: 'layers' | 'compose', loaded?: number, total?: number, bytes?: number }) => void} [o.onProgress]
  * @returns {Promise<{ scene: import('../wasm/usd_wasm.js').UsdScene, meta: object, stats: object, protocols: Map<string,string> }>}
  */
 export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVariants = false, onProgress = () => {} }) {
@@ -30,6 +30,7 @@ export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVar
   const root = urlToPath(rootUrl);
   const loader = new UsdLoader();
   const stats = { layers: 0, layerBytes: 0, missing: 0, rounds: 0, fetchMs: 0, parseMs: 0, composeMs: 0, warnings: [] };
+  const progress = () => onProgress({ stage: 'layers', loaded: stats.layers + stats.missing, total: started.size, bytes: stats.layerBytes });
   const started = new Map();
 
   const fetchLayer = (path) => {
@@ -40,7 +41,9 @@ export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVar
       stats.fetchMs = Math.max(stats.fetchMs, performance.now() - t0);
       if (!bytes) {
         stats.missing++;
+        stats.warnings.push(`layer not found: ${pathToUrl(path, protocols)}`);
         loader.markUnavailable(path);
+        progress();
         return;
       }
       stats.layers++;
@@ -51,13 +54,14 @@ export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVar
         deps = loader.addLayer(path, bytes);
       } catch (error) {
         // An unreadable layer is left out; composition carries on without it.
-        stats.warnings.push(`${path}: ${error.message || error}`);
+        stats.warnings.push(`unreadable layer ${pathToUrl(path, protocols)}: ${error.message || error}`);
         loader.markUnavailable(path);
+        progress();
         return;
       } finally {
         stats.parseMs += performance.now() - t1;
       }
-      onProgress('layer', { path, bytes: bytes.byteLength });
+      progress();
       await Promise.all(
         deps
           .filter((d) => d[0] === 'L' || (prefetchVariants && d[0] === 'V'))
@@ -73,12 +77,12 @@ export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVar
 
   for (;;) {
     stats.rounds++;
+    onProgress({ stage: 'compose', loaded: stats.layers, total: started.size, bytes: stats.layerBytes });
     const t0 = performance.now();
     const missing = loader.compose(root);
     stats.composeMs += performance.now() - t0;
     if (!missing.length) break;
     if (stats.rounds > 16) throw new Error(`composition still missing layers: ${missing.join(', ')}`);
-    onProgress('missing', { missing });
     // The list also names layers the failed attempt consumed; fetch them again.
     for (const path of missing) started.delete(path);
     await Promise.all(missing.map(fetchLayer));

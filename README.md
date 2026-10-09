@@ -1,6 +1,6 @@
 # usd-web-viewer
 
-View OpenUSD files in the browser. Real USD composition (sublayers, references, payloads, variants) in a **527 KB** WASM module, rendered with three.js. MIT, no `SharedArrayBuffer`, no COOP/COEP headers, loads straight from Hugging Face Hub URLs.
+View OpenUSD files in the browser. Real USD composition (sublayers, references, payloads, variants) in a **531 KB** WASM module, rendered with three.js. MIT, no `SharedArrayBuffer`, no COOP/COEP headers, loads straight from Hugging Face Hub URLs.
 
 | LG laptop | Robotiq gripper | Standard Bots arm | NVIDIA IV pole | NVIDIA chair | imagine.io railing |
 |:-:|:-:|:-:|:-:|:-:|:-:|
@@ -12,16 +12,40 @@ View OpenUSD files in the browser. Real USD composition (sublayers, references, 
 npm install usd-web-viewer three   # not published to npm yet
 ```
 
+Drop-in element (works as is in Vite and other bundlers; see [`examples/vite`](examples/vite)):
+
+```html
+<script type="module">import 'usd-web-viewer/element';</script>
+
+<usd-viewer
+  src="https://huggingface.co/datasets/Robotiq-Official/simready-assets/resolve/main/Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda"
+  max-texture-size="1024" background="#f2f2f2"></usd-viewer>
+```
+
+| Attribute | | Event | `detail` |
+|---|---|---|---|
+| `src` | root layer URL; changing it reloads | `progress` | `{ stage, loaded, total, bytes }` |
+| `max-texture-size` | long-side cap, default 1024 | `load` | `{ root, info, textures, dispose }` |
+| `background` | CSS color | `error` | `Error` |
+| `normal-maps` | present = load normal maps | | |
+
+The element sizes itself to its box, aborts an in-flight load when `src` changes, and frees the renderer and WASM worker when removed.
+
+Or drive it from JavaScript:
+
 ```js
-import { createViewer } from 'usd-web-viewer';
+import { createViewer, hubUrl } from 'usd-web-viewer';
 
 const viewer = await createViewer(document.getElementById('app'));
-const { info, textures } = await viewer.load(
-  'https://huggingface.co/datasets/Robotiq-Official/simready-assets/resolve/main/Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda',
-);
+const controller = new AbortController();
+const { info, textures } = await viewer.load(hubUrl('Robotiq-Official/simready-assets', 'Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda'), {
+  signal: controller.signal,
+  headers: { Authorization: `Bearer ${token}` },          // gated / private repos
+  onProgress: ({ stage, loaded, total }) => console.log(stage, loaded, total),
+});
 
-console.log(info.meshes, info.triangles); // geometry is on screen now
-await textures;                           // base-color textures streamed in
+console.log(info.meshes, info.triangles, info.warnings); // geometry is on screen now
+await textures;                                          // textures streamed in
 ```
 
 Bring your own three.js scene instead:
@@ -34,13 +58,21 @@ scene.add(root);   // THREE.Group, Y-up, metres
 // later: dispose() frees geometries, materials and textures
 ```
 
-| Option | Default | |
+| Option (`load` / `loadUsd`) | Default | |
 |---|---|---|
 | `maxTextureSize` | `1024` | Long-side cap; textures are decoded straight to this size in the worker |
 | `normalMaps` | `false` | Also fetch and apply normal maps |
 | `prefetchVariants` | `false` | Fetch layers inside variants the layer doesn't select |
+| `signal` | – | `AbortSignal`: cancels fetches, terminates the worker, rejects with `AbortError` |
+| `onProgress` | – | `({ stage: 'layers' \| 'compose' \| 'textures', loaded, total, bytes })` |
+| `headers` | – | Sent with every layer and texture request (e.g. `Authorization`) |
+| `fetch` | – | Your own `fetch(url, { headers, signal })`, used for every request (proxied from the worker) |
 | `onTexture` | – | Called after each texture is applied |
 | `wasmUrl` | bundled | Serve the `.wasm` from your own CDN |
+
+`info.warnings` lists what could not be shown faithfully: missing or unreadable layers, unsupported prim types (e.g. `PointInstancer`), materials falling back to grey (MDL other than OmniPBR/glTF, MaterialX), failed textures, composition diagnostics.
+
+Hub helpers: `hubUrl(repo, path, { revision, repoType })` builds `resolve` URLs; `findSimReadyRoot(files, rootUsds?)` picks a SimReady package's root layer from its file listing (and `.metadata/com.nvidia.simready.root_usds.json` when you have it). TypeScript declarations ship with the package.
 
 ## Compared with other browser USD viewers
 
@@ -103,6 +135,8 @@ cargo install wasm-bindgen-cli --version 0.2.129   # once
 npm run build:wasm      # cargo -> wasm-bindgen -> wasm-opt -Oz
 npm run serve           # http://127.0.0.1:8811/examples/index.html?url=<root .usd URL>
 node scripts/node-test.mjs                          # compose + extract in Node
+node scripts/api-test.mjs                           # progress, abort, headers, fetch, warnings, <usd-viewer>
+(cd examples/vite && npm install && node test.mjs)  # Vite production build loading a Hub URL
 node bench/run.mjs --configs usd-wasm,gltf --runs 3
 node conformance/run.mjs --bench
 ```

@@ -2,13 +2,14 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
-const WASM_URL = new URL('../wasm/usd_wasm_bg.wasm', import.meta.url);
-const WORKER_URL = new URL('./worker.js', import.meta.url);
+export { findSimReadyRoot, hubUrl } from './hub.js';
 
 let wasmModule = null;
 
 /** Compiles the WASM module once per page; workers instantiate it without refetching. */
-function compileWasm(url = WASM_URL) {
+function compileWasm(url) {
+  // Written inline so bundlers (Vite, webpack) emit the asset and rewrite the URL.
+  url ??= new URL('../wasm/usd_wasm_bg.wasm', import.meta.url);
   wasmModule ||= WebAssembly.compileStreaming(fetch(url)).catch((error) => {
     wasmModule = null;
     throw error;
@@ -21,60 +22,87 @@ function compileWasm(url = WASM_URL) {
  * `textures` resolves when every texture has streamed in.
  *
  * @param {string} url  root layer URL (relative URLs resolve against the page)
- * @param {object} [options]
- * @param {number} [options.maxTextureSize=1024]  long-side cap for decoded textures
- * @param {boolean} [options.normalMaps=false]  also load normal maps
- * @param {boolean} [options.prefetchVariants=false]  fetch layers named inside variants before composing
- * @param {() => void} [options.onTexture]  called after each texture is applied
- * @param {string | URL} [options.wasmUrl]  override where the WASM binary lives
- * @returns {Promise<{ root: THREE.Group, info: object, textures: Promise<void>, dispose: () => void }>}
+ * @param {import('./index.js').LoadOptions} [options]
+ * @returns {Promise<import('./index.js').LoadResult>}
  */
 export async function loadUsd(url, options = {}) {
-  const { maxTextureSize = 1024, normalMaps = false, prefetchVariants = false, onTexture = () => {} } = options;
+  const { maxTextureSize = 1024, normalMaps = false, prefetchVariants = false, onTexture, onProgress, signal, headers } = options;
+  signal?.throwIfAborted();
   const absoluteUrl = new URL(url, location.href).href;
   const module = await compileWasm(options.wasmUrl);
-  const worker = new Worker(WORKER_URL, { type: 'module' });
+  signal?.throwIfAborted();
+  // Inline `new Worker(new URL(...))` is the pattern bundlers recognise and bundle.
+  const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 
   let resolveScene, rejectScene, resolveTextures;
   const scenePromise = new Promise((resolve, reject) => ((resolveScene = resolve), (rejectScene = reject)));
   const textures = new Promise((resolve) => (resolveTextures = resolve));
   let built = null;
+  const finish = () => {
+    worker.terminate();
+    signal?.removeEventListener('abort', abort);
+    resolveTextures();
+  };
+  function abort() {
+    finish();
+    // Before geometry resolves nothing has reached the caller: free it here.
+    if (built && !built.delivered) built.dispose();
+    rejectScene(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  }
+  signal?.addEventListener('abort', abort, { once: true });
 
   worker.onmessage = ({ data }) => {
     switch (data.type) {
+      case 'fetch':
+        proxyFetch(options.fetch, data, headers, signal).then(({ message, transfer }) => worker.postMessage(message, transfer));
+        break;
+      case 'progress':
+        onProgress?.(data.progress);
+        break;
       case 'scene':
         built = buildScene(data.meta, data.geometries, normalMaps);
         built.info.stats = data.stats;
+        built.info.warnings = [...data.meta.warnings, ...data.stats.warnings];
+        built.delivered = true;
         resolveScene(built);
         break;
       case 'texture':
         if (data.bitmap && built) {
           built.applyTexture(data.path, data.bitmap);
-          onTexture();
+          onTexture?.();
         } else if (data.error && built) {
           built.info.textureErrors.push(`${data.path}: ${data.error}`);
+          built.info.warnings.push(`texture not loaded: ${data.path}: ${data.error}`);
         }
         break;
       case 'done':
-        worker.terminate();
-        resolveTextures();
+        finish();
         break;
       case 'error':
-        worker.terminate();
+        finish();
         rejectScene(new Error(data.message));
-        resolveTextures();
         break;
     }
   };
   worker.onerror = (event) => {
-    worker.terminate();
+    finish();
     rejectScene(new Error(event.message || 'worker failed to start'));
-    resolveTextures();
   };
-  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, normalMaps, prefetchVariants });
+  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, normalMaps, prefetchVariants, headers, proxyFetch: !!options.fetch });
 
   const scene = await scenePromise;
   return { root: scene.root, info: scene.info, textures, dispose: scene.dispose };
+}
+
+/** Runs one worker request through the caller's `fetch` and packages the reply. */
+async function proxyFetch(fetchFn, { id, url }, headers, signal) {
+  try {
+    const response = await fetchFn(url, { headers, signal });
+    const buffer = response.ok ? await response.arrayBuffer() : null;
+    return { message: { type: 'fetched', id, ok: response.ok, status: response.status, buffer }, transfer: buffer ? [buffer] : [] };
+  } catch (error) {
+    return { message: { type: 'fetched', id, ok: false, status: 0, buffer: null, error: String(error) }, transfer: [] };
+  }
 }
 
 function buildScene(meta, arrays, normalMaps) {
@@ -131,6 +159,8 @@ function buildScene(meta, arrays, normalMaps) {
     for (const material of allMaterials()) {
       const { colorMap, normalMap } = material.userData.usd;
       if (colorMap?.path === path) {
+        const [r, g, b] = material.userData.usd.color;
+        material.color.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
         material.map = configure(base, colorMap, THREE.SRGBColorSpace);
         material.needsUpdate = true;
       }
@@ -201,7 +231,10 @@ function createMaterial(m) {
     material.depthWrite = false;
   }
   material.name = m.path;
-  material.userData.usd = { kind: m.kind, colorMap: m.colorMap, normalMap: m.normalMap };
+  material.userData.usd = { kind: m.kind, colorMap: m.colorMap, normalMap: m.normalMap, color: m.color };
+  // Until its base color texture streams in, a textured surface shows a
+  // mid grey (18%, the usual neutral) rather than the stark white texture multiplier.
+  if (m.colorMap) material.color.setRGB(0.18, 0.18, 0.18, THREE.LinearSRGBColorSpace);
   return material;
 }
 

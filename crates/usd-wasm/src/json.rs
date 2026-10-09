@@ -18,6 +18,14 @@ pub fn scene_meta(scene: &Scene) -> String {
         s.prims, s.meshes, s.triangles, s.skipped_invisible, s.skipped_purpose, s.skipped_empty
     );
 
+    o.push_str(",\"warnings\":[");
+    for (i, w) in scene.warnings.iter().enumerate() {
+        if i > 0 {
+            o.push(',');
+        }
+        string(&mut o, w);
+    }
+    o.push(']');
     o.push_str(",\"geometries\":[");
     for (i, g) in scene.geometries.iter().enumerate() {
         if i > 0 {

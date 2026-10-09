@@ -20,6 +20,8 @@ pub struct Scene {
     pub instances: Vec<Instance>,
     pub materials: Vec<Material>,
     pub stats: Stats,
+    /// What the viewer could not show faithfully, for the host to surface.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Default, Debug)]
@@ -92,6 +94,7 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
     let mut xforms = XformCache::new(None);
     let mut geometry_by_source: HashMap<String, u32> = HashMap::new();
     let mut materials = material::Cache::default();
+    let mut unsupported: HashMap<String, usize> = HashMap::new();
 
     for path in paths {
         let prim = stage.prim(&path)?;
@@ -112,8 +115,15 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
         }
         state.insert(path.clone(), own);
 
-        if prim.type_name()?.as_deref() != Some("Mesh") {
-            continue;
+        match prim.type_name()?.as_deref() {
+            Some("Mesh") => {}
+            Some(ty @ ("PointInstancer" | "Points" | "BasisCurves" | "NurbsCurves" | "NurbsPatch" | "Cube" | "Sphere" | "Cylinder" | "Cone" | "Capsule" | "Plane" | "Volume")) => {
+                if !own.invisible && !own.hidden_purpose {
+                    *unsupported.entry(ty.to_owned()).or_default() += 1;
+                }
+                continue;
+            }
+            _ => continue,
         }
         if own.invisible {
             scene.stats.skipped_invisible += 1;
@@ -181,6 +191,18 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
             materials: instance_materials,
             double_sided: matches!(prim.attribute("doubleSided").get::<bool>(), Ok(Some(true))),
         });
+    }
+    let mut types: Vec<_> = unsupported.into_iter().collect();
+    types.sort();
+    for (ty, count) in types {
+        scene.warnings.push(format!("{count} {ty} prim(s) not drawn (unsupported type)"));
+    }
+    let fallback: Vec<&str> = scene.materials.iter().filter(|m| m.kind == "fallback" && !m.path.is_empty()).map(|m| m.path.as_str()).collect();
+    if let Some(first) = fallback.first() {
+        scene.warnings.push(format!(
+            "{} material(s) have no UsdPreviewSurface or readable MDL and show as grey, e.g. {first}",
+            fallback.len()
+        ));
     }
     Ok(scene)
 }
