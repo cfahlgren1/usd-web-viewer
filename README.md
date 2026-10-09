@@ -42,12 +42,15 @@ All options, errors and warnings are typed in [`index.d.ts`](packages/viewer/src
 
 About half the size of tinyusdz, with the same composition support as Pixar-based viewers on SimReady assets.
 
-| | usd-web-viewer | Needle | openusd-wasm | tinyusdz | three.js USDLoader |
-|---|---|---|---|---|---|
-| Renders the 14 test files | **14/14** | 5/14 | 8/14 | 5/14 | 4/14 |
-| Download (WASM + JS, brotli) | **608 KB** | 4.9 MB | 1.8 MB | 1.2 MB | 20 KB |
-| Load time vs ours | **1×** | 6.0× | 4.2× | 9.1× | 4.7× |
-| Memory vs ours | **1×** | 5.6× | 5.2× | 1.5× | 0.8× |
+| | Renders the 14 test files | Download | Load time | Memory |
+|---|---|--:|--:|--:|
+| **usd-web-viewer** | `██████████████` **14** | **608 KB** | **1×** | **1×** |
+| openusd-wasm | `████████░░░░░░` 8 | 1.8 MB | 4.2× slower | 5.2× more |
+| Needle | `█████░░░░░░░░░` 5 | 4.9 MB | 6.0× slower | 5.6× more |
+| tinyusdz | `█████░░░░░░░░░` 5 | 1.2 MB | 9.1× slower | 1.5× more |
+| three.js USDLoader | `████░░░░░░░░░░` 4 | 20 KB | 4.7× slower | 0.8× (less) |
+
+<sub><i>14 public Hub files (8 single-file assets, 6 multi-file SimReady packages) in headless Chromium with software WebGL, served from localhost; median of 3 cold loads. Download is WASM + JS, brotli. Load time and memory are relative to usd-web-viewer on the files both render. Measured October 2026; <a href="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/blob/main/crossbench.md">full results</a>.</i></sub>
 
 <details>
 <summary>Why it's smaller than Pixar-based builds</summary>
