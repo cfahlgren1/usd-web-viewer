@@ -36,6 +36,8 @@ pub struct Stats {
 
 pub struct Geometry {
     pub source: String,
+    /// Authored point count (before per-corner splitting).
+    pub points: usize,
     pub positions: Vec<f32>,
     pub normals: Vec<f32>,
     /// Empty when the mesh has no texture coordinates.
@@ -444,6 +446,7 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
 
     Ok(Some(Geometry {
         source: prim.path().as_str().to_owned(),
+        points: points.len(),
         positions,
         normals,
         uvs,

@@ -25,15 +25,21 @@ pub fn scene_meta(scene: &Scene) -> String {
         }
         let _ = write!(
             o,
-            "{{\"vertices\":{},\"hasUvs\":{},\"groups\":[",
+            "{{\"vertices\":{},\"points\":{},\"hasUvs\":{},\"groups\":[",
             g.positions.len() / 3,
+            g.points,
             !g.uvs.is_empty()
         );
         for (j, group) in g.groups.iter().enumerate() {
             if j > 0 {
                 o.push(',');
             }
-            let _ = write!(o, "[{},{}]", group.start, group.count);
+            let _ = write!(o, "[{},{}", group.start, group.count);
+            if let Some(subset) = &group.subset {
+                o.push(',');
+                string(&mut o, subset);
+            }
+            o.push(']');
         }
         o.push_str("]}");
     }
