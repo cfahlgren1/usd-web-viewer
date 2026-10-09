@@ -43,7 +43,7 @@ impl Loader {
         resolver::lock(&self.files).bytes.contains_key(path)
     }
 
-    /// Stores a layer under its virtual path and returns the asset paths it
+    /// Stores a layer under its identifier and returns the asset paths it
     /// authors, so the host can prefetch them in parallel.
     pub fn add_layer(&mut self, path: &str, bytes: Vec<u8>) -> openusd::Result<Vec<Dependency>> {
         resolver::lock(&self.files).bytes.insert(path.to_owned(), bytes);

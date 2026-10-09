@@ -2,7 +2,7 @@
 // base-color textures as downscaled ImageBitmaps. One worker per load: the
 // page terminates it when done, which releases all WASM memory at once.
 import init, { UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, limiter, pathToUrl, takeGeometries, takePackagedTextures, texturePaths } from './load-core.js';
+import { composeStage, fetchLimited, limiter, takeGeometries, takePackagedTextures, texturePaths } from './load-core.js';
 
 self.onmessage = async (event) => {
   const { url, wasmModule, maxTextureSize = 1024, normalMaps = false, prefetchVariants = false, maxConcurrentFetches = 16, maxLayerBytes } = event.data;
@@ -11,7 +11,7 @@ self.onmessage = async (event) => {
     const wasm = await init({ module_or_path: wasmModule });
     const tInit = performance.now();
 
-    const { scene, meta, stats, protocols } = await composeStage({
+    const { scene, meta, stats } = await composeStage({
       UsdLoader,
       fetchBytes: fetchLimited,
       rootUrl: url,
@@ -34,7 +34,7 @@ self.onmessage = async (event) => {
     await Promise.all(
       texturePaths(meta, { normalMaps }).map(async (path) => {
         try {
-          const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await throttle(() => fetchBlob(pathToUrl(path, protocols)));
+          const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await throttle(() => fetchBlob(path));
           const bitmap = await decodeTexture(blob, maxTextureSize);
           self.postMessage({ type: 'texture', path, bitmap }, [bitmap]);
         } catch (error) {

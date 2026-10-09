@@ -1,9 +1,11 @@
-//! An in-memory asset resolver over "virtual paths".
+//! An in-memory asset resolver over layer identifiers.
 //!
-//! The browser side maps every URL to a virtual absolute path (`/<host>/<path>`)
-//! so relative asset paths can be anchored with plain POSIX rules here, and
-//! maps them back to URLs when it fetches. Layers live in a shared map filled
-//! before composition; nothing is ever read from a filesystem or network.
+//! An identifier is an absolute URL without a query (`https://host/a/b.usd`),
+//! encoded as authored or requested so the host can fetch it as is, or a plain
+//! absolute path (`/a/b.usd`) for native use. Relative asset paths resolve
+//! against the identifier of the layer that authored them, as URL references
+//! do. Layers live in a shared map filled before composition; nothing is ever
+//! read from a filesystem or network.
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -39,9 +41,10 @@ pub fn split_packaged(path: &str) -> Option<(&str, &str)> {
     Some((&inner[..open], &inner[open + 1..]))
 }
 
-/// Turns an authored asset path into a virtual path, anchored at the virtual
-/// path of the layer that authored it. Returns `None` for empty paths. Paths
-/// authored inside a USDZ package stay inside it (`/h/pkg.usdz[tex/a.png]`).
+/// Turns an authored asset path into an identifier, anchored at the identifier
+/// of the layer that authored it. Returns `None` for empty paths. Paths
+/// authored inside a USDZ package stay inside it (`https://h/pkg.usdz[tex/a.png]`).
+/// Percent-escapes are left as authored: the host's URL parser encodes the rest.
 pub fn anchor_path(asset_path: &str, anchor: Option<&str>) -> Option<String> {
     let path = asset_path.trim().replace('\\', "/");
     if path.is_empty() {
@@ -51,14 +54,12 @@ pub fn anchor_path(asset_path: &str, anchor: Option<&str>) -> Option<String> {
         let package = anchor_path(package, anchor)?;
         return Some(format!("{package}[{}]", &normalize(inner)[1..]));
     }
-    if let Some(rest) = path.strip_prefix("https://").or_else(|| path.strip_prefix("http://")) {
-        return Some(normalize(&format!("/{rest}")));
-    }
-    if let Some(rest) = path.strip_prefix("file://") {
-        return Some(normalize(rest));
-    }
-    if path.starts_with('/') {
+    if !split_origin(&path).0.is_empty() {
         return Some(normalize(&path));
+    }
+    let (origin, anchor_rest) = anchor.map_or(("", ""), split_origin);
+    if path.starts_with('/') {
+        return Some(format!("{origin}{}", normalize(&path)));
     }
     if let Some(anchor) = anchor {
         if let Some((package, inner)) = split_packaged(anchor) {
@@ -69,11 +70,26 @@ pub fn anchor_path(asset_path: &str, anchor: Option<&str>) -> Option<String> {
             return Some(format!("{anchor}[{}]", &normalize(&path)[1..]));
         }
     }
-    let dir = match anchor {
-        Some(anchor) => anchor.rsplit_once('/').map_or("", |(dir, _)| dir),
-        None => "",
+    let dir = anchor_rest.rsplit_once('/').map_or("", |(dir, _)| dir);
+    Some(format!("{origin}{}", normalize(&format!("{dir}/{path}"))))
+}
+
+/// Splits an identifier into its `scheme://authority` (empty for a plain path)
+/// and the rest.
+fn split_origin(id: &str) -> (&str, &str) {
+    let Some(colon) = id.find("://") else {
+        return ("", id);
     };
-    Some(normalize(&format!("{dir}/{path}")))
+    let scheme = &id[..colon];
+    let is_scheme = scheme.len() > 1
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
+    if !is_scheme {
+        return ("", id);
+    }
+    let authority = colon + 3;
+    let end = id[authority..].find(['/', '?', '#']).map_or(id.len(), |i| authority + i);
+    id.split_at(end)
 }
 
 /// Most bytes one file inside a package may expand to.
@@ -99,9 +115,11 @@ pub fn read_packaged(package: &[u8], inner: &str, limit: u64) -> io::Result<Vec<
     Ok(out)
 }
 
-/// Collapses `.`, `..` and repeated separators, and drops a query string.
-fn normalize(path: &str) -> String {
-    let path = path.split(['?', '#']).next().unwrap_or(path);
+/// Collapses `.`, `..` and repeated separators in an identifier's path, keeps
+/// its origin and drops a query string.
+fn normalize(id: &str) -> String {
+    let (origin, rest) = split_origin(id);
+    let path = rest.split(['?', '#']).next().unwrap_or(rest);
     let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/') {
         match part {
@@ -112,10 +130,10 @@ fn normalize(path: &str) -> String {
             part => parts.push(part),
         }
     }
-    format!("/{}", parts.join("/"))
+    format!("{origin}/{}", parts.join("/"))
 }
 
-/// Fetched layers by virtual path.
+/// Fetched layers by identifier.
 #[derive(Default)]
 pub struct Store {
     /// Bytes not yet handed to a composing stage.
@@ -141,7 +159,7 @@ impl Store {
     }
 }
 
-/// Resolves virtual paths against the [`Store`], recording every layer that
+/// Resolves identifiers against the [`Store`], recording every layer that
 /// was asked for but is not there yet so the caller can fetch it and recompose.
 pub struct MemoryResolver {
     pub files: Files,
@@ -335,9 +353,12 @@ mod tests {
             "/huggingface.co/datasets/a/b/resolve/main/tex/a.png"
         );
         assert_eq!(
-            anchor_path("https://cdn.example/a/b.usd?x=1", Some(root)).unwrap(),
-            "/cdn.example/a/b.usd"
+            anchor_path("http://cdn.example/a/./b%20c.usd?x=1", Some(root)).unwrap(),
+            "http://cdn.example/a/b%20c.usd"
         );
+        assert_eq!(anchor_path("../b.usd", Some("https://h/a/r.usd")).unwrap(), "https://h/b.usd");
+        assert_eq!(anchor_path("/c/d.usd", Some("https://h/a/r.usd")).unwrap(), "https://h/c/d.usd");
+        assert_eq!(anchor_path("t.png", Some("https://h/p.usdz")).unwrap(), "https://h/p.usdz[t.png]");
         assert_eq!(anchor_path("SubUSDs\\textures\\t.jpg", Some("/h/r.usd")).unwrap(), "/h/SubUSDs/textures/t.jpg");
         assert_eq!(anchor_path("tex/a.png", Some("/h/p.usdz[root.usdc]")).unwrap(), "/h/p.usdz[tex/a.png]");
         assert_eq!(anchor_path("a.usdc", Some("/h/p.usdz")).unwrap(), "/h/p.usdz[a.usdc]");

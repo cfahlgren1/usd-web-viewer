@@ -112,3 +112,61 @@ test('fetchLimited stops reading a streamed body past maxBytes', async (t) => {
   await assert.rejects(fetchLimited(`${base}/endless`, 256 * 1024), /resource limit exceeded/);
   assert.ok(sent < 4 * 1024 * 1024, `stopped early (${sent} bytes sent)`);
 });
+
+/** The URLs `fetch` would request for what composeStage asked for. */
+const fetched = (s) => s.requested.map((u) => new URL(u).href);
+const sublayers = (...paths) => `#usda 1.0\n(subLayers = [${paths.map((p) => `@${p}@`).join(', ')}])`;
+
+test('a signed root URL keeps its query; relative layers resolve against it', async () => {
+  const s = server({ 'https://h/a/root.usda?sig=abc': sublayers('./sub.usda'), 'https://h/a/sub.usda': '#usda 1.0' });
+  const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/a/root.usda?sig=abc' });
+  scene.free();
+  assert.deepEqual(fetched(s), ['https://h/a/root.usda?sig=abc', 'https://h/a/sub.usda']);
+});
+
+test('authored escapes and spaces are encoded once', async () => {
+  const s = server({
+    'https://h/a/root.usda': sublayers('./a%20b.usda', './c d.usda'),
+    'https://h/a/a%20b.usda': '#usda 1.0',
+    'https://h/a/c d.usda': '#usda 1.0',
+  });
+  const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/a/root.usda' });
+  scene.free();
+  assert.deepEqual(fetched(s).sort(), ['https://h/a/a%20b.usda', 'https://h/a/c%20d.usda', 'https://h/a/root.usda']);
+});
+
+test('absolute dependencies keep their scheme and host, and anchor their own relative paths', async () => {
+  const s = server({
+    'https://h/root.usda': sublayers('http://other.example/x/x.usda'),
+    'http://other.example/x/x.usda': sublayers('./y.usda'),
+    'http://other.example/x/y.usda': '#usda 1.0',
+  });
+  const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+  scene.free();
+  assert.deepEqual(fetched(s), ['https://h/root.usda', 'http://other.example/x/x.usda', 'http://other.example/x/y.usda']);
+});
+
+test('an encoded slash stays part of its path segment', async () => {
+  const root = 'https://h/d/resolve/refs%2Fpr%2F1/root.usda';
+  const s = server({ [root]: sublayers('./sub.usda'), 'https://h/d/resolve/refs%2Fpr%2F1/sub.usda': '#usda 1.0' });
+  const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: root });
+  scene.free();
+  assert.deepEqual(fetched(s), [root, 'https://h/d/resolve/refs%2Fpr%2F1/sub.usda']);
+});
+
+test('relative layers resolve against the requested URL, not where it redirected', async (t) => {
+  const requested = [];
+  const srv = http.createServer((req, res) => {
+    requested.push(req.url);
+    if (req.url === '/a/root.usda') return res.writeHead(302, { location: '/cdn/blob1' }).end();
+    if (req.url === '/cdn/blob1') return res.end(sublayers('./sub.usda'));
+    if (req.url === '/a/sub.usda') return res.end('#usda 1.0');
+    res.writeHead(404).end();
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const { scene } = await composeStage({ UsdLoader, fetchBytes: fetchLimited, rootUrl: `${base}/a/root.usda` });
+  scene.free();
+  assert.deepEqual(requested, ['/a/root.usda', '/cdn/blob1', '/a/sub.usda']);
+});

@@ -1,18 +1,9 @@
 // Prefetch-then-compose loading, shared by the Web Worker and the Node test.
 //
-// URLs are mapped to "virtual paths" (`/<host>/<path>`) that the Rust side
-// anchors relative asset paths against; they are mapped back here to fetch.
-
-export function urlToPath(url) {
-  const u = new URL(url);
-  return `/${u.host}${decodeURIComponent(u.pathname)}`;
-}
-
-export function pathToUrl(path, protocols) {
-  const [, host, ...rest] = path.split('/');
-  const protocol = protocols.get(host) || 'https:';
-  return `${protocol}//${host}/${rest.map(encodeURIComponent).join('/')}`;
-}
+// Layers are identified by absolute URL without a query, exactly as requested
+// or as the Rust side resolved them from authored paths, and fetched by that
+// URL. Only the root keeps its query (a signed URL, say) for fetching:
+// relative references do not inherit it.
 
 /**
  * Loads and composes the stage at `rootUrl`.
@@ -21,12 +12,12 @@ export function pathToUrl(path, protocols) {
  * @param {typeof import('../wasm/usd_wasm.js').UsdLoader} o.UsdLoader
  * @param {(url: string, maxBytes: number) => Promise<Uint8Array | null>} o.fetchBytes  null when
  *   missing; may stop reading once a body passes `maxBytes`
- * @param {string} o.rootUrl
+ * @param {string} o.rootUrl  absolute
  * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
  * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
  * @param {number} [o.maxLayerBytes=1 GiB]  total size of the distinct layers held for composition
  * @param {(stage: string, detail?: object) => void} [o.onProgress]
- * @returns {Promise<{ scene: import('../wasm/usd_wasm.js').UsdScene, meta: object, stats: object, protocols: Map<string,string> }>}
+ * @returns {Promise<{ scene: import('../wasm/usd_wasm.js').UsdScene, meta: object, stats: object }>}
  */
 export async function composeStage({
   UsdLoader,
@@ -37,8 +28,8 @@ export async function composeStage({
   maxLayerBytes = 2 ** 30,
   onProgress = () => {},
 }) {
-  const protocols = new Map([[new URL(rootUrl).host, new URL(rootUrl).protocol]]);
-  const root = urlToPath(rootUrl);
+  const root = rootUrl.split(/[?#]/)[0];
+  const urlOf = (path) => (path === root ? rootUrl : path);
   const loader = new UsdLoader();
   const stats = { layers: 0, layerBytes: 0, missing: 0, rounds: 0, fetchMs: 0, parseMs: 0, composeMs: 0, warnings: [] };
   const started = new Map();
@@ -52,7 +43,7 @@ export async function composeStage({
     const job = (async () => {
       const t0 = performance.now();
       const remaining = maxLayerBytes - heldBytes + (layerSizes.get(path) ?? 0);
-      const bytes = await throttle(() => fetchBytes(pathToUrl(path, protocols), remaining));
+      const bytes = await throttle(() => fetchBytes(urlOf(path), remaining));
       stats.fetchMs = Math.max(stats.fetchMs, performance.now() - t0);
       if (!bytes) {
         stats.missing++;
@@ -105,7 +96,7 @@ export async function composeStage({
   const scene = loader.takeScene();
   loader.free();
   const meta = JSON.parse(scene.meta());
-  return { scene, meta, stats, protocols };
+  return { scene, meta, stats };
 }
 
 function resourceLimit(detail) {
