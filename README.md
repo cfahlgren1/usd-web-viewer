@@ -92,7 +92,7 @@ Six real [SimReady](https://huggingface.co/datasets/cfahlgren1/simready-usd-web-
 |---|---|---|---|---|---|
 | Renders the 6 packages | **6/6** | 5/6 | 1/6 | 2/6 | 6/6 |
 | WASM download (brotli) | **593 KB** | 6.0 MB | – | 1.4 MB | – |
-| Peak tab memory | **170–623 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
+| Peak tab memory | **167–624 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
 | WASM heap | **2–86 MB** | ~700 MB | – | 18–64 MB | – |
 | IV pole fully loaded | **0.7 s**² | 11.8 s | ✗ | ✗ | 0.1 s |
 | Needs COOP/COEP | **no** | yes | no | no | no |
