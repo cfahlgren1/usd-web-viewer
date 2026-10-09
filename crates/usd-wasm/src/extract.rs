@@ -32,8 +32,9 @@ pub struct Scene {
 
 /// Something the viewer could not show faithfully.
 pub struct Warning {
-    /// `prim-unsupported`, `material-fallback` or `composition` (the page adds
-    /// layer, texture and `nothing-drawable` warnings).
+    /// `prim-unsupported`, `material-fallback`, `instance-limit` or
+    /// `composition` (the page adds layer, texture, `triangle-limit` and
+    /// `nothing-drawable` warnings).
     pub code: &'static str,
     pub message: String,
     /// An example prim or material path, when there is one.
@@ -121,16 +122,93 @@ struct Inherited {
     prototype: Option<u32>,
 }
 
-/// A PointInstancer prototype and where instancers place it: each instance's
-/// index and its prototype-to-world transform.
+/// A PointInstancer prototype and where instancers place it: each
+/// placement's instance indices (`[i]`, or `[i][j]` through a nested
+/// instancer) and its prototype-to-world transform.
 struct Prototype {
     root: sdf::Path,
-    placements: Vec<(usize, Matrix4d)>,
+    placements: Vec<(String, Matrix4d)>,
+    /// The instancers that target it.
+    instancers: Vec<u32>,
+}
+
+/// A PointInstancer, the prototypes it targets and the prototype it is part
+/// of, if any: it is then placed wherever that prototype is.
+struct Instancer {
+    prim: usd::Prim,
+    /// Invisible or of `guide` / `proxy` purpose: it places nothing.
+    hidden: bool,
+    targets: Vec<u32>,
+    enclosing: Option<u32>,
+    state: Placing,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Placing {
+    Todo,
+    InProgress,
+    Done,
+}
+
+/// Every PointInstancer's placements, nested instancers expanded, at most
+/// `max` per prototype.
+struct Placer<'a> {
+    stage: &'a Stage,
+    xforms: &'a mut XformCache,
+    instancers: Vec<Instancer>,
+    prototypes: Vec<Prototype>,
+    max: usize,
+    /// An instancer whose placements were left out past `max`.
+    truncated: Option<String>,
+}
+
+impl Placer<'_> {
+    /// Places prototype `p`: runs every instancer that targets it.
+    fn resolve(&mut self, p: u32) -> openusd::Result<()> {
+        for k in 0..self.prototypes[p as usize].instancers.len() {
+            let i = self.prototypes[p as usize].instancers[k];
+            self.place(i)?;
+        }
+        Ok(())
+    }
+
+    /// Adds instancer `i`'s placements to its prototypes, once the prototype
+    /// it is part of is placed. One that (through others) places itself
+    /// places nothing.
+    fn place(&mut self, i: u32) -> openusd::Result<()> {
+        let instancer = &mut self.instancers[i as usize];
+        if instancer.state != Placing::Todo {
+            return Ok(());
+        }
+        instancer.state = Placing::InProgress;
+        let (prim, hidden, enclosing) = (instancer.prim.clone(), instancer.hidden, instancer.enclosing);
+        // Where the instancer itself is drawn, as instancer-to-world transforms.
+        let bases = match enclosing {
+            _ if hidden => Vec::new(),
+            None => vec![(String::new(), self.xforms.local_to_world_transform(&prim).unwrap_or(Matrix4d::IDENTITY))],
+            Some(e) => {
+                self.resolve(e)?;
+                let prototype = &self.prototypes[e as usize];
+                let above_root = self.stage.prim(prototype.root.parent().unwrap_or_else(sdf::Path::abs_root))?;
+                let (to_root, _) = self
+                    .xforms
+                    .compute_relative_transform(&prim, &above_root)
+                    .unwrap_or((Matrix4d::IDENTITY, false));
+                prototype.placements.iter().map(|(label, m)| (label.clone(), to_root * *m)).collect()
+            }
+        };
+        if !bases.is_empty() {
+            let targets = std::mem::take(&mut self.instancers[i as usize].targets);
+            add_placements(&prim, &targets, &bases, &mut self.prototypes, self.max, &mut self.truncated)?;
+        }
+        self.instancers[i as usize].state = Placing::Done;
+        Ok(())
+    }
 }
 
 /// Extracts everything, triangle data included.
 pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
-    plan(stage)?.read_all()
+    plan(stage, usize::MAX)?.read_all()
 }
 
 impl Instance {
@@ -171,33 +249,41 @@ impl Scene {
         Ok(self)
     }
 
-    /// Reads the triangle data of `sources[index]`, unless the mesh has more
-    /// than `max_triangles` (counted from its faces, before reading the rest).
+    /// Reads the triangle data of `sources[index]`, unless it has more than
+    /// `max_triangles`: a mesh is counted from its faces before reading the
+    /// rest, and anything read by the triangles it emits.
     pub fn read_geometry(&self, index: usize, max_triangles: usize) -> openusd::Result<Read> {
         let Some(source) = self.sources.get(index) else {
             let message = format!("no geometry {index}: the scene has {}", self.sources.len());
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, message).into());
         };
-        if let Some(ty) = source.prim.type_name()?
-            && implicit::is_implicit(ty.as_str())
-        {
-            return Ok(implicit::read(&source.prim, ty.as_str()).map_or(Read::Nothing, Read::Geometry));
-        }
-        let triangles: usize = ints(source.prim.attribute("faceVertexCounts").get::<Value>()?)
-            .unwrap_or_default()
-            .iter()
-            .map(|&n| (n.max(2) - 2) as usize)
-            .sum();
-        if triangles > max_triangles {
-            return Ok(Read::OverBudget { path: source.prim.path().as_str().to_owned(), triangles });
-        }
-        Ok(read_mesh(&source.prim, source.color_primvar.as_deref(), &source.uv_sets)?.map_or(Read::Nothing, Read::Geometry))
+        let path = || source.prim.path().as_str().to_owned();
+        let geometry = match source.prim.type_name()? {
+            Some(ty) if implicit::is_implicit(ty.as_str()) => implicit::read(&source.prim, ty.as_str()),
+            _ => {
+                let triangles: usize = ints(source.prim.attribute("faceVertexCounts").get::<Value>()?)
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|&n| (n.max(2) - 2) as usize)
+                    .sum();
+                if triangles > max_triangles {
+                    return Ok(Read::OverBudget { path: path(), triangles });
+                }
+                read_mesh(&source.prim, source.color_primvar.as_deref(), &source.uv_sets)?
+            }
+        };
+        Ok(match geometry {
+            Some(g) if g.indices.len() / 3 > max_triangles => Read::OverBudget { path: path(), triangles: g.indices.len() / 3 },
+            Some(g) => Read::Geometry(g),
+            None => Read::Nothing,
+        })
     }
 }
 
 /// Composes what a renderer needs except triangle data: materials, instances
-/// with their transforms and materials, and the mesh sources to read.
-pub fn plan(stage: &Stage) -> openusd::Result<Scene> {
+/// with their transforms and materials, and the mesh sources to read. Draws
+/// at most `max_instances` mesh instances, PointInstancer placements included.
+pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
     let mut scene = Scene {
         up_axis: token_metadata(stage, "upAxis").unwrap_or_else(|| "Y".to_owned()),
         meters_per_unit: match stage.stage_metadata("metersPerUnit")? {
@@ -219,22 +305,11 @@ pub fn plan(stage: &Stage) -> openusd::Result<Scene> {
     // Prim type -> (count, first path).
     let mut unsupported: HashMap<String, (usize, String)> = HashMap::new();
 
-    let mut prototypes: Vec<Prototype> = Vec::new();
+    // Visibility and purpose first: an invisible or guide instancer places nothing.
+    let mut instancers = Vec::new();
     for path in &paths {
         let prim = stage.prim(path)?;
-        if prim.type_name()?.as_deref() == Some("PointInstancer") {
-            let world = xforms.local_to_world_transform(&prim).unwrap_or(Matrix4d::IDENTITY);
-            add_placements(&prim, world, &mut prototypes)?;
-        }
-    }
-
-    for path in paths {
-        let prim = stage.prim(&path)?;
-        let parent = path
-            .parent()
-            .and_then(|p| state.get(&p).copied())
-            .unwrap_or_default();
-        let mut own = parent;
+        let mut own = path.parent().and_then(|p| state.get(&p).copied()).unwrap_or_default();
         if !own.invisible && token_attr(&prim, "visibility").as_deref() == Some("invisible") {
             own.invisible = true;
         }
@@ -245,10 +320,53 @@ pub fn plan(stage: &Stage) -> openusd::Result<Scene> {
         {
             own.hidden_purpose = purpose == "guide" || purpose == "proxy";
         }
-        if let Some(index) = prototypes.iter().position(|p| p.root == path) {
-            own.prototype = Some(index as u32);
-        }
         state.insert(path.clone(), own);
+        if prim.type_name()?.as_deref() == Some("PointInstancer") {
+            instancers.push((prim, own.invisible || own.hidden_purpose));
+        }
+    }
+
+    // Every prototype is registered, placed or not: it is drawn only where placed.
+    let mut prototypes: Vec<Prototype> = Vec::new();
+    let mut prototype_index: HashMap<sdf::Path, u32> = HashMap::new();
+    let mut targets = Vec::with_capacity(instancers.len());
+    for (i, (prim, _)) in instancers.iter().enumerate() {
+        let mut indices = Vec::new();
+        for root in prim.relationship("prototypes").targets()? {
+            let index = *prototype_index.entry(root.clone()).or_insert_with(|| {
+                prototypes.push(Prototype { root, placements: Vec::new(), instancers: Vec::new() });
+                prototypes.len() as u32 - 1
+            });
+            let instancers = &mut prototypes[index as usize].instancers;
+            if instancers.last() != Some(&(i as u32)) {
+                instancers.push(i as u32);
+            }
+            indices.push(index);
+        }
+        targets.push(indices);
+    }
+    let instancers = instancers
+        .into_iter()
+        .zip(targets)
+        .map(|((prim, hidden), targets)| {
+            // The nearest prototype at or above the instancer.
+            let enclosing = std::iter::successors(Some(prim.path().clone()), |p| p.parent()).find_map(|p| prototype_index.get(&p).copied());
+            Instancer { prim, hidden, targets, enclosing, state: Placing::Todo }
+        })
+        .collect();
+    let mut placer = Placer { stage, xforms: &mut xforms, instancers, prototypes, max: max_instances, truncated: None };
+    for p in 0..placer.prototypes.len() as u32 {
+        placer.resolve(p)?;
+    }
+    let Placer { prototypes, truncated, .. } = placer;
+    let mut over_limit: Option<String> = None;
+
+    for path in paths {
+        let prim = stage.prim(&path)?;
+        let inherited = path.parent().and_then(|p| state.get(&p)).and_then(|s| s.prototype);
+        let Some(own) = state.get_mut(&path) else { continue };
+        own.prototype = prototype_index.get(&path).copied().or(inherited);
+        let own = *own;
 
         let Some(ty) = prim.type_name()? else { continue };
         if ty.as_str() != "Mesh" && !implicit::is_implicit(ty.as_str()) {
@@ -269,6 +387,14 @@ pub fn plan(stage: &Stage) -> openusd::Result<Scene> {
             scene.stats.skipped.push((path.as_str().to_owned(), "purpose"));
             continue;
         }
+        let remaining = max_instances.saturating_sub(scene.instances.len());
+        let placements = own.prototype.map(|p| &prototypes[p as usize].placements);
+        if remaining < placements.map_or(1, Vec::len) {
+            over_limit.get_or_insert_with(|| path.as_str().to_owned());
+            if remaining == 0 {
+                continue;
+            }
+        }
 
         // Instance proxies share their prototype's data: read it once.
         let source = match prim.prim_in_prototype()? {
@@ -279,7 +405,7 @@ pub fn plan(stage: &Stage) -> openusd::Result<Scene> {
         let mesh_material = shown_material(stage, &mut materials, &mut scene.materials, &prim, binding.as_ref())?;
         let mut subset_materials = HashMap::new();
         for child in prim.children()? {
-            if child.type_name()?.as_deref() == Some("GeomSubset")
+            if is_material_subset(&child)?
                 && let Some(mat) = MaterialBindingAPI::from_prim_unchecked(child.clone()).compute_bound_material("preview")?
                 && let Some(name) = child.path().name()
             {
@@ -302,23 +428,23 @@ pub fn plan(stage: &Stage) -> openusd::Result<Scene> {
         let mut subsets: Vec<(String, u32)> = subset_materials.into_iter().collect();
         subsets.sort();
 
-        let placed = match own.prototype {
-            None => vec![(
-                path.as_str().to_owned(),
-                xforms.local_to_world_transform(&prim).unwrap_or(Matrix4d::IDENTITY),
-            )],
-            Some(index) => {
+        let placed = match (own.prototype, placements) {
+            (Some(index), Some(placements)) => {
                 let prototype = &prototypes[index as usize];
                 let above_root = stage.prim(prototype.root.parent().unwrap_or_else(sdf::Path::abs_root))?;
                 let (to_root, _) = xforms
                     .compute_relative_transform(&prim, &above_root)
                     .unwrap_or((Matrix4d::IDENTITY, false));
-                prototype
-                    .placements
+                placements
                     .iter()
-                    .map(|&(i, placement)| (format!("{}[{i}]", path.as_str()), to_root * placement))
+                    .take(remaining)
+                    .map(|(label, placement)| (format!("{}{label}", path.as_str()), to_root * *placement))
                     .collect()
             }
+            _ => vec![(
+                path.as_str().to_owned(),
+                xforms.local_to_world_transform(&prim).unwrap_or(Matrix4d::IDENTITY),
+            )],
         };
         let double_sided = matches!(prim.attribute("doubleSided").get::<bool>(), Ok(Some(true)));
         for (path, matrix) in placed {
@@ -333,6 +459,13 @@ pub fn plan(stage: &Stage) -> openusd::Result<Scene> {
                 double_sided,
             });
         }
+    }
+    if let Some(path) = over_limit.or(truncated) {
+        scene.warnings.push(Warning {
+            code: "instance-limit",
+            message: format!("instances past maxInstances ({max_instances}) not drawn"),
+            path: Some(path),
+        });
     }
     let mut types: Vec<_> = unsupported.into_iter().collect();
     types.sort();
@@ -354,26 +487,30 @@ pub fn plan(stage: &Stage) -> openusd::Result<Scene> {
     Ok(scene)
 }
 
+/// A `GeomSubset` of the `materialBind` family: the subsets materials bind
+/// through, as Pixar's `GetMaterialBindSubsets` reads them.
+fn is_material_subset(prim: &usd::Prim) -> openusd::Result<bool> {
+    Ok(prim.type_name()?.as_deref() == Some("GeomSubset") && token_attr(prim, "familyName").as_deref() == Some("materialBind"))
+}
+
 /// Whether a prim is geometry. The UsdVol schemas are not registered (to keep
 /// the module small), so their gprims are known by name.
 fn is_gprim(prim: &usd::Prim, ty: &str) -> openusd::Result<bool> {
     Ok(ty == "Volume" || ty.starts_with("ParticleField") || prim.is_a("Gprim")?)
 }
 
-/// Records where a PointInstancer places each of its prototypes:
-/// `scale * orientation * translate(position)` under the instancer's own
-/// transform, leaving out `invisibleIds` and `inactiveIds`.
-fn add_placements(prim: &usd::Prim, world: Matrix4d, out: &mut Vec<Prototype>) -> openusd::Result<()> {
-    let targets = prim.relationship("prototypes").targets()?;
-    // Every prototype is registered, placed or not: it is drawn only where placed.
-    for root in &targets {
-        if !out.iter().any(|p| &p.root == root) {
-            out.push(Prototype {
-                root: root.clone(),
-                placements: Vec::new(),
-            });
-        }
-    }
+/// Records where a PointInstancer places each of its prototypes (`targets`,
+/// by index), at each of `bases`, where the instancer itself is:
+/// `scale * orientation * translate(position) * base`, leaving out
+/// `invisibleIds` and `inactiveIds`, and at most `max` per prototype.
+fn add_placements(
+    prim: &usd::Prim,
+    targets: &[u32],
+    bases: &[(String, Matrix4d)],
+    prototypes: &mut [Prototype],
+    max: usize,
+    truncated: &mut Option<String>,
+) -> openusd::Result<()> {
     let Some(proto_indices) = ints(prim.attribute("protoIndices").get::<Value>()?) else {
         return Ok(());
     };
@@ -408,21 +545,35 @@ fn add_placements(prim: &usd::Prim, world: Matrix4d, out: &mut Vec<Prototype>) -
         hidden.extend(op.compose_over(&[]));
     }
 
-    for (i, &proto) in proto_indices.iter().enumerate() {
-        let (Some(root), Some(&position)) = (targets.get(proto as usize), positions.get(i)) else {
-            continue;
-        };
-        if hidden.contains(&ids.get(i).copied().unwrap_or(i as i64)) {
-            continue;
-        }
-        let orientation = orientations.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]);
-        let scale = scales.get(i).copied().unwrap_or([1.0; 3]);
-        let placement = Matrix4d::scale(scale.map(f64::from))
-            * Matrix4d::from_quat(orientation)
-            * Matrix4d::translation(position.map(f64::from))
-            * world;
-        if let Some(prototype) = out.iter_mut().find(|p| &p.root == root) {
-            prototype.placements.push((i, placement));
+    // Stop once every target is full: a nested instancer multiplies placements.
+    let distinct: HashSet<u32> = targets.iter().copied().collect();
+    let mut full = distinct.iter().filter(|&&t| prototypes[t as usize].placements.len() >= max).count();
+    for (label, base) in bases {
+        for (i, &proto) in proto_indices.iter().enumerate() {
+            if full == distinct.len() {
+                truncated.get_or_insert_with(|| prim.path().as_str().to_owned());
+                return Ok(());
+            }
+            let (Some(&target), Some(&position)) = (targets.get(proto as usize), positions.get(i)) else {
+                continue;
+            };
+            if hidden.contains(&ids.get(i).copied().unwrap_or(i as i64)) {
+                continue;
+            }
+            let placements = &mut prototypes[target as usize].placements;
+            if placements.len() >= max {
+                continue;
+            }
+            let orientation = orientations.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]);
+            let scale = scales.get(i).copied().unwrap_or([1.0; 3]);
+            let placement = Matrix4d::scale(scale.map(f64::from))
+                * Matrix4d::from_quat(orientation)
+                * Matrix4d::translation(position.map(f64::from))
+                * *base;
+            placements.push((format!("{label}[{i}]"), placement));
+            if placements.len() == max {
+                full += 1;
+            }
         }
     }
     Ok(())
@@ -905,17 +1056,15 @@ fn unit([x, y, z]: [f32; 3]) -> [f32; 3] {
     }
 }
 
-/// `materialBind` face subsets, by child name, keeping only valid face indices.
-fn read_subsets(prim: &usd::Prim, faces: usize) -> openusd::Result<Vec<(String, Vec<usize>)>> {
+/// `materialBind` face subsets, by child name, keeping only valid face
+/// indices. Pixar requires a family's indices to be unique: a face named
+/// again would be drawn again, so each is kept once, in the first subset
+/// that names it.
+fn read_subsets(prim: &usd::Prim, face_count: usize) -> openusd::Result<Vec<(String, Vec<usize>)>> {
     let mut out = Vec::new();
+    let mut claimed = vec![false; face_count];
     for child in prim.children()? {
-        if child.type_name()?.as_deref() != Some("GeomSubset") {
-            continue;
-        }
-        if token_attr(&child, "elementType").is_some_and(|t| t != "face") {
-            continue;
-        }
-        if token_attr(&child, "familyName").is_some_and(|f| f != "materialBind") {
+        if !is_material_subset(&child)? || token_attr(&child, "elementType").is_some_and(|t| t != "face") {
             continue;
         }
         let Some(indices) = ints(child.attribute("indices").get::<Value>()?) else {
@@ -923,8 +1072,8 @@ fn read_subsets(prim: &usd::Prim, faces: usize) -> openusd::Result<Vec<(String, 
         };
         let faces: Vec<usize> = indices
             .into_iter()
-            .filter(|&i| i >= 0 && (i as usize) < faces)
-            .map(|i| i as usize)
+            .filter_map(|i| usize::try_from(i).ok())
+            .filter(|&i| i < face_count && !std::mem::replace(&mut claimed[i], true))
             .collect();
         if let Some(name) = child.path().name() {
             out.push((name.to_owned(), faces));

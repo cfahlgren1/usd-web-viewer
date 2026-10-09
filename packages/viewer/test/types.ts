@@ -12,6 +12,7 @@ const result = await loadUsd('https://example.test/root.usda', {
   maxConcurrentFetches: 4,
   maxLayers: 64,
   maxTriangles: 1e6,
+  maxInstances: 1000,
   maxTextureBytes: 64 * 2 ** 20,
   allowedOrigins: ['https://cdn.example.test'],
 });

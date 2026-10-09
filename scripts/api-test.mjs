@@ -3,6 +3,7 @@
 // usage: BASE_URL=http://127.0.0.1:8811 node scripts/api-test.mjs [--hub]
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 
 const BASE = process.env.BASE_URL || 'http://127.0.0.1:8811';
 const LAPTOP = '/data/LGElectronics/simready-assets/laptop_17z90ur/simready_usd/laptop_17z90ur.usd';
@@ -20,6 +21,41 @@ const test = (name, fn) => tests.push([name, fn]);
 
 // A page with the library imported, for loadUsd calls through page.evaluate.
 await page.goto(`${BASE}/examples/element.html`);
+
+/** A CORS server on a new local origin that logs each request's X-Key and Authorization headers. */
+async function loggingServer(respond) {
+  const log = [];
+  const server = http.createServer((req, res) => {
+    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': '*' };
+    if (req.method === 'OPTIONS') return res.writeHead(204, cors).end();
+    log.push([req.url, req.headers['x-key'] ?? null, req.headers.authorization ?? null]);
+    respond(req, res, cors);
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { log, origin: `http://127.0.0.1:${server.address().port}`, close: () => server.close() };
+}
+
+test('headers never follow a redirect to another origin', async () => {
+  // Three origins, as when a page loads from a CDN: the page's, the root's, and another that a layer on the
+  // root's origin redirects to. First, before any Playwright route: routing changes how redirects are followed.
+  const quad = '#usda 1.0\ndef Mesh "M" {\n  int[] faceVertexCounts = [3]\n  int[] faceVertexIndices = [0, 1, 2]\n  point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n}';
+  const other = await loggingServer((req, res, cors) => res.writeHead(200, cors).end(quad));
+  const site = await loggingServer((req, res, cors) => {
+    if (req.url === '/root.usda') return res.writeHead(200, cors).end('#usda 1.0\n(subLayers = [@./a.usda@])');
+    res.writeHead(302, { ...cors, location: `${other.origin}/a.usda` }).end();
+  });
+  const meshes = await page.evaluate(async (url) => {
+    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const result = await loadUsd(url, { headers: { Authorization: 'Bearer SECRET', 'X-Key': 'SECRET2' }, textures: 'none' });
+    result.dispose();
+    return result.info.meshes;
+  }, `${site.origin}/root.usda`);
+  site.close();
+  other.close();
+  assert.ok(site.log.some(([url, key, auth]) => url === '/a.usda' && key === 'SECRET2' && auth === 'Bearer SECRET'), `headers reach the root origin: ${JSON.stringify(site.log)}`);
+  assert.ok(other.log.length > 0 && other.log.every(([, key, auth]) => key === null && auth === null), JSON.stringify(other.log));
+  assert.equal(meshes, 1);
+});
 
 test('progress reports layers, compose and textures', async () => {
   const progress = await page.evaluate(async (url) => {
@@ -345,6 +381,49 @@ test('overlapping viewer.load calls: the newer one wins and the older is discard
     return { firstOutcome, shown, secondStillShown, canvasRemoved: !host.querySelector('canvas') };
   }, [THOR, LAPTOP]);
   assert.deepEqual(out, { firstOutcome: 'aborted', shown: 1, secondStillShown: true, canvasRemoved: true });
+});
+
+test('stopping a load stops all of it: while WASM compiles, as meshes stream in, and a custom fetch body', async () => {
+  let held;
+  await page.context().route('**/__hang.wasm', (route) => (held = route));
+  const out = await page.evaluate(async (url) => {
+    const settle = (promise) => Promise.race([promise.then(() => 'resolved', (e) => e.code), new Promise((resolve) => setTimeout(() => resolve('hung'), 3000))]);
+    // A fresh copy of the module, its WASM compile never finishing.
+    const fresh = await import('/packages/viewer/src/index.js?compiling');
+    const compiling = new AbortController();
+    const whileCompiling = fresh.loadUsd(url, { signal: compiling.signal, wasmUrl: '/__hang.wasm' });
+    setTimeout(() => compiling.abort(), 50);
+
+    const { createViewer, loadUsd } = await import('/packages/viewer/src/index.js');
+    const host = document.body.appendChild(document.createElement('div'));
+    host.style.cssText = 'width:200px;height:150px';
+    const viewer = createViewer(host);
+    const shown = () => viewer.scene.children.filter((c) => c.name === 'usd').length;
+    let streaming;
+    const streamed = new Promise((resolve) => (streaming = resolve));
+    const cleared = viewer.load(url, { textures: 'none', onProgress: (p) => p.stage === 'geometry' && streaming() });
+    await streamed;
+    const before = shown();
+    viewer.clear();
+    const afterClear = shown();
+
+    // A custom fetch that ignores its signal: its body is cancelled anyway.
+    let cancelled = false;
+    const body = new ReadableStream({ pull: (c) => new Promise((resolve) => setTimeout(() => resolve(c.enqueue(new Uint8Array(16))), 10)), cancel: () => void (cancelled = true) });
+    const fetching = new AbortController();
+    const fetched = loadUsd('/endless.usda', { fetch: async () => new Response(body), signal: fetching.signal });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    fetching.abort();
+    const outcomes = { compiling: await settle(whileCompiling), cleared: await settle(cleared), fetched: await settle(fetched) };
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const later = shown();
+    viewer.dispose();
+    host.remove();
+    return { outcomes, shown: [before, afterClear, later], cancelled };
+  }, THOR);
+  await held?.abort();
+  await page.context().unroute('**/__hang.wasm');
+  assert.deepEqual(out, { outcomes: { compiling: 'aborted', cleared: 'aborted', fetched: 'aborted' }, shown: [1, 0, 0], cancelled: true }, JSON.stringify(out));
 });
 
 test('textures none loads no textures; complete reports counts', async () => {

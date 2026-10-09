@@ -84,8 +84,9 @@ impl UsdLoader {
 
     /// Composes the stage at `root`. Returns the layers still missing; when
     /// that is empty the scene is ready for [`take_scene`](Self::take_scene).
-    pub fn compose(&mut self, root: &str) -> Result<Vec<String>, JsError> {
-        match self.inner.compose(root).map_err(js_error)? {
+    /// The scene draws at most `max_instances` mesh instances.
+    pub fn compose(&mut self, root: &str, max_instances: usize) -> Result<Vec<String>, JsError> {
+        match self.inner.compose(root, max_instances).map_err(js_error)? {
             Composed::Missing(missing) => Ok(missing),
             Composed::Scene(scene) => {
                 self.scene = Some(scene);
@@ -119,7 +120,7 @@ impl Default for UsdLoader {
 pub struct UsdScene {
     scene: Scene,
     current: Option<crate::extract::Geometry>,
-    packages: std::collections::HashMap<String, Vec<u8>>,
+    packages: resolver::Store,
 }
 
 #[wasm_bindgen]
@@ -193,14 +194,14 @@ impl UsdScene {
     /// A texture that lives inside a USDZ package, if `path` names one there.
     /// Fails rather than expand it past `limit` bytes.
     #[wasm_bindgen(js_name = packagedFile)]
-    pub fn packaged_file(&self, path: &str, limit: f64) -> Result<Option<Vec<u8>>, JsError> {
-        let Some((package, inner)) = resolver::split_packaged(path) else {
+    pub fn packaged_file(&mut self, path: &str, limit: f64) -> Result<Option<Vec<u8>>, JsError> {
+        let Some((package, _)) = resolver::split_packaged(path) else {
             return Ok(None);
         };
-        let Some(bytes) = self.packages.get(package) else {
+        if !self.packages.bytes.contains_key(package) {
             return Ok(None);
-        };
-        match resolver::read_packaged(bytes, inner, resolver::MAX_PACKAGED_FILE_BYTES.min(limit as u64)) {
+        }
+        match self.packages.read_packaged_within(path, limit as u64) {
             Ok(file) => Ok(Some(file)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(js_error(e)),

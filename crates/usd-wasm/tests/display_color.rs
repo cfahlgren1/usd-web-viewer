@@ -6,7 +6,7 @@ use usd_wasm::{Composed, Loader, Scene};
 fn compose(layer: String) -> Scene {
     let mut loader = Loader::new();
     loader.add_layer("/h/root.usda", layer.into_bytes()).unwrap();
-    match loader.compose("/h/root.usda").unwrap() {
+    match loader.compose("/h/root.usda", usize::MAX).unwrap() {
         Composed::Scene(scene) => scene.read_all().expect("reads geometry"),
         Composed::Missing(_) => panic!("missing layers"),
     }

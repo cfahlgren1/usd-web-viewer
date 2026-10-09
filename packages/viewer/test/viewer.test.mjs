@@ -335,3 +335,34 @@ test('geometry streams in; the load resolves once every geometry has arrived', a
   const { info, root } = await loading;
   assert.deepEqual([info.meshes, info.geometries, info.triangles, root.children.length], [1, 1, 1, 1]);
 });
+
+const at = (x) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, 0, 0, 1];
+
+test('instances of one geometry with the same materials draw as one InstancedMesh, framed and freed like meshes', async () => {
+  const [meta, geometry, done] = sceneMessages(IDENTITY);
+  const red = { ...meta.meta.materials[0], path: '/Red', maps: {} };
+  meta.meta.materials = [{ ...red, path: '/Blue' }, red];
+  // Six alike, two double-sided: one InstancedMesh and two meshes.
+  meta.meta.instances = Array.from({ length: 8 }, (_, x) => ({ path: `/I[${x}]`, geometry: 0, material: 0, subsets: { Part: 1 }, doubleSided: x >= 6, matrix: at(x) }));
+  geometry.meta = { ...geometry.meta, groups: [[0, 3, 'Part'], [3, 3]], bounds: [0, 0, 0, 1, 1, 0] };
+  geometry.arrays = { ...geometry.arrays, positions: new Float32Array(12), normals: new Float32Array(12), indices: new Uint16Array([0, 1, 2, 0, 2, 3]) };
+  const loading = loadUsd('scene.usda');
+  await tick();
+  [meta, geometry, done].forEach((m) => FakeWorker.last.send(m));
+  const { root, info, dispose } = await loading;
+  const [batch, ...single] = root.children;
+  assert.equal(batch.isInstancedMesh, true);
+  assert.equal(batch.count, 6);
+  assert.deepEqual(batch.material.map((m) => m.name), ['/Red', '/Blue']);
+  assert.deepEqual(single.map((m) => [m.isInstancedMesh ?? false, m.name]), [[false, '/I[6]'], [false, '/I[7]']]);
+  assert.deepEqual([info.meshes, info.triangles], [8, 16]);
+  const matrix = new THREE.Matrix4();
+  batch.getMatrixAt(5, matrix);
+  assert.equal(matrix.elements[12], 5);
+  const box = new THREE.Box3().setFromObject(root);
+  assert.deepEqual([box.min.x, box.max.x], [0, 8]);
+  let freed = false;
+  batch.addEventListener('dispose', () => (freed = true));
+  dispose();
+  assert.equal(freed, true);
+});

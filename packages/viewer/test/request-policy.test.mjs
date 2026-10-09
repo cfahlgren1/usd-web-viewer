@@ -52,6 +52,29 @@ const CASES = [
   ['https://huggingface.co/datasets/o/r/blob/main/a.usda', HUB, [], REFUSED],
   ['https://huggingface.co/api/whoami-v2', SITE, ['*'], REFUSED],
 
+  // Endpoints and pages shaped like repo files: a reserved first segment is never a model's owner.
+  ['https://huggingface.co/api/whoami-v2/resolve/x', HUB, ['*'], REFUSED],
+  ['https://huggingface.co/oauth/authorize/resolve/x', HUB, ['*'], REFUSED],
+  ['https://huggingface.co/api/resolve-cache/resolve/x', HUB, ['*'], REFUSED],
+  ['https://huggingface.co/settings/tokens/resolve/x', HUB, [], REFUSED],
+  ['https://huggingface.co/logout/x/resolve/main/a.usda', HUB, [], REFUSED],
+  ['https://huggingface.co/API/whoami-v2/resolve/x', HUB, [], REFUSED],
+  ['https://huggingface.co/%61pi/whoami-v2/resolve/x', HUB, [], REFUSED],
+  ['https://huggingface.co/models/a/resolve/main/x', HUB, [], REFUSED],
+  ['https://huggingface.co/api/models/a/b/tree/main/../../../../settings/x', HUB, [], REFUSED],
+  // ... but datasets and spaces may use those names.
+  ['https://huggingface.co/datasets/api/r/resolve/main/a.usda', HUB, [], OMIT],
+  ['https://huggingface.co/spaces/oauth/r/resolve/main/a.usda', HUB, [], OMIT],
+
+  // Pull request revisions: an encoded slash only in the revision of resolve and tree URLs.
+  ['https://huggingface.co/datasets/o/r/resolve/refs%2Fpr%2F1/pkg/a.usda', 'https://huggingface.co/datasets/o/r/resolve/refs%2Fpr%2F1/pkg/root.usda', [], OWN],
+  ['https://huggingface.co/datasets/o/r/resolve/refs%2fpr%2f1/tex.png', 'https://huggingface.co/datasets/o/r/resolve/refs%2Fpr%2F1/pkg/root.usda', [], OWN],
+  ['https://huggingface.co/api/datasets/o/r/tree/refs%2Fpr%2F1/pkg?recursive=true', 'https://huggingface.co/datasets/o/r/resolve/refs%2Fpr%2F1/pkg/root.usda', [], OWN],
+  ['https://huggingface.co/datasets/o/r/resolve/refs%2Fpr%2F1/a%2Fb.usda', HUB, [], REFUSED],
+  ['https://huggingface.co/datasets/o%2Fr/x/resolve/main/a.usda', HUB, [], REFUSED],
+  ['https://huggingface.co/datasets/o/r/resolve/refs%5cpr/a.usda', HUB, [], REFUSED],
+  ['https://huggingface.co/api/datasets/o/r/tree/main/a%2Fb', HUB, [], REFUSED],
+
   // Traversal and encodings: checked on the normalized path, encoded slashes refused.
   ['https://huggingface.co/datasets/o/r/resolve/main/../../../../../api/whoami-v2', HUB, [], REFUSED],
   ['https://huggingface.co/datasets/o/r/resolve/main/%2e%2e/%2E%2E/%2e%2e/%2e%2e/%2e%2e/api/whoami-v2', HUB, [], REFUSED],
@@ -62,8 +85,12 @@ const CASES = [
   ['https://huggingface.co\\api\\whoami-v2', HUB, ['*'], REFUSED],
   ['https:\\\\attacker.example\\x.usda', HUB, [], REFUSED],
 
-  // Hub hosts: hf.co, case, trailing dot, ports, look-alikes, plain http.
-  ['https://hf.co/datasets/o/r/resolve/main/a.usda', HUB, [], OMIT],
+  // Hub hosts: hf.co (checked as the huggingface.co URL it redirects to), case, trailing dot, ports, look-alikes, plain http.
+  ['https://hf.co/datasets/o/r/resolve/main/a.usda', HUB, [], OWN],
+  ['https://hf.co/datasets/o/other/resolve/main/a.usda', HUB, [], OMIT],
+  ['https://huggingface.co/datasets/o/r/resolve/main/a.usda', 'https://hf.co/datasets/o/r/resolve/main/pkg/root.usda', [], OWN],
+  ['https://hf.co/datasets/o/r/resolve/main/a.usda', 'https://hf.co/datasets/o/r/resolve/main/pkg/root.usda', [], OWN],
+  ['https://huggingface.co/victim/private/resolve/main/a.usda', 'https://hf.co/datasets/o/r/resolve/main/pkg/root.usda', [], OMIT],
   ['https://hf.co/api/whoami-v2', HUB, ['*'], REFUSED],
   ['https://HUGGINGFACE.CO/datasets/o/r/resolve/main/a.usda', HUB, [], OWN],
   ['https://cdn-lfs.hf.co/repos/x/y', HUB, [], OMIT],

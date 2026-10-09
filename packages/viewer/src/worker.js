@@ -3,7 +3,7 @@
 // terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { lastPanic, UsdLoader } from '../wasm/usd_wasm.js';
 import { hubPackageLayers } from './hub-prefetch.js';
-import { composeStage, fetchLimited, imageInfo, limiter, loadFailure, readGeometries, requestPolicy, takePackagedTextures, textureJobs } from './load-core.js';
+import { canonicalUrl, composeStage, fetchLimited, fetchWithPolicy, imageInfo, limiter, loadFailure, readGeometries, requestPolicy, takePackagedTextures, textureJobs } from './load-core.js';
 
 // Textures in flight at once (fetch and decode): decoding a large image
 // briefly holds it at full size, so wide parallelism spikes memory.
@@ -59,16 +59,18 @@ self.onmessage = async ({ data }) => {
     return;
   }
   if (data.type === 'chunk') return receiveChunk(data);
-  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes, maxTextureBytes = 512 * 2 ** 20, maxLayers, maxTriangles, allowedOrigins, headers, proxyFetch } = data;
+  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes, maxTextureBytes = 512 * 2 ** 20, maxLayers, maxInstances, maxTriangles, allowedOrigins, headers, proxyFetch } = data;
   // Every request (layer, texture, Hub listing) goes through here, and
   // through the request policy first. The caller's headers go only where
-  // cookies may; a custom fetch on the page applies the same policy.
+  // cookies may, and never through a redirect off the Hub; a custom fetch on
+  // the page applies the same policy.
   const request = async (target) => {
+    target = canonicalUrl(target);
     const policy = requestPolicy(target, url, allowedOrigins);
     // Reads like a network failure: a missing layer or a failed texture.
     if (policy.refused) throw new TypeError(`request refused: ${policy.refused}`);
     if (proxyFetch) return proxiedFetch(target);
-    return fetch(target, { ...policy, headers: policy.credentials === 'same-origin' ? headers : undefined });
+    return fetchWithPolicy(fetch, target, policy, headers);
   };
   const fetchBytes = (target, budget) => fetchLimited(target, budget, { fetchFn: request });
   // One budget for every texture, packaged ones first, then each fetched
@@ -96,6 +98,7 @@ self.onmessage = async ({ data }) => {
       maxConcurrentFetches,
       maxLayerBytes,
       maxLayers,
+      maxInstances,
       allowedOrigins,
       preload,
       onProgress: progress,

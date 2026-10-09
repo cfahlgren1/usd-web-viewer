@@ -193,7 +193,8 @@ test('requestPolicy: origins, schemes, Hub paths and where credentials go', () =
   assert.deepEqual(policy('https://huggingface.co/datasets/o/r/resolve/main/pkg/a.usda'), { credentials: 'same-origin', referrerPolicy: 'no-referrer' });
   assert.equal(policy('https://huggingface.co/api/datasets/o/r/tree/main/pkg?recursive=true').credentials, 'same-origin');
   assert.equal(policy('https://huggingface.co/victim/private-repo/resolve/main/secret.usda').credentials, 'omit');
-  assert.equal(policy('https://hf.co/datasets/o/r/resolve/main/b.usd').credentials, 'omit');
+  // hf.co is checked as the huggingface.co URL it redirects to.
+  assert.equal(policy('https://hf.co/datasets/o/r/resolve/main/b.usd').credentials, 'same-origin');
   assert.equal(policy('https://cdn-lfs.hf.co/x').credentials, 'omit');
   // What ssrf.usda authors, resolved against a Hub root.
   for (const url of [
@@ -641,4 +642,62 @@ test('hubPackageLayers lists the SimReady package of a Hub root, and nothing for
   assert.deepEqual(await hubPackageLayers('https://example.com/datasets/o/r/resolve/main/pkg/usd/root.usd', request), none);
   assert.deepEqual(await hubPackageLayers('https://huggingface.co/datasets/o/r/resolve/main/x.usd', async () => new Response(null, { status: 401 })), none);
   assert.equal(requests.length, 2);
+});
+
+test('caps: drawn triangles, instances and layer bytes', async () => {
+  // subset-amp.usda, smaller: a 66-gon (64 triangles) its subset names 100 times.
+  const n = 66;
+  const points = Array.from({ length: n }, (_, i) => `(${Math.cos((i / n) * 6.283).toFixed(3)}, ${Math.sin((i / n) * 6.283).toFixed(3)}, 0)`);
+  const amp = `def Mesh "Amp" {
+  int[] faceVertexCounts = [${n}]
+  int[] faceVertexIndices = [${points.map((_, i) => i)}]
+  point3f[] points = [${points}]
+  def GeomSubset "S" {
+    uniform token elementType = "face"
+    uniform token familyName = "materialBind"
+    int[] indices = [${new Array(100).fill(0)}]
+  }
+}`;
+  const instancer = (count) => `def PointInstancer "PI" {
+  rel prototypes = [</PI/P/M>]
+  int[] protoIndices = [${new Array(count).fill(0)}]
+  point3f[] positions = [${Array.from({ length: count }, (_, i) => `(${i}, 0, 0)`)}]
+  def Scope "P" {
+    ${QUAD}
+  }
+}`;
+  // [what, root layer, other layers, preloaded layers, options, triangles drawn, warnings, most bytes of unused.usda read]
+  const cases = [
+    ['a face a subset names again is drawn once; the budget stops at zero', `${amp}\n${QUAD}`, {}, [], { maxTriangles: 65 }, 64, [['triangle-limit', '/M']]],
+    ['implicit shapes count', 'def Cube "C" {}\ndef Sphere "S" {}', {}, [], { maxTriangles: 20 }, 12, [['triangle-limit', '/S']]],
+    ['placements past maxInstances', instancer(50), {}, [], { maxInstances: 10 }, 20, [['instance-limit', '/PI']]],
+    ['triangles count once per instance', instancer(10), {}, [], { maxTriangles: 19 }, 0, [['triangle-limit', '/PI/P/M'], ['nothing-drawable', undefined]]],
+    ['an unused preload is charged as it streams', '(subLayers = [@./a.usda@])', { 'a.usda': `#usda 1.0\n${QUAD}`, 'unused.usda': `#usda 1.0\n${' '.repeat(5000)}` }, ['a.usda', 'unused.usda'], { maxLayerBytes: 2000 }, 2, [], 2000],
+  ];
+  for (const [what, root, others, preloads, options, triangles, warnings, unusedRead = Infinity] of cases) {
+    const files = { 'https://h/root.usda': `#usda 1.0\n${root}` };
+    for (const [name, body] of Object.entries(others)) files[`https://h/${name}`] = body;
+    let read = 0;
+    // Streams each body in 100-byte chunks; the root arrives last, so preloads stream first.
+    const fetchBytes = async (url, budget) => {
+      if (url.endsWith('root.usda') && preloads.length) await new Promise((resolve) => setTimeout(resolve, 100));
+      const body = new TextEncoder().encode(files[url]);
+      for (let i = 0; i < body.length; i += 100) {
+        budget(Math.min(100, body.length - i));
+        if (url.endsWith('unused.usda')) read += Math.min(100, body.length - i);
+        await new Promise((resolve) => setTimeout(resolve));
+      }
+      return body;
+    };
+    const preload = Promise.resolve({ layers: preloads.map((name) => ({ url: `https://h/${name}`, size: 10 })), eager: true });
+    const { scene, meta } = await composeStage({ UsdLoader, fetchBytes, rootUrl: 'https://h/root.usda', preload, ...options });
+    const counts = new Map();
+    for (const { geometry } of meta.instances) counts.set(geometry, (counts.get(geometry) ?? 0) + 1);
+    let drawn = 0;
+    const limits = readGeometries(scene, meta, (i, g, a) => (drawn += a ? (counts.get(i) * a.indices.length) / 3 : 0), options);
+    scene.free();
+    assert.equal(drawn, triangles, what);
+    assert.deepEqual([...meta.warnings, ...limits].map((w) => [w.code, w.path]), warnings, what);
+    assert.ok(read <= unusedRead, `${what}: ${read} bytes read`);
+  }
 });

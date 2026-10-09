@@ -7,7 +7,7 @@ fn scene(usda: &str) -> Scene {
     loader
         .add_layer("/h/root.usda", usda.as_bytes().to_vec())
         .expect("layer parses");
-    match loader.compose("/h/root.usda").expect("composes") {
+    match loader.compose("/h/root.usda", usize::MAX).expect("composes") {
         Composed::Scene(scene) => scene.read_all().expect("reads geometry"),
         Composed::Missing(missing) => panic!("missing layers: {missing:?}"),
     }
@@ -221,4 +221,39 @@ def Xform "NotAGprim" {}
             "1 Volume prim(s) not drawn (unsupported type)",
         ]
     );
+}
+
+#[test]
+fn nested_point_instancers_place_every_copy() {
+    // An instancer placing a prototype that holds another instancer: 3 x 2 copies, as Pixar draws them.
+    let s = scene(
+        r#"#usda 1.0
+def PointInstancer "Outer"
+{
+    rel prototypes = [</Outer/P>]
+    int[] protoIndices = [0, 0, 0]
+    point3f[] positions = [(0, 0, 0), (10, 0, 0), (20, 0, 0)]
+    def Xform "P"
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+        def PointInstancer "Inner"
+        {
+            rel prototypes = [</Outer/P/Inner/Q>]
+            int[] protoIndices = [0, 0]
+            point3f[] positions = [(0, 0, 0), (0, 5, 0)]
+            def Mesh "Q"
+            {
+                int[] faceVertexCounts = [4]
+                int[] faceVertexIndices = [0, 1, 2, 3]
+                point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+            }
+        }
+    }
+}
+"#,
+    );
+    let mut placed: Vec<[i64; 3]> = s.instances.iter().map(|i| translation(&i.matrix)).collect();
+    placed.sort();
+    assert_eq!(placed, [[0, 0, 1], [0, 5, 1], [10, 0, 1], [10, 5, 1], [20, 0, 1], [20, 5, 1]]);
 }

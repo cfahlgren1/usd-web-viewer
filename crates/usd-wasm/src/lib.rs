@@ -6,7 +6,7 @@
 #![forbid(unsafe_code)]
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
 use openusd::{sdf, usd};
@@ -75,9 +75,10 @@ impl Loader {
     /// that were never added, returns them instead so the host can fetch them
     /// and call again. The stage takes ownership of the layer bytes, so the
     /// returned list also names the layers this attempt consumed: the host
-    /// adds those again too (normally from its HTTP cache).
-    pub fn compose(&self, root: &str) -> openusd::Result<Composed> {
-        resolver::lock(&self.files).expanded = 0;
+    /// adds those again too (normally from its HTTP cache). The scene draws
+    /// at most `max_instances` mesh instances.
+    pub fn compose(&self, root: &str, max_instances: usize) -> openusd::Result<Composed> {
+        resolver::lock(&self.files).restart_budget();
         let resolver = self.resolver(true, Some(root));
         let missing = resolver.missing.clone();
         let stage = usd::Stage::builder()
@@ -98,7 +99,7 @@ impl Loader {
             missing.extend(taken);
             return Ok(Composed::Missing(missing));
         }
-        let mut scene = extract::plan(&stage)?;
+        let mut scene = extract::plan(&stage, max_instances)?;
         let diagnostics = stage.composition_errors();
         for d in diagnostics.iter().take(5) {
             scene.warnings.push(extract::Warning { code: "composition", message: d.to_string(), path: None });
@@ -111,23 +112,32 @@ impl Loader {
     }
 
     /// Moves out the USDZ packages `scene`'s textures live in, by package path,
-    /// so their images can still be read once the layers are dropped.
-    pub fn take_texture_packages(&mut self, scene: &Scene) -> HashMap<String, Vec<u8>> {
+    /// with the packages nested in them, so their images can still be read
+    /// once the layers are dropped.
+    pub fn take_texture_packages(&mut self, scene: &Scene) -> resolver::Store {
         let mut files = resolver::lock(&self.files);
-        let mut packages = HashMap::new();
+        let mut packages = resolver::Store::default();
         for (_, texture) in scene.materials.iter().flat_map(|m| &m.maps) {
             if let Some((package, _)) = resolver::split_packaged(&texture.path)
                 && let Some(bytes) = files.bytes.remove(package)
             {
-                packages.insert(package.to_owned(), bytes);
+                packages.bytes.insert(package.to_owned(), bytes);
             }
         }
+        let nested = std::mem::take(&mut files.nested);
+        packages.nested = nested
+            .into_iter()
+            .filter(|(path, _)| resolver::split_packaged(path).is_some_and(|(package, _)| packages.bytes.contains_key(package)))
+            .collect();
+        packages.restart_budget();
         packages
     }
 
     /// Drops every stored layer.
     pub fn clear(&mut self) {
-        resolver::lock(&self.files).bytes.clear();
+        let mut files = resolver::lock(&self.files);
+        files.bytes.clear();
+        files.nested.clear();
     }
 
     fn resolver(&self, take: bool, keep: Option<&str>) -> MemoryResolver {

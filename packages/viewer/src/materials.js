@@ -36,7 +36,7 @@ export function createMaterial(m) {
     material.depthWrite = false;
   }
   material.name = m.path;
-  material.userData.usd = { kind: m.kind, maps: m.maps, colorPrimvar: m.colorPrimvar, uvChannels: {}, color: m.color };
+  material.userData.usd = { kind: m.kind, maps: m.maps, colorPrimvar: m.colorPrimvar, uvChannels: Object.create(null), color: m.color };
   // Until its base color texture streams in, a textured surface shows mid grey
   // (18%, the usual neutral) rather than the stark white texture multiplier.
   if (m.maps.diffuseColor) material.color.setRGB(0.18, 0.18, 0.18, THREE.LinearSRGBColorSpace);
@@ -94,7 +94,7 @@ export function attachTexture(material, path, isColor, textureFor) {
   for (const [input, ref] of Object.entries(usd.maps)) {
     const slot = SLOTS[input];
     if (ref.path !== path || !slot) continue;
-    const texture = textureFor(ref, colorSpace(ref, isColor), usd.uvChannels[ref.uvSet] ?? 0);
+    const texture = textureFor(ref, colorSpace(ref, isColor), Object.hasOwn(usd.uvChannels, ref.uvSet) ? usd.uvChannels[ref.uvSet] : 0);
     material[slot.map] = texture;
     material.userData.patches[input] = { channel: ref.channel, scale: ref.scale, bias: ref.bias };
     // The texture now carries the value: the constant factor becomes neutral.

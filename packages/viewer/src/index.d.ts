@@ -26,10 +26,19 @@ export interface LoadOptions {
   maxTextureSize?: number | undefined;
   /** Aborts fetches and the worker; the load rejects with a UsdLoadError of code `aborted`. */
   signal?: AbortSignal | undefined;
-  /** Sent only with the requests that carry credentials: those to the root URL's origin or, for a root on the Hugging Face Hub, to the root's own repo. For embedding on another site, e.g. `{ Authorization: 'Bearer hf_…' }`. */
+  /**
+   * Sent only with the requests that carry credentials: those to the root URL's origin or, for a root on the Hugging Face Hub, to the root's own repo.
+   * For embedding on another site, e.g. `{ Authorization: 'Bearer hf_…' }`. Never sent through a redirect: off the Hub (whose redirects stay on
+   * its own hosts), a request that redirects is fetched again without headers or cookies, for the browser to follow.
+   */
   headers?: Record<string, string> | undefined;
-  /** Your own fetch for every request the request policy allows (see `allowedOrigins`), run on the page (requests are proxied from the worker). `init.headers` is `headers` where credentials may go and absent elsewhere; `init.credentials` and `init.referrerPolicy` are what the built-in fetch would use; `init.signal` aborts when the load stops. */
-  fetch?: ((url: string, init: { headers?: Record<string, string>; credentials: 'same-origin' | 'omit'; referrerPolicy: 'no-referrer'; signal: AbortSignal }) => Promise<Response>) | undefined;
+  /**
+   * Your own fetch for every request the request policy allows (see `allowedOrigins`), run on the page (requests are proxied from the worker).
+   * `init.headers` is `headers` where credentials may go and absent elsewhere, with `init.redirect` `manual` when it is set off the Hub (a
+   * redirect, opaque or 3xx, is then fetched again without them); `init.credentials` and `init.referrerPolicy` are what the built-in fetch would
+   * use; `init.signal` aborts when the load stops, and bodies still open are cancelled then.
+   */
+  fetch?: ((url: string, init: { headers?: Record<string, string>; credentials: 'same-origin' | 'omit'; referrerPolicy: 'no-referrer'; redirect?: 'manual'; signal: AbortSignal }) => Promise<Response>) | undefined;
   onProgress?: ((progress: LoadProgress) => void) | undefined;
   /** Where the `.wasm` binary is served from. Defaults to the copy next to the package. */
   wasmUrl?: string | URL | undefined;
@@ -39,18 +48,22 @@ export interface LoadOptions {
   maxConcurrentFetches?: number | undefined;
   /** Total bytes of USD layers to fetch before failing with a `fetch` error. Default 768 MiB. */
   maxLayerBytes?: number | undefined;
-  /** Layer files to request before failing with a `fetch` error. Default 1024. */
+  /** Layer files to request before failing with a `fetch` error. Default 1024. Layers read from inside a `.usdz` package are not requested, so not counted: the package counts once, its contents are bounded by `maxLayerBytes` and the package expansion limits (512 MiB per file, 1 GiB in all). */
   maxLayers?: number | undefined;
   /**
    * Origins, besides the root URL's, that layers and textures may be fetched from, e.g. `['https://cdn.example.com']`; `['*']` allows any.
    * A root on the Hugging Face Hub also allows the Hub's hosts and CDNs. Every request, a custom `fetch`'s too, also follows these rules:
-   * only http(s) URLs without user names; on huggingface.co and hf.co, only repo files (`…/resolve/…`) and tree listings; cookies and
-   * `headers` only for the root's origin or, for a Hub root, the root's own repo; no referrer. Only the requested URL is checked, not
-   * where it redirects. Anything refused is skipped with a `layer-missing` or `texture-failed` warning.
+   * only http(s) URLs without user names; hf.co URLs are fetched (and checked) as the huggingface.co URLs they redirect to; on huggingface.co,
+   * only repo files (`…/resolve/…`) and tree listings under a user or organization, with no encoded slash outside the revision (a pull
+   * request's `refs%2Fpr%2F1`); cookies and `headers` only for the root's origin or, for a Hub root, the root's own repo; no referrer. Only the
+   * requested URL is checked, not where it redirects (`headers` never follow a redirect off the Hub). Anything refused is skipped with a
+   * `layer-missing` or `texture-failed` warning.
    */
   allowedOrigins?: readonly string[] | undefined;
-  /** Triangles read across all meshes, each geometry counted once however often it is instanced; meshes past it are left out unread with a `triangle-limit` warning. Default 20 million. */
+  /** Triangles drawn across all meshes, counted once per instance; meshes past it are left out unread with a `triangle-limit` warning. Default 20 million. */
   maxTriangles?: number | undefined;
+  /** Mesh instances drawn, PointInstancer placements (nested ones expanded) included; the rest are left out with an `instance-limit` warning. Default 100,000. Many instances of one mesh with the same materials draw as one `THREE.InstancedMesh`. */
+  maxInstances?: number | undefined;
   /** Total bytes of texture files, read from packages or fetched (counted as they download); textures past it fail with a `texture-failed` warning. Default 512 MiB. Only PNG, JPEG and WebP up to 16384 px a side are decoded; others are refused from their header. */
   maxTextureBytes?: number | undefined;
 }
@@ -59,10 +72,14 @@ export interface LoadOptions {
  * - `prim-unsupported`: visible geometry other than meshes and the implicit `Cube` / `Sphere` / `Cylinder` / `Cone` / `Capsule` / `Plane` (e.g. `BasisCurves`, `Points`, `Volume`, Gaussian splats) left out.
  * - `nothing-drawable`: no visible mesh had anything to draw.
  * - `layer-missing`: a layer could not be fetched, or the request policy refused it (see `allowedOrigins`).
+ * - `layer-unreadable`: a layer was fetched but could not be parsed; composition goes on without it.
+ * - `material-fallback`: materials with neither UsdPreviewSurface nor readable MDL parameters (e.g. MaterialX only), shown grey.
+ * - `composition`: what composition reported, e.g. an unresolved reference (the first 5, then a count).
  * - `texture-failed`: an image could not be fetched or read, or was refused (by the request policy, past `maxTextureBytes`, larger than 16384 px a side, or not PNG, JPEG or WebP); its inputs show their own (authored or default) values.
  * - `triangle-limit`: meshes left out past `maxTriangles`.
+ * - `instance-limit`: instances left out past `maxInstances`.
  */
-export type WarningCode = 'layer-missing' | 'layer-unreadable' | 'prim-unsupported' | 'nothing-drawable' | 'material-fallback' | 'texture-failed' | 'triangle-limit' | 'composition';
+export type WarningCode = 'layer-missing' | 'layer-unreadable' | 'prim-unsupported' | 'nothing-drawable' | 'material-fallback' | 'composition' | 'texture-failed' | 'triangle-limit' | 'instance-limit';
 
 export interface LoadWarning {
   readonly code: WarningCode;
@@ -155,7 +172,7 @@ export interface Viewer {
    * default: the canvas's). Rejects when the viewer is disposed or its WebGL context is lost.
    */
   toBlob(options?: ToBlobOptions): Promise<Blob>;
-  /** Removes and frees the current stage. */
+  /** Removes and frees the current stage, and aborts any load in flight. */
   clear(): void;
   /** Points the camera at `object`, by default the current stage. */
   frame(object?: THREE.Object3D): void;

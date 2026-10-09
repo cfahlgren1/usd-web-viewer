@@ -2,13 +2,17 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { UsdLoadError } from './errors.js';
-import { OUT_OF_MEMORY, requestPolicy } from './load-core.js';
+import { OUT_OF_MEMORY, canonicalUrl, fetchWithPolicy, requestPolicy } from './load-core.js';
 import { applyFallback, attachTexture, configureTexture, createMaterial, variant } from './materials.js';
 
 export { UsdLoadError };
 
 // Lets the viewer show meshes as they stream in, before the load resolves.
 const SHOW = Symbol('show');
+
+// Instances of one geometry with the same materials drawn as one
+// InstancedMesh past this many.
+const INSTANCING_MIN = 4;
 
 // The share of the overall `fraction` each stage spans (see LoadProgress).
 const STAGES = { layers: [0, 0.4], compose: [0.4, 0.5], geometry: [0.5, 0.8], textures: [0.8, 1] };
@@ -51,7 +55,7 @@ async function compile(url) {
  * @returns {Promise<import('./index.js').LoadResult>}
  */
 export async function loadUsd(url, options = {}) {
-  const { maxTextureSize = 1024, textures: textureMode = 'preview', maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxTriangles, allowedOrigins } = options;
+  const { maxTextureSize = 1024, textures: textureMode = 'preview', maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxInstances, maxTriangles, allowedOrigins } = options;
   const { onProgress, signal, headers } = options;
   if (maxConcurrentFetches !== undefined && !(Number.isInteger(maxConcurrentFetches) && maxConcurrentFetches > 0)) {
     throw new RangeError(`maxConcurrentFetches must be a positive integer, got ${maxConcurrentFetches}`);
@@ -59,8 +63,15 @@ export async function loadUsd(url, options = {}) {
   const aborted = () => new UsdLoadError('aborted', 'the load was aborted', { url, cause: signal?.reason });
   if (signal?.aborted) throw aborted();
   if (typeof Worker === 'undefined') throw new UsdLoadError('worker', 'loading needs Web Workers: call loadUsd in a browser', { url });
-  const absoluteUrl = new URL(url, location.href).href;
-  const module = await compileWasm(options.wasmUrl);
+  const absoluteUrl = canonicalUrl(new URL(url, location.href).href);
+  // The compile is shared with other loads: aborting stops waiting for it, not it.
+  const module = await new Promise((resolve, reject) => {
+    const abortWait = () => reject(aborted());
+    signal?.addEventListener('abort', abortWait, { once: true });
+    compileWasm(options.wasmUrl)
+      .then(resolve, reject)
+      .finally(() => signal?.removeEventListener('abort', abortWait));
+  });
   if (signal?.aborted) throw aborted();
   let worker;
   try {
@@ -94,6 +105,9 @@ export async function loadUsd(url, options = {}) {
     stopped = true;
     worker.terminate();
     requests.abort();
+    // A custom fetch may ignore the signal once its body is returned.
+    for (const reader of bodies.values()) reader.cancel().catch(() => {});
+    bodies.clear();
     signal?.removeEventListener('abort', abort);
     rejectScene(error);
     if (error) rejectComplete(error);
@@ -177,16 +191,15 @@ export async function loadUsd(url, options = {}) {
     if (OUT_OF_MEMORY.test(message)) fail(new UsdLoadError('compose', `scene too large to load: ran out of memory: ${message}`, { url: absoluteUrl }));
     else fail(new UsdLoadError('worker', message, { url: absoluteUrl }));
   };
-  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxTriangles, allowedOrigins, headers, proxyFetch: !!options.fetch });
+  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxInstances, maxTriangles, allowedOrigins, headers, proxyFetch: !!options.fetch });
 
   /** Runs one worker request through the caller's `fetch`; the body follows chunk by chunk. */
   async function proxyFetch({ id, url: target }) {
     try {
       const policy = requestPolicy(target, absoluteUrl, allowedOrigins);
       if (policy.refused) throw new TypeError(`request refused: ${policy.refused}`);
-      const init = { ...policy, signal: requests.signal };
-      if (policy.credentials === 'same-origin' && headers) init.headers = headers;
-      const response = await options.fetch(target, init);
+      const response = await fetchWithPolicy(options.fetch, target, policy, headers, { signal: requests.signal });
+      if (stopped) return response.body?.cancel().catch(() => {});
       if (response.ok) bodies.set(id, (response.body ?? new Blob().stream()).getReader());
       else response.body?.cancel();
       worker.postMessage({ type: 'fetched', id, ok: response.ok, status: response.status });
@@ -257,6 +270,7 @@ function buildScene(meta) {
     if (!instancesOf.has(inst.geometry)) instancesOf.set(inst.geometry, []);
     instancesOf.get(inst.geometry).push(inst);
   }
+  const instanced = [];
   const addGeometry = (index, g, a) => {
     if (!g) return;
     const geometry = createGeometry(g, a);
@@ -264,30 +278,50 @@ function buildScene(meta) {
     info.geometries++;
 
     const triangles = g.groups.reduce((n, [, count]) => n + count / 3, 0);
+    // Instances by the materials they draw with.
+    const batches = new Map();
     for (const inst of instancesOf.get(index) ?? []) {
       // A group takes its GeomSubset's material, else the mesh's.
       const mats = g.groups.map(([, , subset]) => {
-        const m = inst.subsets[subset] ?? inst.material;
+        const m = subset !== undefined && Object.hasOwn(inst.subsets, subset) ? inst.subsets[subset] : inst.material;
         const usd = materials[m].userData.usd;
         // Route each named UV set to its attribute on this geometry; meshes that
         // lay their UV sets out differently get their own copy of the material.
-        const uvChannels = {};
+        const uvChannels = Object.create(null);
         for (const ref of Object.values(usd.maps)) {
           const k = g.uvSets.indexOf(ref.uvSet);
           if (k > 0) uvChannels[ref.uvSet] = k;
         }
         return materialFor(m, inst.doubleSided, g.hasColors && !!usd.colorPrimvar, uvChannels);
       });
-      const mesh = new THREE.Mesh(geometry, mats.length > 1 ? mats : mats[0]);
-      mesh.name = inst.path;
-      // USD stores row-vector matrices row-major: the same numbers column-major for three.js.
-      // Set whole rather than decomposed, which would lose shear.
-      mesh.matrix.fromArray(inst.matrix);
-      mesh.matrixAutoUpdate = false;
-      mesh.matrixWorldNeedsUpdate = true;
-      root.add(mesh);
+      const key = mats.map((m) => m.uuid).join();
+      if (!batches.has(key)) batches.set(key, { material: mats.length > 1 ? mats : mats[0], list: [] });
+      batches.get(key).list.push(inst);
       info.meshes++;
       info.triangles += triangles;
+    }
+    // USD stores row-vector matrices row-major: the same numbers column-major for three.js.
+    // Set whole rather than decomposed, which would lose shear.
+    for (const { material, list } of batches.values()) {
+      if (list.length > INSTANCING_MIN) {
+        const mesh = new THREE.InstancedMesh(geometry, material, list.length);
+        mesh.name = list[0].path;
+        const matrix = new THREE.Matrix4();
+        list.forEach((inst, k) => mesh.setMatrixAt(k, matrix.fromArray(inst.matrix)));
+        mesh.computeBoundingBox();
+        mesh.computeBoundingSphere();
+        instanced.push(mesh);
+        root.add(mesh);
+        continue;
+      }
+      for (const inst of list) {
+        const mesh = new THREE.Mesh(geometry, material);
+        mesh.name = inst.path;
+        mesh.matrix.fromArray(inst.matrix);
+        mesh.matrixAutoUpdate = false;
+        mesh.matrixWorldNeedsUpdate = true;
+        root.add(mesh);
+      }
     }
   };
 
@@ -305,6 +339,7 @@ function buildScene(meta) {
 
   const dispose = () => {
     geometries.forEach((g) => g.dispose());
+    instanced.forEach((mesh) => mesh.dispose());
     for (const m of allMaterials()) {
       for (const key of ['map', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'alphaMap', 'normalMap']) m[key]?.dispose();
       m.dispose();
@@ -484,6 +519,12 @@ export function createViewer(target, options = {}) {
         streaming = root;
         scene.add(root);
       };
+      // Aborted (superseded, cleared or disposed): what streamed in goes at once.
+      const hide = () => {
+        if (streaming && streaming !== current?.root) scene.remove(streaming);
+        requestRender();
+      };
+      controller.signal.addEventListener('abort', hide, { once: true });
       const onProgress = (progress) => {
         if (progress.stage === 'geometry' && streaming) {
           if (progress.loaded === 1) frame(camera, controls, streaming);
@@ -506,8 +547,7 @@ export function createViewer(target, options = {}) {
         result.complete.then(requestRender, () => {});
         return result;
       } catch (error) {
-        if (streaming && streaming !== current?.root) scene.remove(streaming);
-        requestRender();
+        hide();
         throw error;
       } finally {
         if (pending === controller) pending = null;
@@ -538,9 +578,10 @@ export function createViewer(target, options = {}) {
       }
       return blob;
     },
-    /** Removes and frees the current stage. */
+    /** Removes and frees the current stage, and aborts any load in flight. */
     clear() {
       last = null;
+      pending?.abort();
       clear();
     },
     /** Points the camera at `object`, by default the current stage. */

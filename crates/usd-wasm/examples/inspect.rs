@@ -47,7 +47,7 @@ fn inspect(root: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         rounds += 1;
         let tc = Instant::now();
-        let composed = loader.compose(root)?;
+        let composed = loader.compose(root, usize::MAX)?;
         println!("  compose round {rounds}: {:.1} ms", tc.elapsed().as_secs_f64() * 1000.0);
         match composed {
             Composed::Scene(scene) => break scene.read_all()?,

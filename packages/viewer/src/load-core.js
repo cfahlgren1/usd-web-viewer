@@ -19,11 +19,13 @@ import { UsdLoadError } from './errors.js';
  * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
  * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
  * @param {number} [o.maxLayerBytes=768 MiB]  total size of the distinct layers held for composition
- * @param {number} [o.maxLayers=1024]  distinct layer files requested
+ * @param {number} [o.maxLayers=1024]  distinct layer files requested (files read from inside a `.usdz` package are not requested, so not counted)
+ * @param {number} [o.maxInstances=100000]  mesh instances drawn, PointInstancer placements included; the rest are left out
+ *   with an `instance-limit` warning
  * @param {string[]} [o.allowedOrigins]  see {@link requestPolicy}; layers it refuses are left out with a warning
  * @param {Promise<{ layers: { url: string, size: number }[], eager: boolean }>} [o.preload]  layers likely
  *   to be needed: fetched ahead at lower priority, right away if `eager` or else once the root names a
- *   dependency, and used only if composition asks for them
+ *   dependency, charged to `maxLayerBytes` like any layer, and used only if composition asks for them
  * @param {(progress: { stage: 'layers', loaded: number, total: number, bytes: number } | { stage: 'compose', round: number }) => void} [o.onProgress]
  * @returns {Promise<{ scene: import('../wasm/usd_wasm.js').UsdScene, meta: object, stats: object }>}
  */
@@ -35,6 +37,7 @@ export async function composeStage({
   maxConcurrentFetches = 16,
   maxLayerBytes = 768 * 2 ** 20,
   maxLayers = 1024,
+  maxInstances = 100000,
   allowedOrigins,
   preload,
   onProgress = () => {},
@@ -57,7 +60,8 @@ export async function composeStage({
   const layerSizes = new Map();
   // Speculative fetches by URL, dropped once composition is done. One that
   // has not started when its layer is asked for, or that failed, gives way to
-  // the regular fetch, so the result is the same as without them.
+  // the regular fetch, so the result is the same as without them. Their
+  // bytes are charged as they arrive, and stay charged once used.
   const preloaded = new Map();
   let composed = false;
   // Every distinct layer URL requested, preloads included, for maxLayers.
@@ -71,21 +75,31 @@ export async function composeStage({
       if (requested.has(key)) continue;
       if (requested.size >= maxLayers) break;
       requested.add(key);
-      const entry = { started: false };
+      const entry = { started: false, charged: 0 };
       preloaded.set(key, entry);
+      // Unused once composed: the next chunk cancels the body.
+      const budget = (bytes) => {
+        if (composed) throw new Error('composed without it');
+        entry.charged += bytes;
+        charge(bytes, url);
+      };
       entry.bytes = throttle(async () => {
         if (composed || preloaded.get(key) !== entry) return null;
         entry.started = true;
-        return fetchBytes(url, () => {
-          if (composed) throw new Error('composed without it');
-        });
-      }, { later: true }).catch(() => null);
+        const bytes = await fetchBytes(url, budget);
+        if (bytes) budget(bytes.byteLength - entry.charged);
+        return bytes;
+      }, { later: true }).catch(() => {
+        heldBytes -= entry.charged;
+        entry.charged = 0;
+        return null;
+      });
     }
   };
   const takePreloaded = (path) => {
     const entry = preloaded.get(urlKey(path));
     preloaded.delete(urlKey(path));
-    return entry?.started ? entry.bytes : null;
+    return entry?.started ? entry : null;
   };
 
   // Jobs in flight. A job queues its dependencies here rather than awaiting
@@ -121,8 +135,10 @@ export async function composeStage({
       let bytes = null;
       let failure = null;
       try {
-        const preloadedBytes = takePreloaded(path);
-        bytes = (preloadedBytes && (await preloadedBytes)) ?? (await throttle(() => fetchBytes(urlOf(path), budget)));
+        const entry = takePreloaded(path);
+        bytes = entry && (await entry.bytes);
+        if (bytes) charged = entry.charged;
+        bytes ??= await throttle(() => fetchBytes(urlOf(path), budget));
       } catch (error) {
         heldBytes -= charged;
         // HTTP errors carry a status; network errors are TypeErrors (as from fetch).
@@ -181,7 +197,7 @@ export async function composeStage({
     stats.rounds++;
     onProgress({ stage: 'compose', round: stats.rounds });
     const t0 = performance.now();
-    const missing = loader.compose(root);
+    const missing = loader.compose(root, maxInstances);
     stats.composeMs += performance.now() - t0;
     if (!missing.length) break;
     if (stats.rounds > 16) throw new UsdLoadError('compose', `composition still missing layers: ${missing.join(', ')}`);
@@ -356,37 +372,66 @@ const HUB_HOST = /^(huggingface\.co|hf\.co)\.?$/;
 const HUB_CDN = /\.hf\.co\.?$/;
 // Paths of Hub repo files and of the tree listing the prefetch reads: the
 // only Hub URLs a load requests, never `/api/*` endpoints or account pages.
-const HUB_FILE = /^\/(?:(datasets|spaces)\/)?([^/]+)\/([^/]+)\/resolve\//;
-const HUB_TREE = /^\/api\/(datasets|models|spaces)\/([^/]+)\/([^/]+)\/tree\//;
+// The last group is the revision.
+const HUB_FILE = /^\/(?:(datasets|spaces)\/)?([\w.-]+)\/([\w.-]+)\/resolve\/([^/]*)/;
+const HUB_TREE = /^\/api\/(datasets|models|spaces)\/([\w.-]+)\/([\w.-]+)\/tree\/([^/]*)/;
+// First path segments of Hub pages and endpoints: never a model's owner.
+const HUB_RESERVED = new Set(['api', 'oauth', 'settings', 'login', 'logout', 'join', 'docs', 'models', 'datasets', 'spaces', 'organizations', 'new', 'pricing', 'blog', 'papers', 'posts', 'collections', 'notifications', 'search', 'chat', 'learn', 'tasks', 'enterprise', 'billing', 'static-proxy', 'avatars', 'front']);
+
+/** The path match of a Hub file or tree-listing URL (`[, type, owner, repo, revision]`), else null. */
+function hubMatch(url) {
+  if (!HUB_HOST.test(url.hostname) || url.protocol !== 'https:') return null;
+  const file = url.pathname.match(HUB_FILE);
+  if (file && (file[1] || !HUB_RESERVED.has(file[2].toLowerCase()))) return file;
+  return url.pathname.match(HUB_TREE);
+}
 
 /** `type/owner/repo` of a Hub file or tree-listing URL, else null. */
 function hubRepo(url) {
-  if (!HUB_HOST.test(url.hostname) || url.protocol !== 'https:') return null;
-  const file = url.pathname.match(HUB_FILE);
-  if (file) return `${file[1] ?? 'models'}/${file[2]}/${file[3]}`;
-  const tree = url.pathname.match(HUB_TREE);
-  return tree ? `${tree[1]}/${tree[2]}/${tree[3]}` : null;
+  const match = hubMatch(url);
+  return match && `${match[1] ?? 'models'}/${match[2]}/${match[3]}`;
+}
+
+/**
+ * A URL on hf.co, the Hub's short domain, as the huggingface.co URL it
+ * redirects to: fetched directly, a request keeps its headers (a redirect
+ * to another origin drops them) and its credentials scope stays the same.
+ */
+export function canonicalUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (!/^hf\.co\.?$/.test(parsed.hostname)) return url;
+    parsed.hostname = 'huggingface.co';
+    return parsed.href;
+  } catch {
+    return url;
+  }
 }
 
 /**
  * How a load rooted at `rootUrl` may request `url`: `{ refused }` with the
  * reason, or the fetch options to use. Every request a load makes goes
- * through this first. Only the requested URL is checked: fetches follow
- * redirects (a Hub `resolve` URL redirects to its CDN, which the Hub controls).
+ * through this first, then through {@link fetchWithPolicy}. Only the
+ * requested URL is checked: fetches follow redirects (a Hub `resolve` URL
+ * redirects to its CDN, which the Hub controls), but never with the caller's
+ * headers off the Hub.
  *
+ * - hf.co URLs are checked as the huggingface.co URLs they redirect to.
  * - The root URL itself, as the caller gave it, is always allowed.
  * - Only http(s), with no user name or password in the URL.
  * - Origins: the root's, those in `allowedOrigins` (`'*'` for any) and, for a
  *   root on the Hugging Face Hub, the Hub and its CDN hosts.
  * - On huggingface.co and hf.co, only repo files (`…/resolve/…`) and tree
- *   listings, with no encoded slashes.
+ *   listings, under a user or organization name (not `/api/…`, `/oauth/…`
+ *   and other Hub pages), with no encoded slashes outside the revision (a
+ *   pull request's is `refs%2Fpr%2F1`).
  * - Credentials (cookies and the caller's headers) go only to the root's own
  *   origin or, for a Hub root, only to the root's own repo.
  */
 export function requestPolicy(url, rootUrl, allowedOrigins = []) {
-  const refused = refusal(url, rootUrl, allowedOrigins);
+  const refused = refusal(canonicalUrl(url), canonicalUrl(rootUrl), allowedOrigins);
   if (refused) return { refused };
-  return { credentials: credentialed(new URL(url), new URL(rootUrl)) ? 'same-origin' : 'omit', referrerPolicy: 'no-referrer' };
+  return { credentials: credentialed(new URL(canonicalUrl(url)), new URL(canonicalUrl(rootUrl))) ? 'same-origin' : 'omit', referrerPolicy: 'no-referrer' };
 }
 
 function refusal(url, rootUrl, allowedOrigins) {
@@ -401,10 +446,19 @@ function refusal(url, rootUrl, allowedOrigins) {
   if (target.protocol !== 'http:' && target.protocol !== 'https:') return `only http(s) URLs are fetched: ${url}`;
   if (target.username || target.password) return `URLs with credentials are not fetched: ${url}`;
   const hub = HUB_HOST.test(target.hostname);
-  if (hub && (!hubRepo(target) || /%2f|%5c/i.test(target.pathname))) return `only Hub repo files are fetched from ${target.host}: ${url}`;
+  if (hub && !hubFile(target)) return `only Hub repo files are fetched from ${target.host}: ${url}`;
   const fromHub = HUB_HOST.test(root.hostname) && (hub || HUB_CDN.test(target.hostname)) && target.protocol === 'https:';
   if (target.origin === root.origin || fromHub || allowedOrigins.includes('*') || allowedOrigins.includes(target.origin)) return null;
   return `its origin is not in allowedOrigins: ${url}`;
+}
+
+/** A Hub repo file or tree listing with no encoded slash or backslash, but for a `%2F` in its revision. */
+function hubFile(url) {
+  const match = hubMatch(url);
+  if (!match) return false;
+  const revisionStart = match[0].length - match[4].length;
+  const outside = url.pathname.slice(0, revisionStart) + url.pathname.slice(match[0].length);
+  return !/%2f|%5c/i.test(outside) && !/%5c/i.test(match[4]);
 }
 
 function credentialed(target, root) {
@@ -414,20 +468,45 @@ function credentialed(target, root) {
 }
 
 /**
+ * Fetches `url` with `fetchFn` under `policy` (see {@link requestPolicy}),
+ * sending `headers` only where credentials may go. A request carrying them
+ * does not follow a redirect with them: unless it is on the Hub (whose
+ * redirects stay on its own hosts), it is not followed, and the URL is
+ * fetched again without headers or cookies, for the browser to follow.
+ * `init` adds fetch options (a `signal`).
+ */
+export async function fetchWithPolicy(fetchFn, url, policy, headers, init = {}) {
+  const sendHeaders = policy.credentials === 'same-origin' && !!headers && Object.keys(headers).length > 0;
+  if (!sendHeaders) return fetchFn(url, { ...policy, ...init });
+  if (HUB_HOST.test(new URL(url).hostname)) return fetchFn(url, { ...policy, headers, ...init });
+  const response = await fetchFn(url, { ...policy, headers, redirect: 'manual', ...init });
+  if (response.type !== 'opaqueredirect' && !(response.status >= 300 && response.status < 400)) return response;
+  response.body?.cancel().catch(() => {});
+  return fetchFn(url, { ...policy, credentials: 'omit', ...init });
+}
+
+/**
  * Reads each geometry out of WASM in turn, so only one mesh's arrays are in
  * WASM memory at a time, and calls `onGeometry(index, meta, arrays)` with
  * JS-owned typed arrays (`meta` and `arrays` are null for a mesh with nothing
- * drawable, or left out). Meshes that would take the triangles read past
- * `maxTriangles` are left out unread. Releases the stage afterwards. Returns
- * warnings: `triangle-limit` for meshes left out, `nothing-drawable` when no
- * mesh had anything to draw.
+ * drawable, or left out). Triangles count as drawn, once per instance:
+ * meshes that would take them past `maxTriangles` are left out unread.
+ * Releases the stage afterwards. Returns warnings: `triangle-limit` for
+ * meshes left out, `nothing-drawable` when no mesh had anything to draw.
  */
 export function readGeometries(scene, meta, onGeometry, { maxTriangles = 20e6 } = {}) {
+  const instances = new Array(meta.geometryCount).fill(0);
+  for (const { geometry } of meta.instances) instances[geometry]++;
   let drawn = 0;
   let left = maxTriangles;
   const skipped = [];
   for (let i = 0; i < meta.geometryCount; i++) {
-    const json = scene.read(i, Math.min(left, 2 ** 32 - 1));
+    // Not drawn anywhere (e.g. all its instances past maxInstances).
+    if (!instances[i]) {
+      onGeometry(i, null, null);
+      continue;
+    }
+    const json = scene.read(i, Math.min(Math.floor(left / instances[i]), 2 ** 32 - 1));
     const g = json && JSON.parse(json);
     if (!g || g.overBudget !== undefined) {
       if (g) skipped.push(g.path);
@@ -435,7 +514,7 @@ export function readGeometries(scene, meta, onGeometry, { maxTriangles = 20e6 } 
       continue;
     }
     drawn++;
-    left -= g.groups.reduce((n, [, count]) => n + count / 3, 0);
+    left = Math.max(0, left - instances[i] * g.groups.reduce((n, [, count]) => n + count / 3, 0));
     onGeometry(i, g, {
       positions: scene.positions(),
       normals: scene.normals(),
@@ -446,7 +525,7 @@ export function readGeometries(scene, meta, onGeometry, { maxTriangles = 20e6 } 
   }
   scene.finish();
   const warnings = [];
-  if (skipped.length) warnings.push({ code: 'triangle-limit', message: `${skipped.length} meshes left out: past maxTriangles (${maxTriangles})`, path: skipped[0] });
+  if (skipped.length) warnings.push({ code: 'triangle-limit', message: `${skipped.length} meshes left out: past maxTriangles (${maxTriangles}) drawn`, path: skipped[0] });
   if (!drawn) warnings.push({ code: 'nothing-drawable', message: 'nothing to draw: the stage has no visible meshes with geometry' });
   return warnings;
 }

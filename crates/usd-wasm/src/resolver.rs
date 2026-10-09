@@ -201,24 +201,57 @@ pub struct Store {
     /// Layers a composing stage took ownership of: present for this stage,
     /// gone for any later one.
     pub taken: Vec<String>,
-    /// Bytes package reads expanded to since the last composition began.
+    /// Packages inside packages (`/h/a.usdz[b.usdz]`), each expanded once
+    /// per load rather than on every read of a file inside it.
+    pub nested: HashMap<String, Vec<u8>>,
+    /// Bytes package reads expanded to since the last composition began,
+    /// the nested packages held included.
     pub expanded: u64,
 }
 
 impl Store {
-    /// Reads a packaged file (`/h/pkg.usdz[inner]`) within the per-file and
-    /// per-composition expansion limits.
+    /// Reads a packaged file (`/h/pkg.usdz[inner]`, nested packages allowed)
+    /// within the per-file and total expansion limits.
     pub fn read_packaged(&mut self, path: &str) -> io::Result<Vec<u8>> {
-        let not_found = || io::Error::new(io::ErrorKind::NotFound, path.to_owned());
-        let (package, inner) = split_packaged(path).ok_or_else(not_found)?;
-        let package = self.bytes.get(package).ok_or_else(not_found)?;
-        let budget = MAX_PACKAGED_TOTAL_BYTES.saturating_sub(self.expanded);
-        let bytes = read_packaged(package, inner, MAX_PACKAGED_FILE_BYTES.min(budget))?;
-        self.expanded += bytes.len() as u64;
-        if extension(inner) == "usdz" {
-            check_package(&bytes)?;
+        self.read_packaged_within(path, MAX_PACKAGED_FILE_BYTES)
+    }
+
+    /// [`read_packaged`](Self::read_packaged) of a file at most `limit` bytes.
+    pub fn read_packaged_within(&mut self, path: &str, limit: u64) -> io::Result<Vec<u8>> {
+        if extension(path) == "usdz" && split_packaged(path).is_some() {
+            self.open_package(path)?;
+            return Ok(self.nested[path].clone());
         }
+        self.expand(path, limit)
+    }
+
+    /// Expands a nested package into `nested`, unless it is already there
+    /// (or is not nested), charging its size once.
+    fn open_package(&mut self, path: &str) -> io::Result<()> {
+        if split_packaged(path).is_none() || self.nested.contains_key(path) {
+            return Ok(());
+        }
+        let bytes = self.expand(path, MAX_PACKAGED_FILE_BYTES)?;
+        check_package(&bytes)?;
+        self.nested.insert(path.to_owned(), bytes);
+        Ok(())
+    }
+
+    /// Expands one file out of its innermost package.
+    fn expand(&mut self, path: &str, limit: u64) -> io::Result<Vec<u8>> {
+        let not_found = || io::Error::new(io::ErrorKind::NotFound, path.to_owned());
+        let (package, inner) = split_innermost(path).ok_or_else(not_found)?;
+        self.open_package(&package)?;
+        let source = self.nested.get(&package).or_else(|| self.bytes.get(&package)).ok_or_else(not_found)?;
+        let budget = MAX_PACKAGED_TOTAL_BYTES.saturating_sub(self.expanded);
+        let bytes = read_packaged(source, inner, limit.min(MAX_PACKAGED_FILE_BYTES).min(budget))?;
+        self.expanded += bytes.len() as u64;
         Ok(bytes)
+    }
+
+    /// Restarts the expansion budget, still charged for the nested packages held.
+    pub fn restart_budget(&mut self) {
+        self.expanded = self.nested.values().map(|b| b.len() as u64).sum();
     }
 }
 
@@ -453,6 +486,13 @@ mod tests {
         assert_eq!(read_packaged(&outer, "0/mid.usdz[0/t.png]", 1 << 20).unwrap(), b"texel");
     }
 
+    fn zip_with(name: &str, data: &[u8]) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
+        zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+        io::Write::write_all(&mut zip, data).unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
     /// A package with one deflated entry of `size` zero bytes.
     fn zeros_package(size: usize) -> Vec<u8> {
         let mut zip = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
@@ -479,5 +519,14 @@ mod tests {
         assert_eq!(store.read_packaged("/h/p.usdz[big.usdc]").unwrap().len(), 100);
         let error = store.read_packaged("/h/p.usdz[big.usdc]").unwrap_err();
         assert!(error.to_string().contains("resource limit exceeded"), "{error}");
+
+        // A nested package is expanded and charged once, however many of its files are read.
+        let inner = zeros_package(1 << 20);
+        let mut store = Store::default();
+        store.bytes.insert("/h/o.usdz".to_owned(), zip_with("inner.usdz", &inner));
+        for _ in 0..4 {
+            assert_eq!(store.read_packaged("/h/o.usdz[inner.usdz[big.usdc]]").unwrap().len(), 1 << 20);
+        }
+        assert_eq!(store.expanded, inner.len() as u64 + (4 << 20));
     }
 }

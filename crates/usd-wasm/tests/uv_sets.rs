@@ -41,7 +41,7 @@ def Material "Mat"
 fn texture_samples_the_primvar_it_names() {
     let mut loader = Loader::new();
     loader.add_layer("/h/root.usda", LAYER.as_bytes().to_vec()).unwrap();
-    let Composed::Scene(scene) = loader.compose("/h/root.usda").unwrap() else {
+    let Composed::Scene(scene) = loader.compose("/h/root.usda", usize::MAX).unwrap() else {
         panic!("missing layers");
     };
     let scene = scene.read_all().unwrap();
