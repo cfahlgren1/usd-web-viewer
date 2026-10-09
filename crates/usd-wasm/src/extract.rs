@@ -9,6 +9,7 @@ use openusd::usd::{self, PrimPredicate, Stage};
 use openusd_schemas::geom::XformCache;
 use openusd_schemas::shade::MaterialBindingAPI;
 
+use crate::implicit;
 use crate::material::{self, Material};
 
 /// Everything a renderer needs from a stage. [`plan`] fills in all but the
@@ -165,6 +166,11 @@ impl Scene {
     /// nothing drawable.
     pub fn read_geometry(&self, index: usize) -> openusd::Result<Option<Geometry>> {
         let source = &self.sources[index];
+        if let Some(ty) = source.prim.type_name()?
+            && implicit::is_implicit(ty.as_str())
+        {
+            return Ok(implicit::read(&source.prim, ty.as_str()));
+        }
         read_mesh(&source.prim, source.color_primvar.as_deref(), &source.uv_sets)
     }
 }
@@ -225,7 +231,7 @@ pub fn plan(stage: &Stage) -> openusd::Result<Scene> {
         state.insert(path.clone(), own);
 
         let Some(ty) = prim.type_name()? else { continue };
-        if ty.as_str() != "Mesh" {
+        if ty.as_str() != "Mesh" && !implicit::is_implicit(ty.as_str()) {
             // Any other geometric prim (curves, points, implicit shapes,
             // volumes, Gaussian splats, ...) is left out, but not silently.
             if !own.invisible && !own.hidden_purpose && is_gprim(&prim, ty.as_str())? {

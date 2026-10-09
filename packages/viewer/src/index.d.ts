@@ -34,7 +34,7 @@ export interface LoadOptions {
 }
 
 /**
- * - `prim-unsupported`: visible geometry other than meshes (`BasisCurves`, `Points`, implicit shapes not yet drawn, `Volume`, Gaussian splats, ...) left out.
+ * - `prim-unsupported`: visible geometry other than meshes and the implicit `Cube` / `Sphere` / `Cylinder` / `Cone` / `Capsule` / `Plane` (e.g. `BasisCurves`, `Points`, `Volume`, Gaussian splats) left out.
  * - `nothing-drawable`: no visible mesh had anything to draw.
  * - `texture-failed`: an image could not be read; its inputs show their own (authored or default) values.
  */

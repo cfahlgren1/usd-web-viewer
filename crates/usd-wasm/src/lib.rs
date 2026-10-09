@@ -11,6 +11,7 @@ use openusd::{sdf, usd};
 
 pub mod deps;
 pub mod extract;
+mod implicit;
 pub mod json;
 pub mod material;
 pub mod resolver;
