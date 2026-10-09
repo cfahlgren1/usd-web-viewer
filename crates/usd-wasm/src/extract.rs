@@ -55,8 +55,8 @@ pub struct Geometry {
     /// UV sets by primvar name: the default set first, then the ones bound
     /// textures name. Empty when the mesh has no texture coordinates.
     pub uvs: Vec<(String, Vec<f32>)>,
-    /// Per-vertex `displayColor`; empty unless authored per vertex/face and
-    /// the bound material shows it.
+    /// Per-vertex colors from the primvar a bound material reads (usually
+    /// `displayColor`); empty unless authored per vertex/face.
     pub colors: Vec<f32>,
     pub indices: Vec<u32>,
     /// Index ranges, one per material subset; a single range without subsets.
@@ -180,27 +180,29 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
             Some(proto) => proto,
             None => prim.clone(),
         };
-        let mesh_material = bound_material(stage, &mut materials, &mut scene.materials, &prim)?;
+        let binding = MaterialBindingAPI::from_prim_unchecked(prim.clone()).compute_bound_material("preview")?;
+        let mesh_material = shown_material(stage, &mut materials, &mut scene.materials, &prim, binding.as_ref())?;
         let mut subset_materials = HashMap::new();
         for child in prim.children()? {
             if child.type_name()?.as_deref() == Some("GeomSubset")
                 && let Some(mat) = MaterialBindingAPI::from_prim_unchecked(child.clone()).compute_bound_material("preview")?
                 && let Some(name) = child.path().name()
             {
-                subset_materials.insert(name.to_owned(), materials.get(stage, &mat, &mut scene.materials)?);
+                let index = shown_material(stage, &mut materials, &mut scene.materials, &prim, Some(&mat))?;
+                subset_materials.insert(name.to_owned(), index);
             }
         }
-        // What the materials sample: per-vertex colors when a material still
-        // names its color primvar, and the UV primvars their textures name.
+        // What the materials sample: per-vertex colors when one still names
+        // its color primvar, and the UV primvars their textures name.
         let used = || std::iter::once(&mesh_material).chain(subset_materials.values()).map(|&m| &scene.materials[m as usize]);
-        let want_colors = scene.materials[mesh_material as usize].color_primvar.is_some();
+        let color_primvar = used().find_map(|m| m.color_primvar.clone());
         let mut uv_sets: Vec<String> = used().flat_map(|m| m.maps.iter().filter_map(|(_, t)| t.uv_set.clone())).collect();
         uv_sets.sort();
         uv_sets.dedup();
-        let key = format!("{}|{want_colors}|{}", source.path().as_str(), uv_sets.join(","));
+        let key = format!("{}|{}|{}", source.path().as_str(), color_primvar.as_deref().unwrap_or(""), uv_sets.join(","));
         let geometry = match geometry_by_source.get(&key) {
             Some(&index) => Some(index),
-            None => match read_mesh(&source, want_colors, &uv_sets)? {
+            None => match read_mesh(&source, color_primvar.as_deref(), &uv_sets)? {
                 Some(geometry) => {
                     let index = scene.geometries.len() as u32;
                     scene.geometries.push(geometry);
@@ -343,18 +345,19 @@ fn add_placements(prim: &usd::Prim, world: Matrix4d, out: &mut Vec<Prototype>) -
     Ok(())
 }
 
-/// The material bound to `prim` for preview rendering, or one showing its
-/// `displayColor` (neutral grey without one) so geometry always shows. A
-/// material reading a color primvar is tinted by a constant value, or left to
-/// per-vertex colors (it keeps `color_primvar`) when the primvar varies.
-fn bound_material(
+/// The material `binding` names for the mesh `prim` (or a face subset of it),
+/// or without one a material showing the mesh's `displayColor` (neutral grey
+/// without one) so geometry always shows. A material reading a color primvar
+/// of the mesh is tinted by a constant value, or left to per-vertex colors (it
+/// keeps `color_primvar`) when the primvar varies.
+fn shown_material(
     stage: &Stage,
     cache: &mut material::Cache,
     out: &mut Vec<Material>,
     prim: &usd::Prim,
+    binding: Option<&sdf::Path>,
 ) -> openusd::Result<u32> {
-    let binding = MaterialBindingAPI::from_prim_unchecked(prim.clone()).compute_bound_material("preview")?;
-    let index = match &binding {
+    let index = match binding {
         Some(mat) => cache.get(stage, mat, out)?,
         None => cache.display_color(out),
     };
@@ -467,7 +470,7 @@ fn ints(value: Option<Value>) -> Option<Vec<i32>> {
 /// Primvars tried, in order, for the default UV set.
 const UV_NAMES: [&str; 6] = ["st", "st0", "UVMap", "uv", "map1", "st_0"];
 
-fn read_mesh(prim: &usd::Prim, want_colors: bool, uv_sets: &[String]) -> openusd::Result<Option<Geometry>> {
+fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) -> openusd::Result<Option<Geometry>> {
     let Some(points) = prim.attribute("points").get::<Value>()?.as_ref().and_then(vec3s) else {
         return Ok(None);
     };
@@ -506,10 +509,10 @@ fn read_mesh(prim: &usd::Prim, want_colors: bool, uv_sets: &[String]) -> openusd
             uvs.push((name.clone(), uv));
         }
     }
-    // Per-vertex display colors, only for meshes whose material shows them.
-    let colors = match want_colors {
-        true => read_primvar(prim, "primvars:displayColor", Interp::Constant, vec3s)?.filter(|c| c.interp != Interp::Constant),
-        false => None,
+    // Per-vertex colors, only for meshes whose material shows them.
+    let colors = match color_primvar {
+        Some(name) => read_primvar(prim, &format!("primvars:{name}"), Interp::Constant, vec3s)?.filter(|c| c.interp != Interp::Constant),
+        None => None,
     };
     let fit = |interp, len| fits(interp, len, points.len(), counts.len(), corners);
     let normals = normals.filter(|n| fit(n.interp, n.values.len()));
