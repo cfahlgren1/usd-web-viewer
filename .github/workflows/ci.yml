@@ -9,13 +9,13 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       # The toolchain rust-toolchain.toml pins.
       - run: rustup target add wasm32-unknown-unknown && rustup component add clippy
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-bindgen-cli@0.2.129
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: 24
           cache: npm
