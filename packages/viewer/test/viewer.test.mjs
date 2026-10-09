@@ -236,3 +236,29 @@ test('maxConcurrentFetches must be a finite positive integer', { timeout: 3000 }
     await assert.rejects(loadUsd('scene.usda', { maxConcurrentFetches: value }), RangeError, String(value));
   }
 });
+
+test('a material shared by meshes with different UV sets reads the named set on each', async () => {
+  const emissive = { ...TEXTURE, uvSet: 'custom' };
+  const message = sceneMessage(IDENTITY);
+  const quad = message.geometries[0];
+  const uv = () => new Float32Array(6);
+  message.meta.materials[0].maps = { emissiveColor: emissive };
+  message.meta.geometries = [
+    { groups: [[0, 3]], bounds: [0, 0, 0, 1, 1, 0], uvSets: ['st', 'custom'], hasColors: false },
+    { groups: [[0, 3]], bounds: [0, 0, 0, 1, 1, 0], uvSets: ['custom'], hasColors: false },
+  ];
+  message.geometries = [{ ...quad, uvs: [uv(), uv()] }, { ...quad, uvs: [uv()] }];
+  message.meta.instances = [
+    { path: '/WithSt', geometry: 0, materials: [0], doubleSided: false, matrix: IDENTITY },
+    { path: '/OnlyCustom', geometry: 1, materials: [0], doubleSided: false, matrix: IDENTITY },
+  ];
+  const loading = loadUsd('scene.usda');
+  await tick();
+  const worker = FakeWorker.last;
+  worker.send(message);
+  const { root } = await loading;
+  worker.send({ type: 'texture', path: TEXTURE.path, bitmap: fakeBitmap() });
+  const [withSt, onlyCustom] = root.children;
+  assert.equal(withSt.material.emissiveMap.channel, 1);
+  assert.equal(onlyCustom.material.emissiveMap.channel, 0);
+});

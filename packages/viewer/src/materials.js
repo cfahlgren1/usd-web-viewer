@@ -43,9 +43,10 @@ export function createMaterial(m) {
   return prepare(material);
 }
 
-/** A copy that reads per-vertex colors, double-sided, or both. */
-export function variant(material, { doubleSided, vertexColors }) {
+/** A copy that reads per-vertex colors, is double-sided, or reads UV sets from other attributes. */
+export function variant(material, { doubleSided, vertexColors, uvChannels }) {
   const copy = material.clone();
+  copy.userData.usd.uvChannels = uvChannels;
   if (doubleSided) copy.side = THREE.DoubleSide;
   if (vertexColors) {
     copy.vertexColors = true;

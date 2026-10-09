@@ -192,10 +192,11 @@ function buildScene(meta, arrays) {
 
   const materials = meta.materials.map((m) => createMaterial(m));
   const variants = new Map();
-  const materialFor = (index, doubleSided, vertexColors) => {
-    if (!doubleSided && !vertexColors) return materials[index];
-    const key = `${index}|${doubleSided}|${vertexColors}`;
-    if (!variants.has(key)) variants.set(key, variant(materials[index], { doubleSided, vertexColors }));
+  const materialFor = (index, doubleSided, vertexColors, uvChannels) => {
+    const routed = Object.keys(uvChannels).length > 0;
+    if (!doubleSided && !vertexColors && !routed) return materials[index];
+    const key = `${index}|${doubleSided}|${vertexColors}|${JSON.stringify(uvChannels)}`;
+    if (!variants.has(key)) variants.set(key, variant(materials[index], { doubleSided, vertexColors, uvChannels }));
     return variants.get(key);
   };
 
@@ -219,12 +220,14 @@ function buildScene(meta, arrays) {
     const g = meta.geometries[inst.geometry];
     const mats = inst.materials.map((m) => {
       const usd = materials[m].userData.usd;
-      // Route each named UV set to its attribute; the first mesh using a material decides.
+      // Route each named UV set to its attribute on this geometry; meshes that
+      // lay their UV sets out differently get their own copy of the material.
+      const uvChannels = {};
       for (const ref of Object.values(usd.maps)) {
         const k = g.uvSets.indexOf(ref.uvSet);
-        if (k > 0) usd.uvChannels[ref.uvSet] ??= k;
+        if (k > 0) uvChannels[ref.uvSet] = k;
       }
-      return materialFor(m, inst.doubleSided, g.hasColors && !!usd.colorPrimvar);
+      return materialFor(m, inst.doubleSided, g.hasColors && !!usd.colorPrimvar, uvChannels);
     });
     const mesh = new THREE.Mesh(geometries[inst.geometry], mats.length > 1 ? mats : mats[0]);
     mesh.name = inst.path;
