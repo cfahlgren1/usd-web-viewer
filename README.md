@@ -2,7 +2,7 @@
 
 # usd-web-viewer
 
-**[OpenUSD](https://openusd.org) in the browser.** Real USD composition in 604 KiB of WebAssembly, built on the pure-Rust [openusd](https://github.com/mxpv/openusd) crate and rendered with three.js.
+**[OpenUSD](https://openusd.org) in the browser.** USD composition in 604 KiB of WebAssembly, built on [openusd](https://github.com/mxpv/openusd) and rendered with three.js.
 
 <a href="https://huggingface.co/spaces/cfahlgren1/usd-viewer"><img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/open-in-hf-spaces-md.svg" alt="Open in Spaces"></a>
 <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT">
