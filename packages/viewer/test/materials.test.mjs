@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { applyFallback, attachTexture, configureTexture, createMaterial } from '../src/materials.js';
+import { SLOTS, applyFallback, attachTexture, configureTexture, createMaterial } from '../src/materials.js';
 
 const ref = { path: 'image.png', channel: 'r', scale: [1, 1, 1, 1], bias: [0, 0, 0, 0], uvScale: [1, 1], uvTranslation: [0, 0], uvRotation: 0 };
 const material = (maps) => createMaterial({ path: '/M', kind: 'preview', color: [1, 1, 1], emissive: [0, 0, 0], roughness: 0.5, metallic: 0, opacity: 1, opacityThreshold: 0, maps });
@@ -37,4 +37,11 @@ test('only r, g, b or a from an authored channel reaches the shader', () => {
   assert.ok(!shader.fragmentShader.includes('r_evil'));
   assert.match(shader.fragmentShader, /\.rgb \* vec3/);
   assert.match(shader.fragmentShader, /\.g \* /);
+});
+
+test('every patched line is still in its three.js shader chunk', () => {
+  // onBeforeCompile replaces these lines verbatim; a reworded chunk would silently drop the remap.
+  for (const [input, { chunk, from }] of Object.entries(SLOTS)) {
+    assert.ok(THREE.ShaderChunk[chunk].includes(from), `${input}: ${chunk} no longer contains ${JSON.stringify(from)}`);
+  }
 });

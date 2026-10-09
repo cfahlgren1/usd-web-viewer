@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 
 // input -> three.js map and the shader chunk line to rewrite.
-const SLOTS = {
+export const SLOTS = {
   diffuseColor: { map: 'map', chunk: 'map_fragment', from: 'diffuseColor *= sampledDiffuseColor;', to: (e) => `diffuseColor.rgb *= ${e('sampledDiffuseColor', 3)};` },
   emissiveColor: { map: 'emissiveMap', chunk: 'emissivemap_fragment', from: 'totalEmissiveRadiance *= emissiveColor.rgb;', to: (e) => `totalEmissiveRadiance *= ${e('emissiveColor', 3)};` },
   roughness: { map: 'roughnessMap', chunk: 'roughnessmap_fragment', from: 'texelRoughness.g', to: (e) => e('texelRoughness', 1) },

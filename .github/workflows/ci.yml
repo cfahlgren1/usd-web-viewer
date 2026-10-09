@@ -25,3 +25,21 @@ jobs:
       - run: npm run check:types
       - run: cargo test
       - run: cargo clippy -- -D warnings
+
+  # The lowest three.js in the peer range; unit tests only.
+  three-min:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - run: rustup target add wasm32-unknown-unknown
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@0.2.129
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm install --no-save three@0.162.0 @types/three@0.162.0
+      - run: npm run build:wasm
+      - run: npm test
