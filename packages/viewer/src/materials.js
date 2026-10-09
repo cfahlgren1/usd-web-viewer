@@ -107,14 +107,19 @@ export function attachTexture(material, path, isColor, textureFor) {
   if (changed) material.needsUpdate = true;
 }
 
-/** Uses each input's `fallback` value when its image cannot be read. */
+/**
+ * When an image cannot be read, its texture yields its `fallback` (by default
+ * black, (0, 0, 0, 1)) through the output the input reads: `g` repeats green.
+ */
 export function applyFallback(material, path) {
   for (const [input, ref] of Object.entries(material.userData.usd.maps)) {
-    if (ref.path !== path || !ref.fallback) continue;
-    const [r, g, b, a] = ref.fallback;
-    const value = { r, g, b, a }[ref.channel] ?? r;
-    if (input === 'diffuseColor') material.color.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
-    if (input === 'emissiveColor') material.emissive.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
+    if (ref.path !== path) continue;
+    const [r, g, b, a] = ref.fallback ?? [0, 0, 0, 1];
+    const picked = { r, g, b, a }[ref.channel];
+    const rgb = picked === undefined ? [r, g, b] : [picked, picked, picked];
+    const value = picked ?? r;
+    if (input === 'diffuseColor') material.color.setRGB(...rgb, THREE.LinearSRGBColorSpace);
+    if (input === 'emissiveColor') material.emissive.setRGB(...rgb, THREE.LinearSRGBColorSpace);
     if (input === 'roughness') material.roughness = value;
     if (input === 'metallic') material.metalness = value;
     if (input === 'opacity') material.opacity = value;

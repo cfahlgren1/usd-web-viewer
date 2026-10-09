@@ -22,6 +22,18 @@ test('auto color space is decided by the image, the same for every input that sa
   assert.deepEqual([explicit.map.colorSpace, explicit.roughnessMap.colorSpace], [THREE.NoColorSpace, THREE.SRGBColorSpace]);
 });
 
+test('a missing image yields the texture fallback through the selected output', () => {
+  const green = material({ diffuseColor: { ...ref, channel: 'g', fallback: [0.1, 0.7, 0.3, 1] } });
+  applyFallback(green, 'image.png');
+  assert.deepEqual(green.color.toArray().map((v) => +v.toFixed(6)), [0.7, 0.7, 0.7]);
+  // UsdUVTexture's own fallback is (0, 0, 0, 1): black, not the grey shown while loading.
+  const unauthored = material({ diffuseColor: { ...ref, channel: 'rgb' }, roughness: { ...ref } });
+  assert.deepEqual(unauthored.color.toArray().map((v) => +v.toFixed(6)), [0.18, 0.18, 0.18]);
+  applyFallback(unauthored, 'image.png');
+  assert.deepEqual(unauthored.color.toArray(), [0, 0, 0]);
+  assert.equal(unauthored.roughness, 0);
+});
+
 /** A PNG signature and IHDR chunk with the given bit depth and color type. */
 function pngHeader(bitDepth, colorType) {
   const b = Buffer.alloc(33);
