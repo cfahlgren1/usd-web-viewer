@@ -326,3 +326,44 @@ def Material "Mat" {
     ['https://h/Textures/body_alb.1001.png'],
   );
 });
+
+test('textures inside a package nested in packages are found where the nesting says', async () => {
+  const material = `def Mesh "M" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+  int[] faceVertexCounts = [3]
+  int[] faceVertexIndices = [0, 1, 2]
+  point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+  rel material:binding = </M/Mat>
+  def Material "Mat" {
+    token outputs:surface.connect = </M/Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+      uniform token info:id = "UsdPreviewSurface"
+      color3f inputs:diffuseColor.connect = </M/Mat/Tex.outputs:rgb>
+      token outputs:surface
+    }
+    def Shader "Tex" {
+      uniform token info:id = "UsdUVTexture"
+      asset inputs:file = @0/t.png@
+      float3 outputs:rgb
+    }
+  }
+}`;
+  const deep = storedZip([
+    { name: 'deep.usda', data: Buffer.from(`#usda 1.0\n(defaultPrim = "M")\n${material}`) },
+    { name: '0/t.png', data: Buffer.from('deep texture') },
+  ]);
+  const mid = storedZip([
+    { name: 'mid.usda', data: Buffer.from('#usda 1.0\n(defaultPrim = "Mid")\ndef "Mid" (references = @0/deep.usdz@) {}') },
+    { name: '0/deep.usdz', data: deep },
+  ]);
+  const outer = storedZip([
+    { name: 'outer.usda', data: Buffer.from('#usda 1.0\ndef "Outer" (references = @0/mid.usdz@) {}') },
+    { name: '0/mid.usdz', data: mid },
+  ]);
+  const s = server({ 'https://h/outer.usdz': outer });
+  const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/outer.usdz' });
+  const textures = takePackagedTextures(scene, meta, { textures: 'full' });
+  scene.free();
+  const path = 'https://h/outer.usdz[0/mid.usdz[0/deep.usdz[0/t.png]]]';
+  assert.deepEqual(textureJobs(meta, { textures: 'full' }).map((j) => j.path), [path]);
+  assert.equal(new TextDecoder().decode(textures.get(path)), 'deep texture');
+});

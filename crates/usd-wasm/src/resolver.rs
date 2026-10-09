@@ -25,7 +25,7 @@ pub fn is_layer_path(path: &str) -> bool {
 }
 
 fn extension(path: &str) -> String {
-    let path = path.strip_suffix(']').unwrap_or(path);
+    let path = path.trim_end_matches(']');
     let name = path.rsplit(['/', '[']).next().unwrap_or(path);
     match name.rfind('.') {
         Some(dot) => name[dot + 1..].to_ascii_lowercase(),
@@ -33,12 +33,29 @@ fn extension(path: &str) -> String {
     }
 }
 
-/// Splits a package-relative path `pkg.usdz[inner]` into its package and the
-/// path inside it. Nested packages are not supported.
+/// Splits a package-relative path `pkg.usdz[inner]` into its outermost
+/// package and the path inside it, which may name a nested package's file:
+/// `a.usdz[b.usdz[c.png]]` splits into `a.usdz` and `b.usdz[c.png]`.
 pub fn split_packaged(path: &str) -> Option<(&str, &str)> {
     let inner = path.strip_suffix(']')?;
     let open = inner.find('[')?;
     Some((&inner[..open], &inner[open + 1..]))
+}
+
+/// Splits a package-relative path at its innermost package:
+/// `a.usdz[b.usdz[c.png]]` splits into `a.usdz[b.usdz]` and `c.png`.
+fn split_innermost(path: &str) -> Option<(String, &str)> {
+    let body = path.trim_end_matches(']');
+    let depth = path.len() - body.len();
+    let open = body.rfind('[').filter(|_| depth > 0)?;
+    Some((format!("{}{}", &body[..open], "]".repeat(depth - 1)), &body[open + 1..]))
+}
+
+/// A path inside `package`, which may itself be inside packages:
+/// `a.usdz[b.usdz]` and `c.png` join as `a.usdz[b.usdz[c.png]]`.
+fn join_packaged(package: &str, inner: &str) -> String {
+    let body = package.trim_end_matches(']');
+    format!("{body}[{inner}]{}", &package[body.len()..])
 }
 
 /// Turns an authored asset path into an identifier, anchored at the identifier
@@ -52,7 +69,7 @@ pub fn anchor_path(asset_path: &str, anchor: Option<&str>) -> Option<String> {
     }
     if let Some((package, inner)) = split_packaged(&path) {
         let package = anchor_path(package, anchor)?;
-        return Some(format!("{package}[{}]", &normalize(inner)[1..]));
+        return Some(join_packaged(&package, &normalize(inner)[1..]));
     }
     if !split_origin(&path).0.is_empty() {
         return Some(normalize(&path));
@@ -62,12 +79,14 @@ pub fn anchor_path(asset_path: &str, anchor: Option<&str>) -> Option<String> {
         return Some(format!("{origin}{}", normalize(&path)));
     }
     if let Some(anchor) = anchor {
-        if let Some((package, inner)) = split_packaged(anchor) {
-            let dir = inner.rsplit_once('/').map_or("", |(dir, _)| dir);
-            return Some(format!("{package}[{}]", &normalize(&format!("{dir}/{path}"))[1..]));
-        }
+        // A package (possibly inside others) anchors paths inside itself; a
+        // file in a package, next to itself in that package.
         if extension(anchor) == "usdz" {
-            return Some(format!("{anchor}[{}]", &normalize(&path)[1..]));
+            return Some(join_packaged(anchor, &normalize(&path)[1..]));
+        }
+        if let Some((package, inner)) = split_innermost(anchor) {
+            let dir = inner.rsplit_once('/').map_or("", |(dir, _)| dir);
+            return Some(join_packaged(&package, &normalize(&format!("{dir}/{path}"))[1..]));
         }
     }
     let dir = anchor_rest.rsplit_once('/').map_or("", |(dir, _)| dir);
@@ -101,6 +120,9 @@ pub const MAX_PACKAGED_TOTAL_BYTES: u64 = 2 << 30;
 /// expand it past `limit` bytes. Zip headers are untrusted: the declared size
 /// only sizes the buffer up to the package's own length.
 pub fn read_packaged(package: &[u8], inner: &str, limit: u64) -> io::Result<Vec<u8>> {
+    if let Some((nested, rest)) = split_packaged(inner) {
+        return read_packaged(&read_packaged(package, nested, limit)?, rest, limit);
+    }
     let mut archive = zip::ZipArchive::new(io::Cursor::new(package)).map_err(io::Error::other)?;
     let entry = archive
         .by_name(inner)
@@ -365,6 +387,29 @@ mod tests {
         assert_eq!(anchor_path("a.usdc", Some("/h/p.usdz")).unwrap(), "/h/p.usdz[a.usdc]");
         assert_eq!(anchor_path("./p.usdz[x/y.usd]", Some("/h/r.usda")).unwrap(), "/h/p.usdz[x/y.usd]");
         assert!(is_layer_path("/h/p.usdz[x/y.usdc]"));
+    }
+
+    #[test]
+    fn anchors_paths_inside_nested_packages() {
+        let mid = "/h/a.usdz[0/mid.usdz]";
+        assert_eq!(anchor_path("0/deep.usdz", Some(mid)).unwrap(), "/h/a.usdz[0/mid.usdz[0/deep.usdz]]");
+        let deep_layer = "/h/a.usdz[0/mid.usdz[0/deep.usdz[root.usda]]]";
+        assert_eq!(anchor_path("0/t.png", Some(deep_layer)).unwrap(), "/h/a.usdz[0/mid.usdz[0/deep.usdz[0/t.png]]]");
+        assert_eq!(anchor_path("../t.png", Some("/h/a.usdz[b.usdz[x/r.usda]]")).unwrap(), "/h/a.usdz[b.usdz[t.png]]");
+        assert!(is_layer_path("/h/a.usdz[0/mid.usdz[0/deep.usdz]]"));
+        assert!(!is_layer_path("/h/a.usdz[0/mid.usdz[0/t.png]]"));
+    }
+
+    #[test]
+    fn reads_files_from_nested_packages() {
+        let zip = |name: &str, data: &[u8]| {
+            let mut zip = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            io::Write::write_all(&mut zip, data).unwrap();
+            zip.finish().unwrap().into_inner()
+        };
+        let outer = zip("0/mid.usdz", &zip("0/t.png", b"texel"));
+        assert_eq!(read_packaged(&outer, "0/mid.usdz[0/t.png]", 1 << 20).unwrap(), b"texel");
     }
 
     /// A package with one deflated entry of `size` zero bytes.
