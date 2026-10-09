@@ -4,7 +4,8 @@
 )
 
 # Every implicit gprim, on each axis, rotated and scaled, bound to a material
-# or tinted by displayColor, and placed by a PointInstancer.
+# or tinted by displayColor, hidden or of guide purpose (not drawn), and placed
+# by a PointInstancer.
 def Material "Red"
 {
     token outputs:surface.connect = </Red/Surface.outputs:surface>
@@ -79,6 +80,16 @@ def Sphere "Tinted"
     color3f[] primvars:displayColor = [(0, 1, 0)]
     double3 xformOp:translate = (0, 0, 10)
     uniform token[] xformOpOrder = ["xformOp:translate"]
+}
+
+def Sphere "Hidden"
+{
+    token visibility = "invisible"
+}
+
+def Cube "Guide"
+{
+    uniform token purpose = "guide"
 }
 
 def PointInstancer "Instancer"

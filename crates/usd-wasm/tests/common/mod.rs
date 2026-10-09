@@ -1,13 +1,52 @@
 //! Composes test stages through the same Loader the browser uses.
 
+use std::collections::BTreeSet;
+
 use usd_wasm::{Composed, Loader, Scene};
 
-/// The scene of a single in-memory layer, triangle data read.
-pub fn scene(usda: &str) -> Scene {
+/// A composed scene with its triangle data, and the layers that could not be
+/// read (as the host would report them).
+pub struct Loaded {
+    pub scene: Scene,
+    pub missing: BTreeSet<String>,
+}
+
+/// Composes `root` as the browser does, with `read` standing in for fetch:
+/// every layer a layer names is read ahead, then whatever composition still
+/// asks for, round after round.
+pub fn compose(root: &str, read: impl Fn(&str) -> Option<Vec<u8>>) -> Result<Loaded, String> {
     let mut loader = Loader::new();
-    loader.add_layer("/h/root.usda", usda.as_bytes().to_vec()).expect("layer parses");
-    match loader.compose("/h/root.usda", usize::MAX).expect("composes") {
-        Composed::Scene(scene) => scene.read_all().expect("reads geometry"),
-        Composed::Missing(missing) => panic!("missing layers: {missing:?}"),
+    let mut missing = BTreeSet::new();
+    let mut queue = vec![root.to_owned()];
+    for _ in 0..16 {
+        while let Some(path) = queue.pop() {
+            if loader.has(&path) {
+                continue;
+            }
+            let Some(bytes) = read(&path) else {
+                loader.mark_unavailable(&path);
+                missing.insert(path);
+                continue;
+            };
+            match loader.add_layer(&path, bytes) {
+                Ok(deps) => queue.extend(deps),
+                Err(e) if path == root => return Err(e.to_string()),
+                Err(_) => {
+                    loader.mark_unavailable(&path);
+                    missing.insert(path);
+                }
+            }
+        }
+        match loader.compose(root, usize::MAX).map_err(|e| e.to_string())? {
+            Composed::Scene(scene) => return Ok(Loaded { scene: scene.read_all().map_err(|e| e.to_string())?, missing }),
+            Composed::Missing(paths) => queue.extend(paths),
+        }
     }
+    Err("composition still missing layers after 16 rounds".to_owned())
+}
+
+/// The scene of a single in-memory layer.
+pub fn scene(usda: &str) -> Scene {
+    let root = "/h/root.usda";
+    compose(root, |path| (path == root).then(|| usda.as_bytes().to_vec())).expect("composes").scene
 }
