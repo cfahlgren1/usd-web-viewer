@@ -1,48 +1,61 @@
 // Prefetch-then-compose loading, shared by the Web Worker and the Node test.
 //
-// URLs are mapped to "virtual paths" (`/<host>/<path>`) that the Rust side
-// anchors relative asset paths against; they are mapped back here to fetch.
-
-export function urlToPath(url) {
-  const u = new URL(url);
-  return `/${u.host}${decodeURIComponent(u.pathname)}`;
-}
-
-export function pathToUrl(path, protocols) {
-  const [, host, ...rest] = path.split('/');
-  const protocol = protocols.get(host) || 'https:';
-  return `${protocol}//${host}/${rest.map(encodeURIComponent).join('/')}`;
-}
+// Layers are identified by absolute URL without a query, exactly as requested
+// or as the Rust side resolved them from authored paths, and fetched by that
+// URL. Only the root keeps its query (a signed URL, say) for fetching:
+// relative references do not inherit it.
 
 /**
  * Loads and composes the stage at `rootUrl`.
  *
  * @param {object} o
  * @param {typeof import('../wasm/usd_wasm.js').UsdLoader} o.UsdLoader
- * @param {(url: string) => Promise<Uint8Array | null>} o.fetchBytes  null when missing
- * @param {string} o.rootUrl
+ * @param {(url: string, maxBytes: number) => Promise<Uint8Array | null>} o.fetchBytes  null when
+ *   missing; may stop reading once a body passes `maxBytes`
+ * @param {string} o.rootUrl  absolute
  * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
- * @param {(stage: string, detail?: object) => void} [o.onProgress]
- * @returns {Promise<{ scene: import('../wasm/usd_wasm.js').UsdScene, meta: object, stats: object, protocols: Map<string,string> }>}
+ * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
+ * @param {number} [o.maxLayerBytes=1 GiB]  total size of the distinct layers held for composition
+ * @param {(progress: { stage: 'layers' | 'compose', loaded: number, total: number, bytes: number }) => void} [o.onProgress]
+ * @returns {Promise<{ scene: import('../wasm/usd_wasm.js').UsdScene, meta: object, stats: object }>}
  */
-export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVariants = false, onProgress = () => {} }) {
-  const protocols = new Map([[new URL(rootUrl).host, new URL(rootUrl).protocol]]);
-  const root = urlToPath(rootUrl);
+export async function composeStage({
+  UsdLoader,
+  fetchBytes,
+  rootUrl,
+  prefetchVariants = false,
+  maxConcurrentFetches = 16,
+  maxLayerBytes = 2 ** 30,
+  onProgress = () => {},
+}) {
+  const root = rootUrl.split(/[?#]/)[0];
+  const urlOf = (path) => (path === root ? rootUrl : path);
   const loader = new UsdLoader();
   const stats = { layers: 0, layerBytes: 0, missing: 0, rounds: 0, fetchMs: 0, parseMs: 0, composeMs: 0, warnings: [] };
   const started = new Map();
+  const progress = () => onProgress({ stage: 'layers', loaded: stats.layers + stats.missing, total: started.size, bytes: stats.layerBytes });
+  const throttle = limiter(maxConcurrentFetches);
+  // Re-fetched layers replace their earlier bytes, so count each path once.
+  const layerSizes = new Map();
+  let heldBytes = 0;
 
   const fetchLayer = (path) => {
     if (loader.has(path) || started.has(path)) return started.get(path);
     const job = (async () => {
       const t0 = performance.now();
-      const bytes = await fetchBytes(pathToUrl(path, protocols));
+      const remaining = maxLayerBytes - heldBytes + (layerSizes.get(path) ?? 0);
+      const bytes = await throttle(() => fetchBytes(urlOf(path), remaining));
       stats.fetchMs = Math.max(stats.fetchMs, performance.now() - t0);
       if (!bytes) {
         stats.missing++;
+        stats.warnings.push(`layer not found: ${urlOf(path)}`);
         loader.markUnavailable(path);
+        progress();
         return;
       }
+      heldBytes += bytes.byteLength - (layerSizes.get(path) ?? 0);
+      layerSizes.set(path, bytes.byteLength);
+      if (heldBytes > maxLayerBytes) throw resourceLimit(`layers exceed maxLayerBytes (${maxLayerBytes} bytes) at ${path}`);
       stats.layers++;
       stats.layerBytes += bytes.byteLength;
       const t1 = performance.now();
@@ -51,13 +64,14 @@ export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVar
         deps = loader.addLayer(path, bytes);
       } catch (error) {
         // An unreadable layer is left out; composition carries on without it.
-        stats.warnings.push(`${path}: ${error.message || error}`);
+        stats.warnings.push(`unreadable layer ${urlOf(path)}: ${error.message || error}`);
         loader.markUnavailable(path);
+        progress();
         return;
       } finally {
         stats.parseMs += performance.now() - t1;
       }
-      onProgress('layer', { path, bytes: bytes.byteLength });
+      progress();
       await Promise.all(
         deps
           .filter((d) => d[0] === 'L' || (prefetchVariants && d[0] === 'V'))
@@ -73,12 +87,12 @@ export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVar
 
   for (;;) {
     stats.rounds++;
+    onProgress({ stage: 'compose', loaded: stats.layers, total: started.size, bytes: stats.layerBytes });
     const t0 = performance.now();
     const missing = loader.compose(root);
     stats.composeMs += performance.now() - t0;
     if (!missing.length) break;
     if (stats.rounds > 16) throw new Error(`composition still missing layers: ${missing.join(', ')}`);
-    onProgress('missing', { missing });
     // The list also names layers the failed attempt consumed; fetch them again.
     for (const path of missing) started.delete(path);
     await Promise.all(missing.map(fetchLayer));
@@ -86,7 +100,67 @@ export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVar
   const scene = loader.takeScene();
   loader.free();
   const meta = JSON.parse(scene.meta());
-  return { scene, meta, stats, protocols };
+  return { scene, meta, stats };
+}
+
+function resourceLimit(detail) {
+  return new Error(`resource limit exceeded: ${detail}`);
+}
+
+/** Runs at most `max` of the given tasks at once. */
+export function limiter(max) {
+  let active = 0;
+  const queue = [];
+  const next = () => {
+    if (active >= max || !queue.length) return;
+    active++;
+    const { task, resolve, reject } = queue.shift();
+    task()
+      .then(resolve, reject)
+      .finally(() => {
+        active--;
+        next();
+      });
+  };
+  return (task) =>
+    new Promise((resolve, reject) => {
+      queue.push({ task, resolve, reject });
+      next();
+    });
+}
+
+/**
+ * Fetches a body, giving up once it passes `maxBytes`; null on an HTTP error.
+ * `fetchFn` is the global fetch or a stand-in with the same contract.
+ */
+export async function fetchLimited(url, maxBytes, { headers, fetchFn = fetch } = {}) {
+  const response = await fetchFn(url, { headers });
+  if (!response.ok) return null;
+  const tooBig = () => resourceLimit(`${url} is larger than ${maxBytes} bytes`);
+  if (Number(response.headers.get('content-length')) > maxBytes) {
+    await response.body?.cancel();
+    throw tooBig();
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel();
+      throw tooBig();
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
 
 /** Moves every geometry's arrays out of WASM into JS typed arrays. */
@@ -94,7 +168,8 @@ export function takeGeometries(scene, meta) {
   return meta.geometries.map((g, i) => ({
     positions: scene.positions(i),
     normals: scene.normals(i),
-    uvs: g.hasUvs ? scene.uvs(i) : null,
+    uvs: g.uvSets.map((_, k) => scene.uvs(i, k)),
+    colors: g.hasColors ? scene.colors(i) : null,
     indices: g.vertices < 65536 ? scene.indices16(i) : scene.indices(i),
   }));
 }
@@ -102,7 +177,7 @@ export function takeGeometries(scene, meta) {
 /** Textures stored inside a USDZ package, by path: they cannot be fetched by URL. */
 export function takePackagedTextures(scene, meta) {
   const out = new Map();
-  for (const path of texturePaths(meta, { normalMaps: true })) {
+  for (const { path } of textureJobs(meta, { textures: 'full' })) {
     if (!path.includes('[')) continue;
     const bytes = scene.packagedFile(path);
     if (bytes) out.set(path, bytes);
@@ -110,10 +185,31 @@ export function takePackagedTextures(scene, meta) {
   return out;
 }
 
-/** Distinct texture files the materials sample, base color first. */
-export function texturePaths(meta, { normalMaps = false } = {}) {
-  const paths = [];
-  for (const m of meta.materials) if (m.colorMap && !paths.includes(m.colorMap.path)) paths.push(m.colorMap.path);
-  if (normalMaps) for (const m of meta.materials) if (m.normalMap && !paths.includes(m.normalMap.path)) paths.push(m.normalMap.path);
-  return paths;
+/** Long-side cap for data maps (roughness, metallic, occlusion, ...) in `preview` mode. */
+const PREVIEW_DATA_SIZE = 512;
+
+/**
+ * The texture files to load and the size to decode each to, base colors first.
+ * `preview`: base color up to `maxSize`, other maps up to 512 px, no normal
+ * maps. `full`: every map, including normals, up to `maxSize`.
+ */
+export function textureJobs(meta, { textures = 'preview', maxSize = 1024 } = {}) {
+  const full = textures === 'full';
+  const dataSize = full ? maxSize : Math.min(maxSize, PREVIEW_DATA_SIZE);
+  const tiers = [
+    [['diffuseColor'], maxSize],
+    [['opacity', 'emissiveColor', 'roughness', 'metallic', 'occlusion'], dataSize],
+    [full ? ['normal'] : [], maxSize],
+  ];
+  const jobs = new Map();
+  for (const [inputs, size] of tiers) {
+    for (const m of meta.materials) {
+      for (const input of inputs) {
+        const path = m.maps[input]?.path;
+        // A file shared by several inputs is decoded once, at the largest size asked.
+        if (path) jobs.set(path, Math.max(jobs.get(path) ?? 0, size));
+      }
+    }
+  }
+  return [...jobs].map(([path, size]) => ({ path, size }));
 }

@@ -1,9 +1,11 @@
-//! An in-memory asset resolver over "virtual paths".
+//! An in-memory asset resolver over layer identifiers.
 //!
-//! The browser side maps every URL to a virtual absolute path (`/<host>/<path>`)
-//! so relative asset paths can be anchored with plain POSIX rules here, and
-//! maps them back to URLs when it fetches. Layers live in a shared map filled
-//! before composition; nothing is ever read from a filesystem or network.
+//! An identifier is an absolute URL without a query (`https://host/a/b.usd`),
+//! encoded as authored or requested so the host can fetch it as is, or a plain
+//! absolute path (`/a/b.usd`) for native use. Relative asset paths resolve
+//! against the identifier of the layer that authored them, as URL references
+//! do. Layers live in a shared map filled before composition; nothing is ever
+//! read from a filesystem or network.
 
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
@@ -39,9 +41,10 @@ pub fn split_packaged(path: &str) -> Option<(&str, &str)> {
     Some((&inner[..open], &inner[open + 1..]))
 }
 
-/// Turns an authored asset path into a virtual path, anchored at the virtual
-/// path of the layer that authored it. Returns `None` for empty paths. Paths
-/// authored inside a USDZ package stay inside it (`/h/pkg.usdz[tex/a.png]`).
+/// Turns an authored asset path into an identifier, anchored at the identifier
+/// of the layer that authored it. Returns `None` for empty paths. Paths
+/// authored inside a USDZ package stay inside it (`https://h/pkg.usdz[tex/a.png]`).
+/// Percent-escapes are left as authored: the host's URL parser encodes the rest.
 pub fn anchor_path(asset_path: &str, anchor: Option<&str>) -> Option<String> {
     let path = asset_path.trim().replace('\\', "/");
     if path.is_empty() {
@@ -51,14 +54,12 @@ pub fn anchor_path(asset_path: &str, anchor: Option<&str>) -> Option<String> {
         let package = anchor_path(package, anchor)?;
         return Some(format!("{package}[{}]", &normalize(inner)[1..]));
     }
-    if let Some(rest) = path.strip_prefix("https://").or_else(|| path.strip_prefix("http://")) {
-        return Some(normalize(&format!("/{rest}")));
-    }
-    if let Some(rest) = path.strip_prefix("file://") {
-        return Some(normalize(rest));
-    }
-    if path.starts_with('/') {
+    if !split_origin(&path).0.is_empty() {
         return Some(normalize(&path));
+    }
+    let (origin, anchor_rest) = anchor.map_or(("", ""), split_origin);
+    if path.starts_with('/') {
+        return Some(format!("{origin}{}", normalize(&path)));
     }
     if let Some(anchor) = anchor {
         if let Some((package, inner)) = split_packaged(anchor) {
@@ -69,25 +70,56 @@ pub fn anchor_path(asset_path: &str, anchor: Option<&str>) -> Option<String> {
             return Some(format!("{anchor}[{}]", &normalize(&path)[1..]));
         }
     }
-    let dir = match anchor {
-        Some(anchor) => anchor.rsplit_once('/').map_or("", |(dir, _)| dir),
-        None => "",
+    let dir = anchor_rest.rsplit_once('/').map_or("", |(dir, _)| dir);
+    Some(format!("{origin}{}", normalize(&format!("{dir}/{path}"))))
+}
+
+/// Splits an identifier into its `scheme://authority` (empty for a plain path)
+/// and the rest.
+fn split_origin(id: &str) -> (&str, &str) {
+    let Some(colon) = id.find("://") else {
+        return ("", id);
     };
-    Some(normalize(&format!("{dir}/{path}")))
+    let scheme = &id[..colon];
+    let is_scheme = scheme.len() > 1
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
+    if !is_scheme {
+        return ("", id);
+    }
+    let authority = colon + 3;
+    let end = id[authority..].find(['/', '?', '#']).map_or(id.len(), |i| authority + i);
+    id.split_at(end)
 }
 
-/// Reads one file out of a USDZ (zip) package held in memory.
-pub fn read_packaged(package: &[u8], inner: &str) -> Option<Vec<u8>> {
-    let mut archive = zip::ZipArchive::new(io::Cursor::new(package)).ok()?;
-    let mut entry = archive.by_name(inner).ok()?;
-    let mut out = Vec::with_capacity(entry.size() as usize);
-    entry.read_to_end(&mut out).ok()?;
-    Some(out)
+/// Most bytes one file inside a package may expand to.
+pub const MAX_PACKAGED_FILE_BYTES: u64 = 1 << 30;
+/// Most bytes all package reads during one composition may expand to.
+pub const MAX_PACKAGED_TOTAL_BYTES: u64 = 2 << 30;
+
+/// Reads one file out of a USDZ (zip) package held in memory, refusing to
+/// expand it past `limit` bytes. Zip headers are untrusted: the declared size
+/// only sizes the buffer up to the package's own length.
+pub fn read_packaged(package: &[u8], inner: &str, limit: u64) -> io::Result<Vec<u8>> {
+    let mut archive = zip::ZipArchive::new(io::Cursor::new(package)).map_err(io::Error::other)?;
+    let entry = archive
+        .by_name(inner)
+        .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
+    let mut out = Vec::with_capacity(entry.size().min(package.len() as u64) as usize);
+    entry.take(limit + 1).read_to_end(&mut out)?;
+    if out.len() as u64 > limit {
+        return Err(io::Error::other(format!(
+            "resource limit exceeded: {inner} expands past {limit} bytes"
+        )));
+    }
+    Ok(out)
 }
 
-/// Collapses `.`, `..` and repeated separators, and drops a query string.
-fn normalize(path: &str) -> String {
-    let path = path.split(['?', '#']).next().unwrap_or(path);
+/// Collapses `.`, `..` and repeated separators in an identifier's path, keeps
+/// its origin and drops a query string.
+fn normalize(id: &str) -> String {
+    let (origin, rest) = split_origin(id);
+    let path = rest.split(['?', '#']).next().unwrap_or(rest);
     let mut parts: Vec<&str> = Vec::new();
     for part in path.split('/') {
         match part {
@@ -98,10 +130,10 @@ fn normalize(path: &str) -> String {
             part => parts.push(part),
         }
     }
-    format!("/{}", parts.join("/"))
+    format!("{origin}/{}", parts.join("/"))
 }
 
-/// Fetched layers by virtual path.
+/// Fetched layers by identifier.
 #[derive(Default)]
 pub struct Store {
     /// Bytes not yet handed to a composing stage.
@@ -109,9 +141,25 @@ pub struct Store {
     /// Layers a composing stage took ownership of: present for this stage,
     /// gone for any later one.
     pub taken: Vec<String>,
+    /// Bytes package reads expanded to since the last composition began.
+    pub expanded: u64,
 }
 
-/// Resolves virtual paths against the [`Store`], recording every layer that
+impl Store {
+    /// Reads a packaged file (`/h/pkg.usdz[inner]`) within the per-file and
+    /// per-composition expansion limits.
+    pub fn read_packaged(&mut self, path: &str) -> io::Result<Vec<u8>> {
+        let not_found = || io::Error::new(io::ErrorKind::NotFound, path.to_owned());
+        let (package, inner) = split_packaged(path).ok_or_else(not_found)?;
+        let package = self.bytes.get(package).ok_or_else(not_found)?;
+        let budget = MAX_PACKAGED_TOTAL_BYTES.saturating_sub(self.expanded);
+        let bytes = read_packaged(package, inner, MAX_PACKAGED_FILE_BYTES.min(budget))?;
+        self.expanded += bytes.len() as u64;
+        Ok(bytes)
+    }
+}
+
+/// Resolves identifiers against the [`Store`], recording every layer that
 /// was asked for but is not there yet so the caller can fetch it and recompose.
 pub struct MemoryResolver {
     pub files: Files,
@@ -157,13 +205,9 @@ impl ar::Resolver for MemoryResolver {
 
     fn open_asset(&self, resolved_path: &ResolvedPath) -> io::Result<Box<dyn Asset>> {
         let key = resolved_path.to_string_lossy().into_owned();
-        if let Some((package, inner)) = split_packaged(&key) {
-            let files = lock(&self.files);
-            let bytes = files.bytes.get(package).and_then(|p| read_packaged(p, inner));
-            return match bytes {
-                Some(bytes) => Ok(Box::new(MemAsset(io::Cursor::new(bytes)))),
-                None => Err(io::Error::new(io::ErrorKind::NotFound, key.clone())),
-            };
+        if split_packaged(&key).is_some() {
+            let bytes = lock(&self.files).read_packaged(&key)?;
+            return Ok(Box::new(MemAsset(io::Cursor::new(bytes))));
         }
         let first_root_read = self.keep.borrow().as_deref() == Some(key.as_str());
         if first_root_read {
@@ -309,17 +353,45 @@ mod tests {
             "/huggingface.co/datasets/a/b/resolve/main/tex/a.png"
         );
         assert_eq!(
-            anchor_path("https://cdn.example/a/b.usd?x=1", Some(root)).unwrap(),
-            "/cdn.example/a/b.usd"
+            anchor_path("http://cdn.example/a/./b%20c.usd?x=1", Some(root)).unwrap(),
+            "http://cdn.example/a/b%20c.usd"
         );
+        assert_eq!(anchor_path("../b.usd", Some("https://h/a/r.usd")).unwrap(), "https://h/b.usd");
+        assert_eq!(anchor_path("/c/d.usd", Some("https://h/a/r.usd")).unwrap(), "https://h/c/d.usd");
+        assert_eq!(anchor_path("t.png", Some("https://h/p.usdz")).unwrap(), "https://h/p.usdz[t.png]");
         assert_eq!(anchor_path("SubUSDs\\textures\\t.jpg", Some("/h/r.usd")).unwrap(), "/h/SubUSDs/textures/t.jpg");
-        assert_eq!(anchor_path("tex/a.png", Some("/h/p.usdz[root.usdc]")).unwrap(), "/h/p.usdz[tex/a.png]");
-        assert_eq!(anchor_path("a.usdc", Some("/h/p.usdz")).unwrap(), "/h/p.usdz[a.usdc]");
-        assert_eq!(anchor_path("./p.usdz[x/y.usd]", Some("/h/r.usda")).unwrap(), "/h/p.usdz[x/y.usd]");
         assert!(is_layer_path("/h/p.usdz[x/y.usdc]"));
         assert_eq!(anchor_path("tex/a.png", Some("/h/p.usdz[root.usdc]")).unwrap(), "/h/p.usdz[tex/a.png]");
         assert_eq!(anchor_path("a.usdc", Some("/h/p.usdz")).unwrap(), "/h/p.usdz[a.usdc]");
         assert_eq!(anchor_path("./p.usdz[x/y.usd]", Some("/h/r.usda")).unwrap(), "/h/p.usdz[x/y.usd]");
         assert!(is_layer_path("/h/p.usdz[x/y.usdc]"));
+    }
+
+    /// A package with one deflated entry of `size` zero bytes.
+    fn zeros_package(size: usize) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("big.usdc", options).unwrap();
+        io::Write::write_all(&mut zip, &vec![0; size]).unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn packaged_file_expanding_past_the_limit_is_refused() {
+        let package = zeros_package(1 << 20);
+        assert!(package.len() < 4096, "a decompression bomb");
+        let error = read_packaged(&package, "big.usdc", 1 << 16).unwrap_err();
+        assert!(error.to_string().contains("resource limit exceeded"), "{error}");
+        assert_eq!(read_packaged(&package, "big.usdc", 1 << 20).unwrap().len(), 1 << 20);
+    }
+
+    #[test]
+    fn packaged_files_share_one_expansion_budget() {
+        let mut store = Store::default();
+        store.bytes.insert("/h/p.usdz".to_owned(), zeros_package(100));
+        store.expanded = MAX_PACKAGED_TOTAL_BYTES - 150;
+        assert_eq!(store.read_packaged("/h/p.usdz[big.usdc]").unwrap().len(), 100);
+        let error = store.read_packaged("/h/p.usdz[big.usdc]").unwrap_err();
+        assert!(error.to_string().contains("resource limit exceeded"), "{error}");
     }
 }

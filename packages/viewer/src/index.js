@@ -1,14 +1,16 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { applyFallback, attachTexture, configureTexture, createMaterial, variant } from './materials.js';
 
-const WASM_URL = new URL('../wasm/usd_wasm_bg.wasm', import.meta.url);
-const WORKER_URL = new URL('./worker.js', import.meta.url);
+export { findSimReadyRoot, hubUrl } from './hub.js';
 
 let wasmModule = null;
 
 /** Compiles the WASM module once per page; workers instantiate it without refetching. */
-function compileWasm(url = WASM_URL) {
+function compileWasm(url) {
+  // Written inline so bundlers (Vite, webpack) emit the asset and rewrite the URL.
+  url ??= new URL('../wasm/usd_wasm_bg.wasm', import.meta.url);
   wasmModule ||= WebAssembly.compileStreaming(fetch(url)).catch((error) => {
     wasmModule = null;
     throw error;
@@ -21,63 +23,108 @@ function compileWasm(url = WASM_URL) {
  * `textures` resolves when every texture has streamed in.
  *
  * @param {string} url  root layer URL (relative URLs resolve against the page)
- * @param {object} [options]
- * @param {number} [options.maxTextureSize=1024]  long-side cap for decoded textures
- * @param {boolean} [options.normalMaps=false]  also load normal maps
- * @param {boolean} [options.prefetchVariants=false]  fetch layers named inside variants before composing
- * @param {() => void} [options.onTexture]  called after each texture is applied
- * @param {string | URL} [options.wasmUrl]  override where the WASM binary lives
- * @returns {Promise<{ root: THREE.Group, info: object, textures: Promise<void>, dispose: () => void }>}
+ * @param {import('./index.js').LoadOptions} [options]
+ * @returns {Promise<import('./index.js').LoadResult>}
+ *   `dispose` also stops any textures still streaming and settles `textures`.
  */
 export async function loadUsd(url, options = {}) {
-  const { maxTextureSize = 1024, normalMaps = false, prefetchVariants = false, onTexture = () => {} } = options;
+  const { maxTextureSize = 1024, textures: textureMode = 'preview', prefetchVariants = false, maxConcurrentFetches, maxLayerBytes } = options;
+  const { onTexture, onProgress, signal, headers } = options;
+  signal?.throwIfAborted();
   const absoluteUrl = new URL(url, location.href).href;
   const module = await compileWasm(options.wasmUrl);
-  const worker = new Worker(WORKER_URL, { type: 'module' });
+  signal?.throwIfAborted();
+  // Inline `new Worker(new URL(...))` is the pattern bundlers recognise and bundle.
+  const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 
   let resolveScene, rejectScene, resolveTextures;
   const scenePromise = new Promise((resolve, reject) => ((resolveScene = resolve), (rejectScene = reject)));
   const textures = new Promise((resolve) => (resolveTextures = resolve));
   let built = null;
+  let delivered = false;
+  let stopped = false;
+  // One way out for done, error, dispose and abort: stop the worker (freeing
+  // its WASM memory) and settle `textures`.
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    worker.terminate();
+    signal?.removeEventListener('abort', abort);
+    resolveTextures();
+  };
+  function abort() {
+    stop();
+    // Before geometry resolves nothing has reached the caller: free it here.
+    if (built && !delivered) built.dispose();
+    rejectScene(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  }
+  signal?.addEventListener('abort', abort, { once: true });
 
   worker.onmessage = ({ data }) => {
+    // Messages already queued when the load was stopped (disposed or aborted).
+    if (stopped) {
+      data.bitmap?.close();
+      return;
+    }
     switch (data.type) {
+      case 'fetch':
+        proxyFetch(options.fetch, data, headers, signal).then(({ message, transfer }) => worker.postMessage(message, transfer));
+        break;
+      case 'progress':
+        onProgress?.(data.progress);
+        break;
       case 'scene':
-        built = buildScene(data.meta, data.geometries, normalMaps);
+        built = buildScene(data.meta, data.geometries);
         built.info.stats = data.stats;
+        built.info.warnings = [...data.meta.warnings, ...data.stats.warnings];
+        delivered = true;
         resolveScene(built);
         break;
       case 'texture':
         if (data.bitmap && built) {
           built.applyTexture(data.path, data.bitmap);
-          onTexture();
+          onTexture?.();
         } else if (data.error && built) {
+          built.textureFailed(data.path);
           built.info.textureErrors.push(`${data.path}: ${data.error}`);
+          built.info.warnings.push(`texture not loaded: ${data.path}: ${data.error}`);
         }
         break;
       case 'done':
-        worker.terminate();
-        resolveTextures();
+        stop();
         break;
       case 'error':
-        worker.terminate();
+        stop();
         rejectScene(new Error(data.message));
-        resolveTextures();
         break;
     }
   };
   worker.onerror = (event) => {
-    worker.terminate();
+    stop();
     rejectScene(new Error(event.message || 'worker failed to start'));
-    resolveTextures();
   };
-  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, normalMaps, prefetchVariants });
+  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, prefetchVariants, maxConcurrentFetches, maxLayerBytes, headers, proxyFetch: !!options.fetch });
 
   const scene = await scenePromise;
-  return { root: scene.root, info: scene.info, textures, dispose: scene.dispose };
+  const dispose = () => {
+    stop();
+    scene.dispose();
+  };
+  return { root: scene.root, info: scene.info, textures, dispose };
 }
 
-function buildScene(meta, arrays, normalMaps) {
+/** Runs one worker request through the caller's `fetch` and packages the reply. */
+async function proxyFetch(fetchFn, { id, url }, headers, signal) {
+  try {
+    const response = await fetchFn(url, { headers, signal });
+    const buffer = response.ok ? await response.arrayBuffer() : null;
+    return { message: { type: 'fetched', id, ok: response.ok, status: response.status, buffer }, transfer: buffer ? [buffer] : [] };
+  } catch (error) {
+    return { message: { type: 'fetched', id, ok: false, status: 0, buffer: null, error: String(error) }, transfer: [] };
+  }
+}
+
+function buildScene(meta, arrays) {
   const root = new THREE.Group();
   root.name = 'usd';
   // three.js is Y-up in meters.
@@ -85,16 +132,12 @@ function buildScene(meta, arrays, normalMaps) {
   root.scale.setScalar(meta.metersPerUnit || 1);
 
   const materials = meta.materials.map((m) => createMaterial(m));
-  const doubleSided = new Map();
-  const materialFor = (index, sided) => {
-    if (!sided) return materials[index];
-    if (!doubleSided.has(index)) {
-      const copy = materials[index].clone();
-      copy.side = THREE.DoubleSide;
-      copy.userData = materials[index].userData;
-      doubleSided.set(index, copy);
-    }
-    return doubleSided.get(index);
+  const variants = new Map();
+  const materialFor = (index, doubleSided, vertexColors) => {
+    if (!doubleSided && !vertexColors) return materials[index];
+    const key = `${index}|${doubleSided}|${vertexColors}`;
+    if (!variants.has(key)) variants.set(key, variant(materials[index], { doubleSided, vertexColors }));
+    return variants.get(key);
   };
 
   const geometries = meta.geometries.map((g, i) => {
@@ -102,71 +145,54 @@ function buildScene(meta, arrays, normalMaps) {
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(a.positions, 3));
     geometry.setAttribute('normal', new THREE.BufferAttribute(a.normals, 3));
-    if (a.uvs) geometry.setAttribute('uv', new THREE.BufferAttribute(a.uvs, 2));
+    // UV set k is three.js attribute `uv`, `uv1`, `uv2`, ... (a texture's `channel`).
+    a.uvs.forEach((uv, k) => geometry.setAttribute(k ? `uv${k}` : 'uv', new THREE.BufferAttribute(uv, 2)));
+    if (a.colors) geometry.setAttribute('color', new THREE.BufferAttribute(a.colors, 3));
     geometry.setIndex(new THREE.BufferAttribute(a.indices, 1));
+    // Bounds come from the worker, so framing and culling never rescan positions.
+    geometry.boundingBox = new THREE.Box3().setFromArray(g.bounds);
+    geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
     if (g.groups.length > 1) g.groups.forEach(([start, count], j) => geometry.addGroup(start, count, j));
     return geometry;
   });
 
-  const matrix = new THREE.Matrix4();
   for (const inst of meta.instances) {
-    const geometry = geometries[inst.geometry];
-    const mats = inst.materials.map((m) => materialFor(m, inst.doubleSided));
-    const mesh = new THREE.Mesh(geometry, mats.length > 1 ? mats : mats[0]);
+    const g = meta.geometries[inst.geometry];
+    const mats = inst.materials.map((m) => {
+      const usd = materials[m].userData.usd;
+      // Route each named UV set to its attribute; the first mesh using a material decides.
+      for (const ref of Object.values(usd.maps)) {
+        const k = g.uvSets.indexOf(ref.uvSet);
+        if (k > 0) usd.uvChannels[ref.uvSet] ??= k;
+      }
+      return materialFor(m, inst.doubleSided, g.hasColors && !!usd.colorPrimvar);
+    });
+    const mesh = new THREE.Mesh(geometries[inst.geometry], mats.length > 1 ? mats : mats[0]);
     mesh.name = inst.path;
     // USD stores row-vector matrices row-major: the same numbers column-major for three.js.
-    matrix.fromArray(inst.matrix);
-    matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+    // Set whole rather than decomposed, which would lose shear.
+    mesh.matrix.fromArray(inst.matrix);
+    mesh.matrixAutoUpdate = false;
+    mesh.matrixWorldNeedsUpdate = true;
     root.add(mesh);
   }
 
-  const allMaterials = () => [...materials, ...doubleSided.values()];
+  const allMaterials = () => [...materials, ...variants.values()];
   const textures = new Map();
   const applyTexture = (path, bitmap) => {
     const base = new THREE.Texture(bitmap);
     base.flipY = false;
-    base.wrapS = base.wrapT = THREE.RepeatWrapping;
     base.anisotropy = 4;
     textures.set(path, base);
-    for (const material of allMaterials()) {
-      const { colorMap, normalMap } = material.userData.usd;
-      if (colorMap?.path === path) {
-        material.map = configure(base, colorMap, THREE.SRGBColorSpace);
-        material.needsUpdate = true;
-      }
-      if (normalMaps && normalMap?.path === path) {
-        material.normalMap = configure(base, normalMap, THREE.NoColorSpace);
-        material.needsUpdate = true;
-      }
-    }
+    const textureFor = (ref, colorSpace, uvChannel) => configureTexture(base, ref, colorSpace, uvChannel);
+    for (const material of allMaterials()) attachTexture(material, path, textureFor);
   };
-  const configure = (base, ref, colorSpace) => {
-    const [sx, sy] = ref.scale ?? [1, 1];
-    const [tx, ty] = ref.translation ?? [0, 0];
-    const angle = ((ref.rotation ?? 0) * Math.PI) / 180;
-    const identity = sx === 1 && sy === 1 && tx === 0 && ty === 0 && angle === 0;
-    const texture = identity && !ref.wrapS && !ref.wrapT && base.colorSpace === colorSpace ? base : base.clone();
-    texture.colorSpace = colorSpace;
-    // `black` has no three.js equivalent (no border color); clamp is closest.
-    const wrap = (token) => ({ mirror: THREE.MirroredRepeatWrapping, clamp: THREE.ClampToEdgeWrapping, black: THREE.ClampToEdgeWrapping })[token] ?? THREE.RepeatWrapping;
-    texture.wrapS = wrap(ref.wrapS);
-    texture.wrapT = wrap(ref.wrapT);
-    if (!identity) {
-      // UsdTransform2d: st' = rotate(st * scale) + translation (counterclockwise degrees).
-      const c = Math.cos(angle);
-      const s = Math.sin(angle);
-      texture.matrixAutoUpdate = false;
-      texture.matrix.set(c * sx, -s * sy, tx, s * sx, c * sy, ty, 0, 0, 1);
-    }
-    texture.needsUpdate = true;
-    return texture;
-  };
+  const textureFailed = (path) => allMaterials().forEach((material) => applyFallback(material, path));
 
   const dispose = () => {
     geometries.forEach((g) => g.dispose());
     for (const m of allMaterials()) {
-      m.map?.dispose();
-      m.normalMap?.dispose();
+      for (const key of ['map', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'alphaMap', 'normalMap']) m[key]?.dispose();
       m.dispose();
     }
     for (const t of textures.values()) {
@@ -185,24 +211,7 @@ function buildScene(meta, arrays, normalMaps) {
     materialKinds: countBy(meta.materials, (m) => m.kind),
     textureErrors: [],
   };
-  return { root, info, applyTexture, dispose };
-}
-
-function createMaterial(m) {
-  const material = new THREE.MeshStandardMaterial({
-    color: new THREE.Color().setRGB(m.color[0], m.color[1], m.color[2], THREE.LinearSRGBColorSpace),
-    roughness: m.roughness,
-    metalness: m.metallic,
-    emissive: new THREE.Color().setRGB(m.emissive[0], m.emissive[1], m.emissive[2], THREE.LinearSRGBColorSpace),
-  });
-  if (m.opacity < 1) {
-    material.transparent = true;
-    material.opacity = m.opacity;
-    material.depthWrite = false;
-  }
-  material.name = m.path;
-  material.userData.usd = { kind: m.kind, colorMap: m.colorMap, normalMap: m.normalMap };
-  return material;
+  return { root, info, applyTexture, textureFailed, dispose };
 }
 
 function countBy(list, key) {

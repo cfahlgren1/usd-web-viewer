@@ -1,8 +1,9 @@
 //! Walks a composed stage and flattens what a viewer draws: triangle meshes
 //! with world transforms and simple PBR materials.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use openusd::gf::Matrix4d;
 use openusd::sdf::{self, Value};
 use openusd::usd::{self, PrimPredicate, Stage};
 use openusd_schemas::geom::XformCache;
@@ -20,6 +21,8 @@ pub struct Scene {
     pub instances: Vec<Instance>,
     pub materials: Vec<Material>,
     pub stats: Stats,
+    /// What the viewer could not show faithfully, for the host to surface.
+    pub warnings: Vec<String>,
 }
 
 #[derive(Default, Debug)]
@@ -40,11 +43,17 @@ pub struct Geometry {
     pub points: usize,
     pub positions: Vec<f32>,
     pub normals: Vec<f32>,
-    /// Empty when the mesh has no texture coordinates.
-    pub uvs: Vec<f32>,
+    /// UV sets by primvar name: the default set first, then the ones bound
+    /// textures name. Empty when the mesh has no texture coordinates.
+    pub uvs: Vec<(String, Vec<f32>)>,
+    /// Per-vertex `displayColor`; empty unless authored per vertex/face and
+    /// the bound material shows it.
+    pub colors: Vec<f32>,
     pub indices: Vec<u32>,
     /// Index ranges, one per material subset; a single range without subsets.
     pub groups: Vec<Group>,
+    /// Local bounding box of `positions`: min, then max.
+    pub bounds: [[f32; 3]; 2],
 }
 
 pub struct Group {
@@ -71,6 +80,16 @@ struct Inherited {
     invisible: bool,
     /// The nearest authored purpose is `guide` or `proxy`.
     hidden_purpose: bool,
+    /// Index into the prototypes: under a PointInstancer prototype, which is
+    /// drawn only at that instancer's placements.
+    prototype: Option<u32>,
+}
+
+/// A PointInstancer prototype and where instancers place it: each instance's
+/// index and its prototype-to-world transform.
+struct Prototype {
+    root: sdf::Path,
+    placements: Vec<(usize, Matrix4d)>,
 }
 
 pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
@@ -92,6 +111,16 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
     let mut xforms = XformCache::new(None);
     let mut geometry_by_source: HashMap<String, u32> = HashMap::new();
     let mut materials = material::Cache::default();
+    let mut unsupported: HashMap<String, usize> = HashMap::new();
+
+    let mut prototypes: Vec<Prototype> = Vec::new();
+    for path in &paths {
+        let prim = stage.prim(path)?;
+        if prim.type_name()?.as_deref() == Some("PointInstancer") {
+            let world = xforms.local_to_world_transform(&prim).unwrap_or(Matrix4d::IDENTITY);
+            add_placements(&prim, world, &mut prototypes)?;
+        }
+    }
 
     for path in paths {
         let prim = stage.prim(&path)?;
@@ -110,10 +139,20 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
         {
             own.hidden_purpose = purpose == "guide" || purpose == "proxy";
         }
+        if let Some(index) = prototypes.iter().position(|p| p.root == path) {
+            own.prototype = Some(index as u32);
+        }
         state.insert(path.clone(), own);
 
-        if prim.type_name()?.as_deref() != Some("Mesh") {
-            continue;
+        match prim.type_name()?.as_deref() {
+            Some("Mesh") => {}
+            Some(ty @ ("Points" | "BasisCurves" | "NurbsCurves" | "NurbsPatch" | "Cube" | "Sphere" | "Cylinder" | "Cone" | "Capsule" | "Plane" | "Volume")) => {
+                if !own.invisible && !own.hidden_purpose {
+                    *unsupported.entry(ty.to_owned()).or_default() += 1;
+                }
+                continue;
+            }
+            _ => continue,
         }
         if own.invisible {
             scene.stats.skipped_invisible += 1;
@@ -131,10 +170,27 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
             Some(proto) => proto,
             None => prim.clone(),
         };
-        let key = source.path().as_str().to_owned();
+        let mesh_material = bound_material(stage, &mut materials, &mut scene.materials, &prim)?;
+        let mut subset_materials = HashMap::new();
+        for child in prim.children()? {
+            if child.type_name()?.as_deref() == Some("GeomSubset")
+                && let Some(mat) = MaterialBindingAPI::from_prim_unchecked(child.clone()).compute_bound_material("preview")?
+                && let Some(name) = child.path().name()
+            {
+                subset_materials.insert(name.to_owned(), materials.get(stage, &mat, &mut scene.materials)?);
+            }
+        }
+        // What the materials sample: per-vertex colors when a material still
+        // names its color primvar, and the UV primvars their textures name.
+        let used = || std::iter::once(&mesh_material).chain(subset_materials.values()).map(|&m| &scene.materials[m as usize]);
+        let want_colors = scene.materials[mesh_material as usize].color_primvar.is_some();
+        let mut uv_sets: Vec<String> = used().flat_map(|m| m.maps.iter().filter_map(|(_, t)| t.uv_set.clone())).collect();
+        uv_sets.sort();
+        uv_sets.dedup();
+        let key = format!("{}|{want_colors}|{}", source.path().as_str(), uv_sets.join(","));
         let geometry = match geometry_by_source.get(&key) {
             Some(&index) => Some(index),
-            None => match read_mesh(&source)? {
+            None => match read_mesh(&source, want_colors, &uv_sets)? {
                 Some(geometry) => {
                     let index = scene.geometries.len() as u32;
                     scene.geometries.push(geometry);
@@ -151,78 +207,148 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
         };
 
         let groups = &scene.geometries[geometry as usize].groups;
-        let mesh_material = bound_material(stage, &path, &mut materials, &mut scene.materials, &prim)?;
         let mut instance_materials = Vec::with_capacity(groups.len());
         for group in groups {
-            let index = match &group.subset {
-                Some(name) => {
-                    let subset_path = path.append_path(name.as_str()).map_err(openusd::Error::from)?;
-                    let subset = stage.prim(&subset_path)?;
-                    match MaterialBindingAPI::from_prim_unchecked(subset).compute_bound_material("preview")? {
-                        Some(mat) => materials.get(stage, &mat, &mut scene.materials)?,
-                        None => mesh_material,
-                    }
-                }
-                None => mesh_material,
-            };
-            instance_materials.push(index);
+            let subset = group.subset.as_ref().and_then(|name| subset_materials.get(name));
+            instance_materials.push(subset.copied().unwrap_or(mesh_material));
         }
 
-        let matrix = xforms
-            .local_to_world_transform(&prim)
-            .map(|m| m.0)
-            .unwrap_or(openusd::gf::Matrix4d::IDENTITY.0);
-        scene.stats.meshes += 1;
-        scene.stats.triangles += scene.geometries[geometry as usize].indices.len() / 3;
-        scene.instances.push(Instance {
-            path: path.as_str().to_owned(),
-            geometry,
-            matrix,
-            materials: instance_materials,
-            double_sided: matches!(prim.attribute("doubleSided").get::<bool>(), Ok(Some(true))),
-        });
+        let placed = match own.prototype {
+            None => vec![(
+                path.as_str().to_owned(),
+                xforms.local_to_world_transform(&prim).unwrap_or(Matrix4d::IDENTITY),
+            )],
+            Some(index) => {
+                let prototype = &prototypes[index as usize];
+                let above_root = stage.prim(prototype.root.parent().unwrap_or_else(sdf::Path::abs_root))?;
+                let (to_root, _) = xforms
+                    .compute_relative_transform(&prim, &above_root)
+                    .unwrap_or((Matrix4d::IDENTITY, false));
+                prototype
+                    .placements
+                    .iter()
+                    .map(|&(i, placement)| (format!("{}[{i}]", path.as_str()), to_root * placement))
+                    .collect()
+            }
+        };
+        let double_sided = matches!(prim.attribute("doubleSided").get::<bool>(), Ok(Some(true)));
+        let triangles = scene.geometries[geometry as usize].indices.len() / 3;
+        for (path, matrix) in placed {
+            scene.stats.meshes += 1;
+            scene.stats.triangles += triangles;
+            scene.instances.push(Instance {
+                path,
+                geometry,
+                matrix: matrix.0,
+                materials: instance_materials.clone(),
+                double_sided,
+            });
+        }
+    }
+    let mut types: Vec<_> = unsupported.into_iter().collect();
+    types.sort();
+    for (ty, count) in types {
+        scene.warnings.push(format!("{count} {ty} prim(s) not drawn (unsupported type)"));
+    }
+    let fallback: Vec<&str> = scene.materials.iter().filter(|m| m.kind == "fallback" && !m.path.is_empty()).map(|m| m.path.as_str()).collect();
+    if let Some(first) = fallback.first() {
+        scene.warnings.push(format!(
+            "{} material(s) have no UsdPreviewSurface or readable MDL and show as grey, e.g. {first}",
+            fallback.len()
+        ));
     }
     Ok(scene)
 }
 
-/// The material bound to `path` for preview rendering, or a fallback built from
-/// `displayColor` (or neutral grey) so geometry always shows.
+/// Records where a PointInstancer places each of its prototypes:
+/// `scale * orientation * translate(position)` under the instancer's own
+/// transform, leaving out `invisibleIds` and `inactiveIds`.
+fn add_placements(prim: &usd::Prim, world: Matrix4d, out: &mut Vec<Prototype>) -> openusd::Result<()> {
+    let targets = prim.relationship("prototypes").targets()?;
+    let Some(proto_indices) = ints(prim.attribute("protoIndices").get::<Value>()?) else {
+        return Ok(());
+    };
+    let Some(positions) = prim.attribute("positions").get::<Value>()?.as_ref().and_then(vec3s) else {
+        return Ok(());
+    };
+    let orientations: Vec<[f64; 4]> = match prim.attribute("orientations").get::<Value>()? {
+        Some(Value::QuathVec(q)) => q
+            .iter()
+            .map(|q| [q.w, q.x, q.y, q.z].map(|v| v.to_f32() as f64))
+            .collect(),
+        _ => match prim.attribute("orientationsf").get::<Value>()? {
+            Some(Value::QuatfVec(q)) => q.iter().map(|&q| q.into()).collect(),
+            _ => Vec::new(),
+        },
+    };
+    let scales = prim
+        .attribute("scales")
+        .get::<Value>()?
+        .as_ref()
+        .and_then(vec3s)
+        .unwrap_or_default();
+    let ids = match prim.attribute("ids").get::<Value>()? {
+        Some(Value::Int64Vec(ids)) => ids,
+        _ => Vec::new(),
+    };
+    let mut hidden: HashSet<i64> = match prim.attribute("invisibleIds").get::<Value>()? {
+        Some(Value::Int64Vec(ids)) => ids.into_iter().collect(),
+        _ => HashSet::new(),
+    };
+    if let Some(Value::Int64ListOp(op)) = prim.get_metadata::<Value>("inactiveIds")? {
+        hidden.extend(op.compose_over(&[]));
+    }
+
+    for (i, &proto) in proto_indices.iter().enumerate() {
+        let (Some(root), Some(&position)) = (targets.get(proto as usize), positions.get(i)) else {
+            continue;
+        };
+        if hidden.contains(&ids.get(i).copied().unwrap_or(i as i64)) {
+            continue;
+        }
+        let orientation = orientations.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]);
+        let scale = scales.get(i).copied().unwrap_or([1.0; 3]);
+        let placement = Matrix4d::scale(scale.map(f64::from))
+            * Matrix4d::from_quat(orientation)
+            * Matrix4d::translation(position.map(f64::from))
+            * world;
+        match out.iter_mut().find(|p| &p.root == root) {
+            Some(prototype) => prototype.placements.push((i, placement)),
+            None => out.push(Prototype {
+                root: root.clone(),
+                placements: vec![(i, placement)],
+            }),
+        }
+    }
+    Ok(())
+}
+
+/// The material bound to `prim` for preview rendering, or one showing its
+/// `displayColor` (neutral grey without one) so geometry always shows. A
+/// material reading a color primvar is tinted by a constant value, or left to
+/// per-vertex colors (it keeps `color_primvar`) when the primvar varies.
 fn bound_material(
     stage: &Stage,
-    path: &sdf::Path,
     cache: &mut material::Cache,
     out: &mut Vec<Material>,
     prim: &usd::Prim,
 ) -> openusd::Result<u32> {
     let binding = MaterialBindingAPI::from_prim_unchecked(prim.clone()).compute_bound_material("preview")?;
-    if let Some(mat) = binding {
-        let index = cache.get(stage, &mat, out)?;
-        // Per-mesh colors read through a primvar reader: use the first value
-        // (vertex colors are not supported yet).
-        if let Some(name) = out[index as usize].color_primvar.clone() {
-            let value = prim.attribute(format!("primvars:{name}").as_str()).get::<Value>()?;
-            if let Some(color) = value.as_ref().and_then(first_color) {
-                return Ok(cache.with_primvar_color(index, color, out));
-            }
-        }
-        return Ok(index);
-    }
-    let color = match prim.attribute("primvars:displayColor").get::<Value>()? {
-        Some(value) => first_color(&value),
-        None => None,
+    let index = match &binding {
+        Some(mat) => cache.get(stage, mat, out)?,
+        None => cache.display_color(out),
     };
-    let _ = path;
-    Ok(cache.display_color(color, out))
+    let Some(name) = out[index as usize].color_primvar.clone() else {
+        return Ok(index);
+    };
+    match read_primvar(prim, &format!("primvars:{name}"), Interp::Constant, vec3s)? {
+        Some(pv) if pv.interp != Interp::Constant && pv.values.len() > 1 => Ok(index),
+        Some(pv) if !pv.values.is_empty() => Ok(cache.with_primvar_color(index, pv.values[0], out)),
+        _ if binding.is_none() => Ok(cache.fallback(out)),
+        _ => Ok(index),
+    }
 }
 
-fn first_color(value: &Value) -> Option<[f32; 3]> {
-    match value {
-        Value::Vec3fVec(v) => v.first().map(|c| [c.x, c.y, c.z]),
-        Value::Vec3f(c) => Some([c.x, c.y, c.z]),
-        Value::Vec3dVec(v) => v.first().map(|c| [c.x as f32, c.y as f32, c.z as f32]),
-        _ => None,
-    }
-}
 
 pub(crate) fn token_attr(prim: &usd::Prim, name: &str) -> Option<String> {
     match prim.attribute(name).get::<Value>() {
@@ -318,9 +444,10 @@ fn ints(value: Option<Value>) -> Option<Vec<i32>> {
     }
 }
 
-const UV_NAMES: [&str; 6] = ["primvars:st", "primvars:st0", "primvars:UVMap", "primvars:uv", "primvars:map1", "primvars:st_0"];
+/// Primvars tried, in order, for the default UV set.
+const UV_NAMES: [&str; 6] = ["st", "st0", "UVMap", "uv", "map1", "st_0"];
 
-fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
+fn read_mesh(prim: &usd::Prim, want_colors: bool, uv_sets: &[String]) -> openusd::Result<Option<Geometry>> {
     let Some(points) = prim.attribute("points").get::<Value>()?.as_ref().and_then(vec3s) else {
         return Ok(None);
     };
@@ -339,26 +466,47 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
     }
     let left_handed = token_attr(prim, "orientation").as_deref() == Some("leftHanded");
 
-    let normals = match read_primvar(prim, "primvars:normals", Interp::Vertex, vec3s)? {
+    // Primvars fall back to constant interpolation; the `normals` attribute to vertex.
+    let normals = match read_primvar(prim, "primvars:normals", Interp::Constant, vec3s)? {
         Some(n) => Some(n),
         None => read_primvar(prim, "normals", Interp::Vertex, vec3s)?,
     };
-    let mut uvs = None;
+    // The default UV set first, then the ones bound textures name.
+    let mut uvs = Vec::new();
     for name in UV_NAMES {
-        if let Some(uv) = read_primvar(prim, name, Interp::FaceVarying, vec2s)? {
-            uvs = Some(uv);
+        if let Some(uv) = read_primvar(prim, &format!("primvars:{name}"), Interp::Constant, vec2s)? {
+            uvs.push((name.to_owned(), uv));
             break;
         }
     }
-    let normals = normals.filter(|n| fits(n.interp, n.values.len(), points.len(), counts.len(), corners));
-    let uvs = uvs.filter(|uv| fits(uv.interp, uv.values.len(), points.len(), counts.len(), corners));
+    for name in uv_sets {
+        if !uvs.iter().any(|(n, _)| n == name)
+            && let Some(uv) = read_primvar(prim, &format!("primvars:{name}"), Interp::Constant, vec2s)?
+        {
+            uvs.push((name.clone(), uv));
+        }
+    }
+    // Per-vertex display colors, only for meshes whose material shows them.
+    let colors = match want_colors {
+        true => read_primvar(prim, "primvars:displayColor", Interp::Constant, vec3s)?.filter(|c| c.interp != Interp::Constant),
+        false => None,
+    };
+    let fit = |interp, len| fits(interp, len, points.len(), counts.len(), corners);
+    let normals = normals.filter(|n| fit(n.interp, n.values.len()));
+    uvs.retain(|(_, uv)| fit(uv.interp, uv.values.len()));
+    let colors = colors.filter(|c| fit(c.interp, c.values.len()));
 
+    // A polygonal mesh with no normals is drawn faceted; a subdivision surface
+    // (the schema fallback) gets smooth normals as its approximation.
+    let faceted = normals.is_none() && token_attr(prim, "subdivisionScheme").as_deref() == Some("none");
     // Per-point layout when every attribute is per point; otherwise one vertex
     // per face corner, which faceVarying and uniform data need.
-    let per_corner = [normals.as_ref().map(|n| n.interp), uvs.as_ref().map(|u| u.interp)]
-        .into_iter()
-        .flatten()
-        .any(|i| matches!(i, Interp::FaceVarying | Interp::Uniform));
+    let per_corner = faceted
+        || [normals.as_ref().map(|n| n.interp), colors.as_ref().map(|c| c.interp)]
+            .into_iter()
+            .flatten()
+            .chain(uvs.iter().map(|(_, uv)| uv.interp))
+            .any(|i| matches!(i, Interp::FaceVarying | Interp::Uniform));
 
     let vertex_count = if per_corner { corners } else { points.len() };
     // Maps an output vertex to (point index, face index, corner index).
@@ -375,32 +523,43 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
         point_of.extend(0..points.len() as u32);
     }
 
-    let mut positions = Vec::with_capacity(vertex_count * 3);
-    for &p in &point_of {
-        positions.extend_from_slice(&points[p as usize]);
-    }
     let mut normals = match normals {
         Some(n) => expand3(&n, &point_of, &face_of, per_corner),
+        None if faceted => face_normals(&points, &counts, &face_indices, &face_of, left_handed),
         None => smooth_normals(&points, &counts, &face_indices, &point_of, left_handed),
     };
-    let mut uvs = match uvs {
-        Some(uv) => expand2(&uv, &point_of, &face_of, per_corner),
+    let mut uvs: Vec<(String, Vec<f32>)> = uvs
+        .into_iter()
+        .map(|(name, uv)| (name, expand2(&uv, &point_of, &face_of, per_corner)))
+        .collect();
+    let mut colors = match colors {
+        Some(c) => expand3(&c, &point_of, &face_of, per_corner),
         None => Vec::new(),
     };
 
-    // Corners that agree on point, normal and UV become one vertex again.
-    let remap = if per_corner {
-        let welded = weld(&point_of, points.len(), &positions, &normals, &uvs);
-        positions = welded.positions;
-        normals = welded.normals;
-        uvs = welded.uvs;
-        Some(welded.remap)
+    // Corners that agree on point, normal, UV and color become one vertex
+    // again; positions come straight from the authored points.
+    let (positions, remap) = if per_corner {
+        let mut attrs = vec![(&mut normals, 3)];
+        attrs.extend(uvs.iter_mut().map(|(_, uv)| (uv, 2)));
+        if !colors.is_empty() {
+            attrs.push((&mut colors, 3));
+        }
+        let (remap, first_corner) = weld(&point_of, points.len(), &mut attrs);
+        let positions = first_corner.iter().flat_map(|&c| points[point_of[c as usize] as usize]).collect();
+        (positions, Some(remap))
     } else {
-        None
+        (points.as_flattened().to_vec(), None)
     };
 
     // Triangle fans, ordered by subset so each subset is one contiguous range.
     let subsets = read_subsets(prim, counts.len())?;
+    let mut hole = vec![false; counts.len()];
+    for i in ints(prim.attribute("holeIndices").get::<Value>()?).unwrap_or_default() {
+        if let Some(h) = hole.get_mut(i as usize) {
+            *h = true;
+        }
+    }
     let mut face_start = Vec::with_capacity(counts.len());
     let mut offset = 0u32;
     for &count in &counts {
@@ -419,7 +578,7 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
         let start = indices.len() as u32;
         for face in faces {
             let n = counts[face];
-            if n < 3 {
+            if n < 3 || hole[face] {
                 continue;
             }
             let base = face_start[face];
@@ -452,6 +611,13 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
     if indices.is_empty() {
         return Ok(None);
     }
+    let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for p in positions.chunks_exact(3) {
+        for k in 0..3 {
+            min[k] = min[k].min(p[k]);
+            max[k] = max[k].max(p[k]);
+        }
+    }
 
     Ok(Some(Geometry {
         source: prim.path().as_str().to_owned(),
@@ -459,34 +625,32 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
         positions,
         normals,
         uvs,
+        colors,
         indices,
         groups,
+        bounds: [min, max],
     }))
 }
 
-struct Welded {
-    remap: Vec<u32>,
-    positions: Vec<f32>,
-    normals: Vec<f32>,
-    uvs: Vec<f32>,
-}
-
 /// Merges per-corner vertices that share a point and have bit-identical
-/// normal and UV. Candidates are chained per point, so the search stays local.
-fn weld(point_of: &[u32], point_count: usize, positions: &[f32], normals: &[f32], uvs: &[f32]) -> Welded {
+/// attributes, rewriting `attrs` (each with its width) in place. Returns the
+/// corner-to-vertex map and each vertex's first corner. Candidates are chained
+/// per point, so the search stays local.
+fn weld(point_of: &[u32], point_count: usize, attrs: &mut [(&mut Vec<f32>, usize)]) -> (Vec<u32>, Vec<u32>) {
     const NONE: u32 = u32::MAX;
-    let has_uv = !uvs.is_empty();
     let mut head = vec![NONE; point_count];
     let mut next: Vec<u32> = Vec::new();
     let mut first_corner: Vec<u32> = Vec::new();
     let mut remap = Vec::with_capacity(point_of.len());
-    let same = |a: usize, b: usize| {
-        normals[a * 3..a * 3 + 3].iter().zip(&normals[b * 3..b * 3 + 3]).all(|(x, y)| x.to_bits() == y.to_bits())
-            && (!has_uv || uvs[a * 2..a * 2 + 2].iter().zip(&uvs[b * 2..b * 2 + 2]).all(|(x, y)| x.to_bits() == y.to_bits()))
-    };
     for (corner, &point) in point_of.iter().enumerate() {
+        let same = |other: usize| {
+            attrs.iter().all(|(data, w)| {
+                let (a, b) = (&data[other * w..other * w + w], &data[corner * w..corner * w + w]);
+                a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+            })
+        };
         let mut candidate = head[point as usize];
-        while candidate != NONE && !same(first_corner[candidate as usize] as usize, corner) {
+        while candidate != NONE && !same(first_corner[candidate as usize] as usize) {
             candidate = next[candidate as usize];
         }
         if candidate == NONE {
@@ -497,19 +661,15 @@ fn weld(point_of: &[u32], point_count: usize, positions: &[f32], normals: &[f32]
         }
         remap.push(candidate);
     }
-    let gather = |src: &[f32], width: usize| -> Vec<f32> {
-        let mut out = Vec::with_capacity(first_corner.len() * width);
+    for (data, w) in attrs.iter_mut() {
+        let w = *w;
+        let mut out = Vec::with_capacity(first_corner.len() * w);
         for &c in &first_corner {
-            out.extend_from_slice(&src[c as usize * width..c as usize * width + width]);
+            out.extend_from_slice(&data[c as usize * w..c as usize * w + w]);
         }
-        out
-    };
-    Welded {
-        positions: gather(positions, 3),
-        normals: gather(normals, 3),
-        uvs: if has_uv { gather(uvs, 2) } else { Vec::new() },
-        remap,
+        **data = out;
     }
+    (remap, first_corner)
 }
 
 fn fits(interp: Interp, len: usize, points: usize, faces: usize, corners: usize) -> bool {
@@ -564,40 +724,70 @@ fn smooth_normals(
     let mut corner = 0usize;
     for &count in counts {
         let n = count.max(0) as usize;
-        if n >= 3 {
-            let face = &face_indices[corner..corner + n];
-            // Newell's method handles non-planar polygons.
-            let mut normal = [0f32; 3];
-            for i in 0..n {
-                let a = points[face[i] as usize];
-                let b = points[face[(i + 1) % n] as usize];
-                normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
-                normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
-                normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
-            }
-            if left_handed {
-                normal = [-normal[0], -normal[1], -normal[2]];
-            }
-            for &p in face {
-                let a = &mut acc[p as usize];
-                a[0] += normal[0];
-                a[1] += normal[1];
-                a[2] += normal[2];
-            }
+        let face = &face_indices[corner..corner + n];
+        let normal = newell(points, face, left_handed);
+        for &p in face {
+            let a = &mut acc[p as usize];
+            a[0] += normal[0];
+            a[1] += normal[1];
+            a[2] += normal[2];
         }
         corner += n;
     }
     let mut out = Vec::with_capacity(point_of.len() * 3);
     for &p in point_of {
-        let [x, y, z] = acc[p as usize];
-        let len = (x * x + y * y + z * z).sqrt();
-        if len > 0.0 {
-            out.extend_from_slice(&[x / len, y / len, z / len]);
-        } else {
-            out.extend_from_slice(&[0.0, 0.0, 1.0]);
-        }
+        out.extend_from_slice(&unit(acc[p as usize]));
     }
     out
+}
+
+/// One normal per face, repeated at each of its corners (per-corner layout).
+fn face_normals(
+    points: &[[f32; 3]],
+    counts: &[i32],
+    face_indices: &[i32],
+    face_of: &[u32],
+    left_handed: bool,
+) -> Vec<f32> {
+    let mut per_face = Vec::with_capacity(counts.len());
+    let mut corner = 0usize;
+    for &count in counts {
+        let n = count.max(0) as usize;
+        per_face.push(unit(newell(points, &face_indices[corner..corner + n], left_handed)));
+        corner += n;
+    }
+    let mut out = Vec::with_capacity(face_of.len() * 3);
+    for &f in face_of {
+        out.extend_from_slice(&per_face[f as usize]);
+    }
+    out
+}
+
+/// A polygon's area-weighted normal by Newell's method, which handles
+/// non-planar polygons; zero for degenerate faces.
+fn newell(points: &[[f32; 3]], face: &[i32], left_handed: bool) -> [f32; 3] {
+    let n = face.len();
+    let mut normal = [0f32; 3];
+    if n < 3 {
+        return normal;
+    }
+    for i in 0..n {
+        let a = points[face[i] as usize];
+        let b = points[face[(i + 1) % n] as usize];
+        normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    if left_handed { normal.map(|v| -v) } else { normal }
+}
+
+fn unit([x, y, z]: [f32; 3]) -> [f32; 3] {
+    let len = (x * x + y * y + z * z).sqrt();
+    if len > 0.0 {
+        [x / len, y / len, z / len]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
 }
 
 /// `materialBind` face subsets, by child name, keeping only valid face indices.

@@ -2,7 +2,7 @@
 
 use wasm_bindgen::prelude::*;
 
-use crate::{Composed, Loader, Scene};
+use crate::{Composed, Loader, Scene, resolver};
 
 fn js_error(e: impl std::fmt::Display) -> JsError {
     JsError::new(&e.to_string())
@@ -72,9 +72,16 @@ impl UsdLoader {
         // before the package bytes are dropped.
         let mut packaged = std::collections::HashMap::new();
         for m in &scene.materials {
-            for t in [&m.color_map, &m.normal_map].into_iter().flatten() {
-                if let Some(bytes) = self.inner.packaged_file(&t.path) {
-                    packaged.insert(t.path.clone(), bytes);
+            for (_, t) in &m.maps {
+                if resolver::split_packaged(&t.path).is_none() {
+                    continue;
+                }
+                match self.inner.packaged_file(&t.path) {
+                    Ok(bytes) => {
+                        packaged.insert(t.path.clone(), bytes);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(js_error(e)),
                 }
             }
         }
@@ -111,8 +118,13 @@ impl UsdScene {
         std::mem::take(&mut self.scene.geometries[geometry].normals)
     }
 
-    pub fn uvs(&mut self, geometry: usize) -> Vec<f32> {
-        std::mem::take(&mut self.scene.geometries[geometry].uvs)
+    /// UV set `set` (in the order of the geometry's `uvSets`).
+    pub fn uvs(&mut self, geometry: usize, set: usize) -> Vec<f32> {
+        std::mem::take(&mut self.scene.geometries[geometry].uvs[set].1)
+    }
+
+    pub fn colors(&mut self, geometry: usize) -> Vec<f32> {
+        std::mem::take(&mut self.scene.geometries[geometry].colors)
     }
 
     pub fn indices(&mut self, geometry: usize) -> Vec<u32> {

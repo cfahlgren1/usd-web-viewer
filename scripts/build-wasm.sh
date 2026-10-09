@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Builds the WASM module into packages/viewer/wasm: cargo (size profile) ->
-# wasm-bindgen (web target) -> wasm-opt -Oz. Prints raw / gzip / brotli sizes.
+# wasm-bindgen (web target) -> wasm-opt -Os. Prints raw / gzip / brotli sizes.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-OPT_LEVEL="${OPT_LEVEL:-z}"
+OPT_LEVEL="${OPT_LEVEL:-s}"
 OUT=packages/viewer/wasm
 
 CARGO_PROFILE_RELEASE_OPT_LEVEL="$OPT_LEVEL" cargo build --release --target wasm32-unknown-unknown -p usd-wasm

@@ -43,7 +43,7 @@ impl Loader {
         resolver::lock(&self.files).bytes.contains_key(path)
     }
 
-    /// Stores a layer under its virtual path and returns the asset paths it
+    /// Stores a layer under its identifier and returns the asset paths it
     /// authors, so the host can prefetch them in parallel.
     pub fn add_layer(&mut self, path: &str, bytes: Vec<u8>) -> openusd::Result<Vec<Dependency>> {
         resolver::lock(&self.files).bytes.insert(path.to_owned(), bytes);
@@ -69,6 +69,7 @@ impl Loader {
     /// returned list also names the layers this attempt consumed: the host
     /// adds those again too (normally from its HTTP cache).
     pub fn compose(&self, root: &str) -> openusd::Result<Composed> {
+        resolver::lock(&self.files).expanded = 0;
         let resolver = self.resolver(true, Some(root));
         let missing = resolver.missing.clone();
         let stage = usd::Stage::builder()
@@ -89,14 +90,20 @@ impl Loader {
             missing.extend(taken);
             return Ok(Composed::Missing(missing));
         }
-        Ok(Composed::Scene(extract::extract(&stage)?))
+        let mut scene = extract::extract(&stage)?;
+        let diagnostics = stage.composition_errors();
+        for d in diagnostics.iter().take(5) {
+            scene.warnings.push(format!("composition: {d}"));
+        }
+        if diagnostics.len() > 5 {
+            scene.warnings.push(format!("composition: {} more diagnostics", diagnostics.len() - 5));
+        }
+        Ok(Composed::Scene(scene))
     }
 
     /// A file inside a stored USDZ package (`/h/pkg.usdz[tex.png]`), e.g. a texture.
-    pub fn packaged_file(&self, path: &str) -> Option<Vec<u8>> {
-        let (package, inner) = resolver::split_packaged(path)?;
-        let files = resolver::lock(&self.files);
-        resolver::read_packaged(files.bytes.get(package)?, inner)
+    pub fn packaged_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        resolver::lock(&self.files).read_packaged(path)
     }
 
     /// Drops every stored layer.

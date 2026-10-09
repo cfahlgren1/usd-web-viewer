@@ -21,8 +21,11 @@ pub struct Material {
     pub roughness: f32,
     pub metallic: f32,
     pub emissive: [f32; 3],
-    pub color_map: Option<Texture>,
-    pub normal_map: Option<Texture>,
+    /// `opacityThreshold`: above zero, opacity is a cutout mask.
+    pub opacity_threshold: f32,
+    /// Textured inputs, by `UsdPreviewSurface` input name (`diffuseColor`,
+    /// `roughness`, `normal`, ...).
+    pub maps: Vec<(&'static str, Texture)>,
     /// The diffuse color comes from this primvar of the bound mesh
     /// (`UsdPrimvarReader_float3`, usually `displayColor`).
     pub color_primvar: Option<String>,
@@ -32,15 +35,42 @@ pub struct Material {
 pub struct Texture {
     /// Virtual path of the image file.
     pub path: String,
+    /// The `UsdUVTexture` output read: `rgb`, `r`, `g`, `b` or `a`.
+    pub channel: String,
+    /// `value = texel * scale + bias`, per channel (`UsdUVTexture`).
+    pub scale: [f32; 4],
+    pub bias: [f32; 4],
+    /// Used when the image cannot be read.
+    pub fallback: Option<[f32; 4]>,
+    /// `sourceColorSpace`: `raw`, `sRGB` or `auto` (unset).
+    pub color_space: Option<String>,
     /// `primvars:<name>` the texture is sampled with, when it says.
     pub uv_set: Option<String>,
     /// UV transform from `UsdTransform2d` / MDL texture scale, when authored:
-    /// `st' = rotate(st * scale) + translation`, rotation in degrees.
-    pub scale: [f32; 2],
-    pub rotation: f32,
-    pub translation: [f32; 2],
-    /// `UsdUVTexture` `wrapS` / `wrapT` tokens, when authored.
+    /// `st' = rotate(st * uv_scale) + uv_translation`, rotation in degrees.
+    pub uv_scale: [f32; 2],
+    pub uv_rotation: f32,
+    pub uv_translation: [f32; 2],
+    /// `wrapS` / `wrapT` tokens, when authored.
     pub wrap: [Option<String>; 2],
+}
+
+impl Texture {
+    fn new(path: String) -> Self {
+        Self {
+            path,
+            channel: "rgb".to_owned(),
+            scale: [1.0; 4],
+            bias: [0.0; 4],
+            fallback: None,
+            color_space: None,
+            uv_set: None,
+            uv_scale: [1.0, 1.0],
+            uv_rotation: 0.0,
+            uv_translation: [0.0, 0.0],
+            wrap: [None, None],
+        }
+    }
 }
 
 impl Material {
@@ -53,8 +83,8 @@ impl Material {
             roughness: 0.5,
             metallic: 0.0,
             emissive: [0.0; 3],
-            color_map: None,
-            normal_map: None,
+            opacity_threshold: 0.0,
+            maps: Vec::new(),
             color_primvar: None,
         }
     }
@@ -64,8 +94,9 @@ impl Material {
 #[derive(Default)]
 pub struct Cache {
     by_path: HashMap<String, u32>,
-    by_color: HashMap<[u32; 3], u32>,
     by_primvar_color: HashMap<(u32, [u32; 3]), u32>,
+    display: Option<u32>,
+    fallback: Option<u32>,
 }
 
 impl Cache {
@@ -92,15 +123,20 @@ impl Cache {
         })
     }
 
-    /// A material for unbound geometry: its `displayColor`, else neutral grey.
-    pub fn display_color(&mut self, color: Option<[f32; 3]>, out: &mut Vec<Material>) -> u32 {
-        let (kind, color) = match color {
-            Some(c) => ("displayColor", c),
-            None => ("fallback", [0.7, 0.7, 0.7]),
-        };
-        let key = color.map(f32::to_bits);
-        *self.by_color.entry(key).or_insert_with(|| {
-            out.push(Material::neutral(String::new(), kind, color));
+    /// The material for unbound geometry: white, tinted by its `displayColor`.
+    pub fn display_color(&mut self, out: &mut Vec<Material>) -> u32 {
+        *self.display.get_or_insert_with(|| {
+            let mut m = Material::neutral(String::new(), "displayColor", [1.0; 3]);
+            m.color_primvar = Some("displayColor".to_owned());
+            out.push(m);
+            out.len() as u32 - 1
+        })
+    }
+
+    /// Neutral grey, for unbound geometry without a `displayColor`.
+    pub fn fallback(&mut self, out: &mut Vec<Material>) -> u32 {
+        *self.fallback.get_or_insert_with(|| {
+            out.push(Material::neutral(String::new(), "fallback", [0.7; 3]));
             out.len() as u32 - 1
         })
     }
@@ -133,7 +169,7 @@ fn read_material(stage: &Stage, path: &sdf::Path) -> openusd::Result<Material> {
 fn surface_shader(stage: &Stage, material: &sdf::Path, output: &str) -> openusd::Result<Option<sdf::Path>> {
     let attr = material.append_property(output).map_err(openusd::Error::from)?;
     Ok(match follow(stage, &attr, 0)? {
-        Source::Output(prim) => Some(prim),
+        Source::Output(prim, _) => Some(prim),
         Source::Value(_) | Source::None => None,
     })
 }
@@ -143,8 +179,8 @@ fn shader_id(stage: &Stage, shader: &sdf::Path) -> openusd::Result<Option<String
 }
 
 enum Source {
-    /// A shader output, by shader prim.
-    Output(sdf::Path),
+    /// A shader output: shader prim and output name (`rgb`, `r`, ...).
+    Output(sdf::Path, String),
     Value(Value),
     None,
 }
@@ -155,13 +191,13 @@ fn follow(stage: &Stage, attr_path: &sdf::Path, depth: u32) -> openusd::Result<S
     let attr = stage.attribute(attr_path.clone()).map_err(openusd::Error::from)?;
     if let Some(target) = attr.connections()?.into_iter().next() {
         let name = property_name(&target);
-        if name.starts_with("outputs:") {
+        if let Some(output) = name.strip_prefix("outputs:") {
             let prim = target.prim_path();
             // A node graph output forwards to whatever it connects to.
             if depth < 8 && !is_shader(stage, &prim)? {
                 return follow(stage, &target, depth + 1);
             }
-            return Ok(Source::Output(prim));
+            return Ok(Source::Output(prim, output.to_owned()));
         }
         if name.starts_with("inputs:") && depth < 8 {
             return follow(stage, &target, depth + 1);
@@ -191,93 +227,118 @@ fn input(shader: &sdf::Path, name: &str) -> openusd::Result<sdf::Path> {
 
 fn read_preview_surface(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Result<Material> {
     let mut m = Material::neutral(path, "preview", [0.18, 0.18, 0.18]);
-    match follow(stage, &input(shader, "diffuseColor")?, 0)? {
-        Source::Value(v) => m.color = color(&v).unwrap_or(m.color),
-        Source::Output(tex) if shader_id(stage, &tex)?.is_some_and(|id| id.starts_with("UsdPrimvarReader")) => {
-            m.color = [1.0; 3];
-            if let Source::Value(v) = follow(stage, &input(&tex, "varname")?, 0)? {
-                m.color_primvar = string(&v);
+    // Packed maps (e.g. occlusion/roughness/metallic) read one texture node
+    // through several outputs: read each node once.
+    let mut nodes: HashMap<sdf::Path, Option<Texture>> = HashMap::new();
+    for name in ["diffuseColor", "emissiveColor", "roughness", "metallic", "occlusion", "opacity", "opacityThreshold", "normal"] {
+        let constant = match follow(stage, &input(shader, name)?, 0)? {
+            Source::Value(v) => color(&v).or_else(|| float(&v).map(|f| [f; 3])),
+            Source::Output(node, output) => match shader_id(stage, &node)?.as_deref() {
+                Some("UsdUVTexture") => match texture_node(stage, &mut nodes, &node)? {
+                    Some(mut texture) => {
+                        texture.channel = output;
+                        if name == "diffuseColor" {
+                            m.color = [1.0; 3];
+                        }
+                        m.maps.push((name, texture));
+                        None
+                    }
+                    // No image: the texture yields its fallback (Hydra's default is black).
+                    None => {
+                        let fallback = match follow(stage, &input(&node, "fallback")?, 0)? {
+                            Source::Value(v) => vec4(&v),
+                            _ => None,
+                        };
+                        let [r, g, b, a] = fallback.unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                        Some(match output.as_str() {
+                            "r" => [r; 3],
+                            "g" => [g; 3],
+                            "b" => [b; 3],
+                            "a" => [a; 3],
+                            _ => [r, g, b],
+                        })
+                    }
+                },
+                Some(id) if name == "diffuseColor" && id.starts_with("UsdPrimvarReader") => {
+                    m.color = [1.0; 3];
+                    if let Source::Value(v) = follow(stage, &input(&node, "varname")?, 0)? {
+                        m.color_primvar = string(&v);
+                    }
+                    None
+                }
+                _ => None,
+            },
+            Source::None => None,
+        };
+        if let Some(c) = constant {
+            match name {
+                "diffuseColor" => m.color = c,
+                "emissiveColor" => m.emissive = c,
+                "roughness" => m.roughness = c[0],
+                "metallic" => m.metallic = c[0],
+                "opacity" => m.opacity = c[0],
+                "opacityThreshold" => m.opacity_threshold = c[0],
+                _ => {}
             }
         }
-        Source::Output(tex) => {
-            m.color = [1.0; 3];
-            m.color_map = uv_texture(stage, &tex)?;
-            if let Some(scale) = uv_texture_scale(stage, &tex)? {
-                m.color = scale;
-            }
-        }
-        Source::None => {}
-    }
-    if let Source::Value(v) = follow(stage, &input(shader, "roughness")?, 0)? {
-        m.roughness = float(&v).unwrap_or(0.5);
-    }
-    if let Source::Value(v) = follow(stage, &input(shader, "metallic")?, 0)? {
-        m.metallic = float(&v).unwrap_or(0.0);
-    }
-    if let Source::Value(v) = follow(stage, &input(shader, "opacity")?, 0)? {
-        m.opacity = float(&v).unwrap_or(1.0);
-    }
-    if let Source::Value(v) = follow(stage, &input(shader, "emissiveColor")?, 0)? {
-        m.emissive = color(&v).unwrap_or([0.0; 3]);
-    }
-    if let Source::Output(tex) = follow(stage, &input(shader, "normal")?, 0)? {
-        m.normal_map = uv_texture(stage, &tex)?;
     }
     Ok(m)
 }
 
-/// The image a `UsdUVTexture` samples and the primvar it samples with.
-fn uv_texture(stage: &Stage, shader: &sdf::Path) -> openusd::Result<Option<Texture>> {
-    let Source::Value(file) = follow(stage, &input(shader, "file")?, 0)? else {
-        return Ok(None);
-    };
-    let Some(path) = asset(&file) else {
-        return Ok(None);
-    };
-    let mut texture = Texture {
-        path,
-        uv_set: None,
-        scale: [1.0, 1.0],
-        rotation: 0.0,
-        translation: [0.0, 0.0],
-        wrap: [None, None],
-    };
-    for (i, name) in ["wrapS", "wrapT"].into_iter().enumerate() {
-        if let Source::Value(v) = follow(stage, &input(shader, name)?, 0)? {
-            texture.wrap[i] = string(&v);
-        }
+fn texture_node(
+    stage: &Stage,
+    nodes: &mut HashMap<sdf::Path, Option<Texture>>,
+    node: &sdf::Path,
+) -> openusd::Result<Option<Texture>> {
+    if let Some(texture) = nodes.get(node) {
+        return Ok(texture.clone());
     }
-    if let Source::Output(reader) = follow(stage, &input(shader, "st")?, 0)? {
-        // A UsdTransform2d between texture and reader carries the tiling.
-        let mut reader = reader;
-        if shader_id(stage, &reader)?.as_deref() == Some("UsdTransform2d") {
-            if let Source::Value(v) = follow(stage, &input(&reader, "scale")?, 0)? {
-                texture.scale = vec2(&v).unwrap_or([1.0, 1.0]);
-            }
-            if let Source::Value(v) = follow(stage, &input(&reader, "rotation")?, 0)? {
-                texture.rotation = float(&v).unwrap_or(0.0);
-            }
-            if let Source::Value(v) = follow(stage, &input(&reader, "translation")?, 0)? {
-                texture.translation = vec2(&v).unwrap_or([0.0, 0.0]);
-            }
-            match follow(stage, &input(&reader, "in")?, 0)? {
-                Source::Output(next) => reader = next,
-                _ => return Ok(Some(texture)),
-            }
-        }
-        if let Source::Value(v) = follow(stage, &input(&reader, "varname")?, 0)? {
-            texture.uv_set = string(&v);
-        }
-    }
-    Ok(Some(texture))
+    let texture = uv_texture(stage, node)?;
+    nodes.insert(node.clone(), texture.clone());
+    Ok(texture)
 }
 
-/// A `UsdUVTexture` `scale` input tints the sampled color.
-fn uv_texture_scale(stage: &Stage, shader: &sdf::Path) -> openusd::Result<Option<[f32; 3]>> {
-    Ok(match follow(stage, &input(shader, "scale")?, 0)? {
-        Source::Value(Value::Vec4f(v)) => Some([v.x, v.y, v.z]),
-        _ => None,
-    })
+/// The image a `UsdUVTexture` samples, how its channels are remapped, and the
+/// primvar and transform it is sampled with.
+fn uv_texture(stage: &Stage, shader: &sdf::Path) -> openusd::Result<Option<Texture>> {
+    let value = |node: &sdf::Path, name: &str| -> openusd::Result<Option<Value>> {
+        Ok(match follow(stage, &input(node, name)?, 0)? {
+            Source::Value(v) => Some(v),
+            _ => None,
+        })
+    };
+    let Some(path) = value(shader, "file")?.as_ref().and_then(asset) else {
+        return Ok(None);
+    };
+    let mut texture = Texture::new(path);
+    if let Some(v) = value(shader, "scale")?.as_ref().and_then(vec4) {
+        texture.scale = v;
+    }
+    if let Some(v) = value(shader, "bias")?.as_ref().and_then(vec4) {
+        texture.bias = v;
+    }
+    texture.fallback = value(shader, "fallback")?.as_ref().and_then(vec4);
+    texture.color_space = value(shader, "sourceColorSpace")?.as_ref().and_then(string);
+    texture.wrap = [value(shader, "wrapS")?.as_ref().and_then(string), value(shader, "wrapT")?.as_ref().and_then(string)];
+    let Source::Output(mut reader, _) = follow(stage, &input(shader, "st")?, 0)? else {
+        return Ok(Some(texture));
+    };
+    // A UsdTransform2d between texture and reader carries the tiling.
+    if shader_id(stage, &reader)?.as_deref() == Some("UsdTransform2d") {
+        if let Some(v) = value(&reader, "scale")?.as_ref().and_then(vec2) {
+            texture.uv_scale = v;
+        }
+        texture.uv_rotation = value(&reader, "rotation")?.as_ref().and_then(float).unwrap_or(0.0);
+        if let Some(v) = value(&reader, "translation")?.as_ref().and_then(vec2) {
+            texture.uv_translation = v;
+        }
+        match follow(stage, &input(&reader, "in")?, 0)? {
+            Source::Output(next, _) => reader = next,
+            _ => return Ok(Some(texture)),
+        }
+    }
+    texture.uv_set = value(&reader, "varname")?.as_ref().and_then(string);
+    Ok(Some(texture))
 }
 
 fn read_omnipbr(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Result<Material> {
@@ -298,27 +359,15 @@ fn read_omnipbr(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Res
         m.metallic = v;
     }
     let scale = value("texture_scale")?.as_ref().and_then(vec2).unwrap_or([1.0, 1.0]);
+    let texture = |path| Texture { uv_scale: scale, ..Texture::new(path) };
     if let Some(file) = value("diffuse_texture")?.as_ref().and_then(asset) {
-        m.color_map = Some(Texture {
-            path: file,
-            uv_set: None,
-            scale,
-            rotation: 0.0,
-            translation: [0.0, 0.0],
-            wrap: [None, None],
-        });
+        m.maps.push(("diffuseColor", texture(file)));
         // OmniPBR multiplies the texture by diffuse_tint, not the constant.
         m.color = value("diffuse_tint")?.as_ref().and_then(color).unwrap_or([1.0; 3]);
     }
     if let Some(file) = value("normalmap_texture")?.as_ref().and_then(asset) {
-        m.normal_map = Some(Texture {
-            path: file,
-            uv_set: None,
-            scale,
-            rotation: 0.0,
-            translation: [0.0, 0.0],
-            wrap: [None, None],
-        });
+        // OmniPBR normal maps are stored in [0, 1].
+        m.maps.push(("normal", Texture { scale: [2.0; 4], bias: [-1.0; 4], ..texture(file) }));
     }
     if value("enable_emission")?.as_ref().and_then(boolean) == Some(true) {
         let c = value("emissive_color")?.as_ref().and_then(color).unwrap_or([1.0; 3]);
@@ -351,8 +400,12 @@ fn read_gltf_pbr(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Re
     }
     m.roughness = value("roughness_factor")?.as_ref().and_then(float).unwrap_or(1.0);
     m.metallic = value("metallic_factor")?.as_ref().and_then(float).unwrap_or(1.0);
-    m.color_map = gltf_texture(stage, shader, "base_color_texture")?;
-    m.normal_map = gltf_texture(stage, shader, "normal_texture")?;
+    if let Some(t) = gltf_texture(stage, shader, "base_color_texture")? {
+        m.maps.push(("diffuseColor", t));
+    }
+    if let Some(t) = gltf_texture(stage, shader, "normal_texture")? {
+        m.maps.push(("normal", Texture { scale: [2.0; 4], bias: [-1.0; 4], ..t }));
+    }
     Ok(m)
 }
 
@@ -361,7 +414,7 @@ fn read_gltf_pbr(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Re
 fn gltf_texture(stage: &Stage, shader: &sdf::Path, name: &str) -> openusd::Result<Option<Texture>> {
     let (file, scale) = match follow(stage, &input(shader, name)?, 0)? {
         Source::Value(v) => (asset(&v), None),
-        Source::Output(lookup) => {
+        Source::Output(lookup, _) => {
             let file = match follow(stage, &input(&lookup, "texture")?, 0)? {
                 Source::Value(v) => asset(&v),
                 _ => None,
@@ -375,12 +428,8 @@ fn gltf_texture(stage: &Stage, shader: &sdf::Path, name: &str) -> openusd::Resul
         Source::None => (None, None),
     };
     Ok(file.map(|path| Texture {
-        path,
-        uv_set: None,
-        scale: scale.unwrap_or([1.0, 1.0]),
-        rotation: 0.0,
-        translation: [0.0, 0.0],
-        wrap: [None, None],
+        uv_scale: scale.unwrap_or([1.0, 1.0]),
+        ..Texture::new(path)
     }))
 }
 
@@ -400,6 +449,14 @@ fn color(value: &Value) -> Option<[f32; 3]> {
         Value::Vec3d(c) => Some([c.x as f32, c.y as f32, c.z as f32]),
         Value::Vec4f(c) => Some([c.x, c.y, c.z]),
         Value::Vec4d(c) => Some([c.x as f32, c.y as f32, c.z as f32]),
+        _ => None,
+    }
+}
+
+fn vec4(value: &Value) -> Option<[f32; 4]> {
+    match value {
+        Value::Vec4f(v) => Some([v.x, v.y, v.z, v.w]),
+        Value::Vec4d(v) => Some([v.x as f32, v.y as f32, v.z as f32, v.w as f32]),
         _ => None,
     }
 }

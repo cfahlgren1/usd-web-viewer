@@ -75,12 +75,15 @@ fn inspect(root: &str) -> Result<(), Box<dyn std::error::Error>> {
     );
     for m in &scene.materials {
         println!(
-            "    material {} [{}] color {:?} map {:?}",
+            "    material {} [{}] color {:?} maps {:?}",
             m.path,
             m.kind,
             m.color,
-            m.color_map.as_ref().map(|t| &t.path)
+            m.maps.iter().map(|(input, t)| format!("{input}<-{}.{}", t.path.rsplit('/').next().unwrap_or(""), t.channel)).collect::<Vec<_>>()
         );
+    }
+    for w in &scene.warnings {
+        println!("    warning: {w}");
     }
     for (path, why) in &s.skipped {
         println!("    skipped ({why}) {path}");

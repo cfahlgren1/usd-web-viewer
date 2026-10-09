@@ -1,6 +1,6 @@
 # usd-web-viewer
 
-View OpenUSD files in the browser. Real USD composition (sublayers, references, payloads, variants) in a **527 KB** WASM module, rendered with three.js. MIT, no `SharedArrayBuffer`, no COOP/COEP headers, loads straight from Hugging Face Hub URLs.
+View OpenUSD files in the browser. Real USD composition (sublayers, references, payloads, variants) in a **591 KB** WASM module, rendered with three.js. MIT, no `SharedArrayBuffer`, no COOP/COEP headers, loads straight from Hugging Face Hub URLs.
 
 | LG laptop | Robotiq gripper | Standard Bots arm | NVIDIA IV pole | NVIDIA chair | imagine.io railing |
 |:-:|:-:|:-:|:-:|:-:|:-:|
@@ -12,16 +12,40 @@ View OpenUSD files in the browser. Real USD composition (sublayers, references, 
 npm install usd-web-viewer three   # not published to npm yet
 ```
 
+Drop-in element (works as is in Vite and other bundlers; see [`examples/vite`](examples/vite)):
+
+```html
+<script type="module">import 'usd-web-viewer/element';</script>
+
+<usd-viewer
+  src="https://huggingface.co/datasets/Robotiq-Official/simready-assets/resolve/main/Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda"
+  max-texture-size="1024" background="#f2f2f2"></usd-viewer>
+```
+
+| Attribute | | Event | `detail` |
+|---|---|---|---|
+| `src` | root layer URL; changing it reloads | `progress` | `{ stage, loaded, total, bytes }` |
+| `max-texture-size` | long-side cap, default 1024 | `load` | `{ root, info, textures, dispose }` |
+| `background` | CSS color | `error` | `Error` |
+| `textures` | `preview` (default) or `full` | | |
+
+The element sizes itself to its box, aborts an in-flight load when `src` changes, and frees the renderer and WASM worker when removed.
+
+Or drive it from JavaScript:
+
 ```js
-import { createViewer } from 'usd-web-viewer';
+import { createViewer, hubUrl } from 'usd-web-viewer';
 
 const viewer = await createViewer(document.getElementById('app'));
-const { info, textures } = await viewer.load(
-  'https://huggingface.co/datasets/Robotiq-Official/simready-assets/resolve/main/Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda',
-);
+const controller = new AbortController();
+const { info, textures } = await viewer.load(hubUrl('Robotiq-Official/simready-assets', 'Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda'), {
+  signal: controller.signal,
+  headers: { Authorization: `Bearer ${token}` },          // gated / private repos
+  onProgress: ({ stage, loaded, total }) => console.log(stage, loaded, total),
+});
 
-console.log(info.meshes, info.triangles); // geometry is on screen now
-await textures;                           // base-color textures streamed in
+console.log(info.meshes, info.triangles, info.warnings); // geometry is on screen now
+await textures;                                          // textures streamed in
 ```
 
 Bring your own three.js scene instead:
@@ -34,13 +58,23 @@ scene.add(root);   // THREE.Group, Y-up, metres
 // later: dispose() frees geometries, materials and textures
 ```
 
-| Option | Default | |
+| Option (`load` / `loadUsd`) | Default | |
 |---|---|---|
 | `maxTextureSize` | `1024` | Long-side cap; textures are decoded straight to this size in the worker |
-| `normalMaps` | `false` | Also fetch and apply normal maps |
+| `textures` | `'preview'` | `'preview'`: base color up to `maxTextureSize`, roughness / metallic / occlusion (and opacity / emissive) maps up to 512 px, no normal maps. `'full'`: every map, normals included, up to `maxTextureSize`. See [preview vs full](bench/results/README.md#texture-modes-preview-vs-full) |
 | `prefetchVariants` | `false` | Fetch layers inside variants the layer doesn't select |
+| `signal` | – | `AbortSignal`: cancels fetches, terminates the worker, rejects with `AbortError` |
+| `onProgress` | – | `({ stage: 'layers' \| 'compose' \| 'textures', loaded, total, bytes })` |
+| `headers` | – | Sent with every layer and texture request (e.g. `Authorization`) |
+| `fetch` | – | Your own `fetch(url, { headers, signal })`, used for every request (proxied from the worker) |
+| `maxConcurrentFetches` | `16` | Requests in flight at once (textures: at most 4 fetched and decoded at once) |
+| `maxLayerBytes` | 1 GiB | Total size of USD layers to fetch before failing with a `resource limit exceeded` error |
 | `onTexture` | – | Called after each texture is applied |
 | `wasmUrl` | bundled | Serve the `.wasm` from your own CDN |
+
+`info.warnings` lists what could not be shown faithfully: missing or unreadable layers, unsupported prim types (e.g. `BasisCurves`, implicit `Sphere` / `Cube`), materials falling back to grey (MDL other than OmniPBR/glTF, MaterialX), failed textures, composition diagnostics.
+
+Hub helpers: `hubUrl(repo, path, { revision, repoType })` builds `resolve` URLs; `findSimReadyRoot(files, rootUsds?)` picks a SimReady package's root layer from its file listing (and `.metadata/com.nvidia.simready.root_usds.json` when you have it). TypeScript declarations ship with the package.
 
 ## Compared with other browser USD viewers
 
@@ -49,22 +83,23 @@ Six real [SimReady](https://huggingface.co/datasets/cfahlgren1/simready-usd-web-
 | | **usd-web-viewer** | [Needle](https://www.npmjs.com/package/@needle-tools/usd) | [three.js `USDLoader`](https://github.com/mrdoob/three.js/tree/r186/examples/jsm/loaders/usd) | [tinyusdz](https://github.com/lighttransport/tinyusdz) | GLB (pre-converted) |
 |---|---|---|---|---|---|
 | Renders the 6 packages | **6/6** | 5/6 | 1/6 | 2/6 | 6/6 |
-| WASM download (brotli) | **527 KB** | 6.0 MB | – | 1.4 MB | – |
-| Peak tab memory | **167–418 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
-| WASM heap | **2–88 MB** | ~700 MB | – | 18–64 MB | – |
-| IV pole fully loaded | **0.6 s** | 11.8 s | ✗ | ✗ | 0.1 s |
+| WASM download (brotli) | **591 KB** | 6.0 MB | – | 1.4 MB | – |
+| Peak tab memory | **170–623 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
+| WASM heap | **2–86 MB** | ~700 MB | – | 18–64 MB | – |
+| IV pole fully loaded | **0.7 s**² | 11.8 s | ✗ | ✗ | 0.1 s |
 | Needs COOP/COEP | **no** | yes | no | no | no |
 | License | **MIT** | PolyForm Noncommercial | MIT | Apache-2.0 / MIT | – |
 
-¹ only on the assets it renders. Headless Chromium, software rendering, localhost, median of 3 cold runs. Full tables and screenshots: [`bench/results`](bench/results/README.md).
+¹ only on the assets it renders. ² default `textures: 'preview'`: color plus packed occlusion/roughness/metallic maps (144 MB of 4K PNGs, data maps decoded at 512 px); `'full'` adds normal maps: 0.9 s, 218 MB, the set Needle loads. Headless Chromium, software rendering, localhost, median of 3 cold runs. Full tables and screenshots: [`bench/results`](bench/results/README.md).
 
 ## Matches Pixar OpenUSD
 
-A Pixar `usd-core` oracle and our WASM build dump the same JSON per package (meshes, triangles, world bounding boxes, material bindings, UsdPreviewSurface inputs, texture paths), then get diffed.
+A Pixar `usd-core` oracle and our WASM build dump the same JSON per package (meshes, triangles, world bounding boxes, material bindings, UsdPreviewSurface inputs, and every textured input's file, channel, scale/bias, color space and UV set), then get diffed.
 
 | Set | Match |
 |---|---|
 | 6 benchmark assets | **6/6** |
+| usd-wg/assets material scenes | **10/10** |
 | Random Hub sample (nvidia, LG, Robotiq, Standard Bots, agibot, imagine.io) | **186/187** |
 
 The one miss is a 1.2e-5 unit offset on four lid meshes. Details: [`conformance/results`](conformance/results/README.md).
@@ -89,22 +124,28 @@ Geometry shows first and textures stream in after. The worker is then terminated
 
 | ✅ | ⚠️ not yet |
 |---|---|
-| `.usd` / `.usda` / `.usdc` / `.usdz` | Normal map `scale` / `bias` |
-| Sublayers, references, payloads, variants, instancing | Roughness / metallic / occlusion textures |
-| UsdPreviewSurface, `UsdUVTexture`, `UsdTransform2d` | Alpha cutouts, `sourceColorSpace`, EXR |
-| MDL `OmniPBR` / glTF `pbr.mdl` parameters, grey fallback | MaterialX (grey fallback) |
-| Visibility, purpose, `GeomSubset` materials | Skinning, animation, subdivision |
+| `.usd` / `.usda` / `.usdc` / `.usdz` | `black` wrap mode (clamped), `.hdr` / EXR textures |
+| Sublayers, references, payloads, variants, instancing | `opacityMode`, color spaces other than raw / sRGB / auto |
+| UsdPreviewSurface with textured diffuse, emissive, roughness, metallic, occlusion, opacity and normal inputs (any channel, `scale` / `bias`, `fallback`, `sourceColorSpace`) | Vertex-varying `displayColor` on `GeomSubset` materials |
+| `opacityThreshold` cutouts, texture alpha, `UsdTransform2d`, wrap modes, per-texture UV sets | MaterialX (grey fallback) |
+| `displayColor` (constant or per vertex / face), `UsdPrimvarReader` diffuse | Skinning, animation, subdivision |
+| MDL `OmniPBR` / glTF `pbr.mdl` parameters, grey fallback | |
+| Visibility, purpose, `GeomSubset` materials | |
 
 <details><summary>Build, test and benchmark</summary>
 
 ```sh
 npm install
 cargo install wasm-bindgen-cli --version 0.2.129   # once
-npm run build:wasm      # cargo -> wasm-bindgen -> wasm-opt -Oz
+npm run build:wasm      # cargo -> wasm-bindgen -> wasm-opt -Os
 npm run serve           # http://127.0.0.1:8811/examples/index.html?url=<root .usd URL>
 node scripts/node-test.mjs                          # compose + extract in Node
+node scripts/api-test.mjs                           # progress, abort, headers, fetch, warnings, <usd-viewer>
+(cd examples/vite && npm install && node test.mjs)  # Vite production build loading a Hub URL
 node bench/run.mjs --configs usd-wasm,gltf --runs 3
 node conformance/run.mjs --bench
+node conformance/run.mjs --usdwg                   # usd-wg/assets material scenes vs Pixar
+node conformance/browser-checks.mjs                # rendered fixtures (e.g. UV set routing)
 ```
 
 </details>

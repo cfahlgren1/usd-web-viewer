@@ -1,0 +1,17 @@
+{
+  "name": "usd-web-viewer-vite-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --port 4173 --strictPort"
+  },
+  "dependencies": {
+    "three": "^0.186.1",
+    "usd-web-viewer": "file:../../packages/viewer"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0"
+  }
+}

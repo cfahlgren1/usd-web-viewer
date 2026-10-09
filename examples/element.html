@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>&lt;usd-viewer&gt;</title>
+    <style>html, body { margin: 0; height: 100%; font: 14px system-ui, sans-serif; } usd-viewer { height: 100vh; } #status { position: absolute; bottom: 8px; left: 8px; background: #fffd; padding: 4px 8px; }</style>
+    <script type="importmap">
+      { "imports": { "three": "/node_modules/three/build/three.module.js", "three/addons/": "/node_modules/three/examples/jsm/" } }
+    </script>
+  </head>
+  <body>
+    <usd-viewer id="viewer"></usd-viewer>
+    <div id="status"></div>
+    <script type="module">
+      import '/packages/viewer/src/element.js';
+
+      const viewer = document.getElementById('viewer');
+      const status = document.getElementById('status');
+      window.events = [];
+      viewer.addEventListener('progress', (e) => {
+        window.events.push(e.detail);
+        status.textContent = `${e.detail.stage} ${e.detail.loaded}/${e.detail.total}`;
+      });
+      viewer.addEventListener('load', (e) => {
+        window.loaded = e.detail.info;
+        status.textContent = `${e.detail.info.meshes} meshes, ${e.detail.info.warnings.length} warnings`;
+      });
+      viewer.addEventListener('error', (e) => (status.textContent = String(e.detail)));
+      viewer.setAttribute('src', new URLSearchParams(location.search).get('src'));
+    </script>
+  </body>
+</html>

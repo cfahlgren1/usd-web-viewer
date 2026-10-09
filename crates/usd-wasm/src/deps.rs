@@ -2,7 +2,7 @@
 
 use openusd::sdf::{self, AbstractData, Value};
 
-/// An asset path a layer names, anchored to a virtual path.
+/// An asset path a layer names, anchored to an identifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dependency {
     pub path: String,
