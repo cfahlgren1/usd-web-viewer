@@ -257,3 +257,15 @@ def Material "Mat${i}" {
     if (reads) assert.equal(packaged.get('https://h/shared.usdz[tex.png]').byteLength, 1 << 20);
   }
 });
+
+test('layers that reference each other compose instead of waiting on each other forever', { timeout: 5000 }, async () => {
+  const s = server({
+    'https://h/root.usda': '#usda 1.0\ndef "A" (references = @./a.usda@) {}',
+    'https://h/a.usda': `#usda 1.0\n(defaultPrim = "M")\n${QUAD}\ndef "Back" (references = @./b.usda@) {}`,
+    'https://h/b.usda': '#usda 1.0\n(defaultPrim = "X")\ndef "X" (references = @./a.usda@) {}',
+  });
+  const { scene, stats } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+  scene.free();
+  assert.equal(stats.layers, 3);
+  assert.deepEqual(s.requested.sort(), ['https://h/a.usda', 'https://h/b.usda', 'https://h/root.usda']);
+});

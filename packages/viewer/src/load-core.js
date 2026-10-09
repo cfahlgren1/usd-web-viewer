@@ -48,8 +48,14 @@ export async function composeStage({
   // Re-fetched layers replace their earlier bytes, so count each path once.
   const layerSizes = new Map();
 
+  // Jobs in flight. A job queues its dependencies here rather than awaiting
+  // them, so layers that reference each other cannot wait on each other.
+  const pending = [];
+  const drain = async () => {
+    while (pending.length) await Promise.all(pending.splice(0));
+  };
   const fetchLayer = (path) => {
-    if (loader.has(path) || started.has(path)) return started.get(path);
+    if (loader.has(path) || started.has(path)) return;
     const job = (async () => {
       const t0 = performance.now();
       heldBytes -= layerSizes.get(path) ?? 0;
@@ -101,17 +107,14 @@ export async function composeStage({
         stats.parseMs += performance.now() - t1;
       }
       progress();
-      await Promise.all(
-        deps
-          .filter((d) => d[0] === 'L' || (prefetchVariants && d[0] === 'V'))
-          .map((d) => fetchLayer(d.slice(1))),
-      );
+      for (const d of deps) if (d[0] === 'L' || (prefetchVariants && d[0] === 'V')) fetchLayer(d.slice(1));
     })();
     started.set(path, job);
-    return job;
+    pending.push(job);
   };
 
-  await fetchLayer(root);
+  fetchLayer(root);
+  await drain();
   if (!loader.has(root)) throw new UsdLoadError('compose', `could not read ${rootUrl}`, { url: rootUrl });
 
   for (;;) {
@@ -124,7 +127,8 @@ export async function composeStage({
     if (stats.rounds > 16) throw new UsdLoadError('compose', `composition still missing layers: ${missing.join(', ')}`);
     // The list also names layers the failed attempt consumed; fetch them again.
     for (const path of missing) started.delete(path);
-    await Promise.all(missing.map(fetchLayer));
+    missing.forEach(fetchLayer);
+    await drain();
   }
   const scene = loader.takeScene();
   loader.free();
