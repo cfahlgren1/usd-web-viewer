@@ -143,6 +143,60 @@ test('a custom fetch serves every request', async () => {
   assert.ok(urls.filter((u) => u.endsWith('.jpg')).length >= 3, 'textures through custom fetch');
 });
 
+// A fake Hub package: the root uses a.usda, the listing also names unused.usda.
+const HUB_PKG = 'https://huggingface.co/datasets/o/r/resolve/main/pkg/';
+const HUB_TREE = 'https://huggingface.co/api/datasets/o/r/tree/main/pkg?recursive=true';
+const HUB_FILES = {
+  'root.usda': '#usda 1.0\n(subLayers = [@./a.usda@])',
+  'a.usda': '#usda 1.0\ndef Mesh "M" {\n  int[] faceVertexCounts = [3]\n  int[] faceVertexIndices = [0, 1, 2]\n  point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n}',
+  'unused.usda': '#usda 1.0\ndef Xform "Unused" {}',
+};
+
+test('a Hub package is fetched ahead with the load headers, used only where composition asks', async () => {
+  const seen = [];
+  await page.context().route('https://huggingface.co/**', async (route) => {
+    const url = route.request().url();
+    seen.push([url, (await route.request().allHeaders()).authorization ?? null]);
+    if (url === HUB_TREE) return route.fulfill({ json: Object.entries(HUB_FILES).map(([name, body]) => ({ type: 'file', path: `pkg/${name}`, size: body.length })), headers: { 'access-control-allow-origin': '*' } });
+    const body = HUB_FILES[url.slice(HUB_PKG.length)];
+    return body ? route.fulfill({ body, headers: { 'access-control-allow-origin': '*' } }) : route.fulfill({ status: 404 });
+  });
+  const meshes = await page.evaluate(async (url) => {
+    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const result = await loadUsd(url, { headers: { Authorization: 'Bearer hub-dummy' } });
+    result.dispose();
+    return result.info.meshes;
+  }, HUB_PKG + 'root.usda');
+  await page.context().unroute('https://huggingface.co/**');
+  assert.equal(meshes, 1);
+  assert.deepEqual(seen.map(([url]) => url).sort(), [HUB_TREE, ...['a.usda', 'root.usda', 'unused.usda'].map((name) => HUB_PKG + name)].sort());
+  assert.ok(seen.every(([, auth]) => auth === 'Bearer hub-dummy'), JSON.stringify(seen));
+});
+
+test('a custom fetch serves the Hub listing and its prefetches, and abort cancels them', async () => {
+  const out = await page.evaluate(
+    async ({ pkg, tree, files }) => {
+      const { loadUsd } = await import('/packages/viewer/src/index.js');
+      const held = {};
+      const controller = new AbortController();
+      const fetchFn = (url, init) => {
+        if (url === tree) return Promise.resolve(Response.json(Object.entries(files).map(([name, body]) => ({ type: 'file', path: `pkg/${name}`, size: body.length }))));
+        const name = url.slice(pkg.length);
+        if (name === 'root.usda') return Promise.resolve(new Response(files[name]));
+        held[name] = init.signal;
+        return new Promise(() => {});
+      };
+      const pending = loadUsd(pkg + 'root.usda', { fetch: fetchFn, signal: controller.signal }).then(() => 'resolved', (e) => e.code);
+      const deadline = performance.now() + 5000;
+      while (!(held['a.usda'] && held['unused.usda']) && performance.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 10));
+      controller.abort();
+      return { outcome: await pending, held: Object.keys(held).sort(), aborted: Object.values(held).every((signal) => signal.aborted) };
+    },
+    { pkg: HUB_PKG, tree: HUB_TREE, files: HUB_FILES },
+  );
+  assert.deepEqual(out, { outcome: 'aborted', held: ['a.usda', 'unused.usda'], aborted: true });
+});
+
 test('warnings name grey fallback materials and unresolved layers', async () => {
   const warnings = await page.evaluate(async (url) => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');

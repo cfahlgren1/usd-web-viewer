@@ -19,6 +19,9 @@ import { UsdLoadError } from './errors.js';
  * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
  * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
  * @param {number} [o.maxLayerBytes=1 GiB]  total size of the distinct layers held for composition
+ * @param {Promise<{ layers: { url: string, size: number }[], eager: boolean }>} [o.preload]  layers likely
+ *   to be needed: fetched ahead at lower priority, right away if `eager` or else once the root names a
+ *   dependency, and used only if composition asks for them
  * @param {(progress: { stage: 'layers', loaded: number, total: number, bytes: number } | { stage: 'compose', round: number }) => void} [o.onProgress]
  * @returns {Promise<{ scene: import('../wasm/usd_wasm.js').UsdScene, meta: object, stats: object }>}
  */
@@ -29,6 +32,7 @@ export async function composeStage({
   prefetchVariants = false,
   maxConcurrentFetches = 16,
   maxLayerBytes = 2 ** 30,
+  preload,
   onProgress = () => {},
 }) {
   const root = rootUrl.split(/[?#]/)[0];
@@ -47,6 +51,35 @@ export async function composeStage({
   };
   // Re-fetched layers replace their earlier bytes, so count each path once.
   const layerSizes = new Map();
+  // Speculative fetches by URL, dropped once composition is done. One that
+  // has not started when its layer is asked for, or that failed, gives way to
+  // the regular fetch, so the result is the same as without them.
+  const preloaded = new Map();
+  let composed = false;
+  const startPreload = (layers) => {
+    const requested = new Set([...started.keys()].map(urlKey));
+    let bytes = 0;
+    for (const { url, size } of layers) {
+      const key = urlKey(url);
+      bytes += size;
+      if (composed || bytes > maxLayerBytes) break;
+      if (requested.has(key) || preloaded.has(key)) continue;
+      const entry = { started: false };
+      preloaded.set(key, entry);
+      entry.bytes = throttle(async () => {
+        if (composed || preloaded.get(key) !== entry) return null;
+        entry.started = true;
+        return fetchBytes(url, () => {
+          if (composed) throw new Error('composed without it');
+        });
+      }, { later: true }).catch(() => null);
+    }
+  };
+  const takePreloaded = (path) => {
+    const entry = preloaded.get(urlKey(path));
+    preloaded.delete(urlKey(path));
+    return entry?.started ? entry.bytes : null;
+  };
 
   // Jobs in flight. A job queues its dependencies here rather than awaiting
   // them, so layers that reference each other cannot wait on each other.
@@ -70,7 +103,8 @@ export async function composeStage({
       let bytes = null;
       let failure = null;
       try {
-        bytes = await throttle(() => fetchBytes(urlOf(path), budget));
+        const preloadedBytes = takePreloaded(path);
+        bytes = (preloadedBytes && (await preloadedBytes)) ?? (await throttle(() => fetchBytes(urlOf(path), budget)));
       } catch (error) {
         heldBytes -= charged;
         // HTTP errors carry a status; network errors are TypeErrors (as from fetch).
@@ -114,6 +148,9 @@ export async function composeStage({
   };
 
   fetchLayer(root);
+  // A root without dependencies needs nothing else from its directory.
+  const rootHasDependencies = () => started.get(root).then(() => started.size > 1, () => false);
+  preload?.then(async ({ layers, eager }) => (eager || (await rootHasDependencies())) && startPreload(layers));
   await drain();
   if (!loader.has(root)) throw new UsdLoadError('compose', `could not read ${rootUrl}`, { url: rootUrl });
 
@@ -130,6 +167,7 @@ export async function composeStage({
     missing.forEach(fetchLayer);
     await drain();
   }
+  composed = true;
   const scene = loader.takeScene();
   loader.free();
   const meta = JSON.parse(scene.meta());
@@ -156,14 +194,15 @@ function resourceLimit(detail) {
   return new UsdLoadError('fetch', `resource limit exceeded: ${detail}`);
 }
 
-/** Runs at most `max` of the given tasks at once. */
+/** Runs at most `max` of the given tasks at once; tasks marked `later` wait for the others. */
 export function limiter(max) {
   let active = 0;
   const queue = [];
+  const later = [];
   const next = () => {
-    if (active >= max || !queue.length) return;
+    if (active >= max || !(queue.length || later.length)) return;
     active++;
-    const { task, resolve, reject } = queue.shift();
+    const { task, resolve, reject } = queue.shift() ?? later.shift();
     task()
       .then(resolve, reject)
       .finally(() => {
@@ -171,11 +210,16 @@ export function limiter(max) {
         next();
       });
   };
-  return (task) =>
+  return (task, { later: low = false } = {}) =>
     new Promise((resolve, reject) => {
-      queue.push({ task, resolve, reject });
+      (low ? later : queue).push({ task, resolve, reject });
       next();
     });
+}
+
+/** A layer URL as fetch would spell it, so an authored `a b.usd` matches a listed `a%20b.usd`. */
+function urlKey(url) {
+  return URL.canParse(url) ? new URL(url).href : url;
 }
 
 /**

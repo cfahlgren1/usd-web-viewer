@@ -2,6 +2,7 @@
 // textures as downscaled ImageBitmaps. One worker per load: the page
 // terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { UsdLoader } from '../wasm/usd_wasm.js';
+import { hubPackageLayers } from './hub-prefetch.js';
 import { composeStage, fetchLimited, imageInfo, limiter, loadFailure, readGeometries, sameOrigin, takePackagedTextures, textureJobs } from './load-core.js';
 
 // Textures in flight at once (fetch and decode): decoding a large image
@@ -72,6 +73,7 @@ self.onmessage = async ({ data }) => {
   let wasmMemory;
   try {
     const t0 = performance.now();
+    const preload = hubPackageLayers(url, request);
     const wasm = await init({ module_or_path: wasmModule });
     wasmMemory = wasm.memory;
     const tInit = performance.now();
@@ -82,6 +84,7 @@ self.onmessage = async ({ data }) => {
       rootUrl: url,
       maxConcurrentFetches,
       maxLayerBytes,
+      preload,
       onProgress: progress,
     });
     stats.initMs = tInit - t0;

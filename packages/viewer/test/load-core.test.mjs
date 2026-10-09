@@ -6,8 +6,9 @@ import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { initSync, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, loadFailure, readGeometries, takePackagedTextures, textureJobs } from '../src/load-core.js';
+import { composeStage, fetchLimited, limiter, loadFailure, readGeometries, takePackagedTextures, textureJobs } from '../src/load-core.js';
 import { UsdLoadError } from '../src/errors.js';
+import { hubPackageLayers } from '../src/hub-prefetch.js';
 
 initSync({ module: readFileSync(new URL('../wasm/usd_wasm_bg.wasm', import.meta.url)) });
 
@@ -366,4 +367,90 @@ test('textures inside a package nested in packages are found where the nesting s
   const path = 'https://h/outer.usdz[0/mid.usdz[0/deep.usdz[0/t.png]]]';
   assert.deepEqual(textureJobs(meta, { textures: 'full' }).map((j) => j.path), [path]);
   assert.equal(new TextDecoder().decode(textures.get(path)), 'deep texture');
+});
+
+test('preloaded layers are used when composition asks for them, and change nothing else', async () => {
+  const files = {
+    'https://h/p/root.usda': `#usda 1.0\n(subLayers = [@./a b.usda@])\n${QUAD}`,
+    'https://h/p/a b.usda': sublayers('./b.usda'),
+    'https://h/p/b.usda': `#usda 1.0\ndef Mesh "B" {\n  int[] faceVertexCounts = [3]\n  int[] faceVertexIndices = [0, 1, 2]\n  point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n}`,
+    'https://h/p/unused.usda': `#usda 1.0\n${QUAD.replace('"M"', '"U"')}`,
+  };
+  const plain = server(files, { delayMs: 5 });
+  const expected = await composeStage({ UsdLoader, fetchBytes: plain.fetchBytes, rootUrl: 'https://h/p/root.usda' });
+  // As listed: spelled the way fetch spells it, root included.
+  const listed = ['root.usda', 'a%20b.usda', 'b.usda', 'unused.usda'].map((name) => ({ url: `https://h/p/${name}`, size: 100 }));
+  const s = server({ ...files, 'https://h/p/a%20b.usda': files['https://h/p/a b.usda'] }, { delayMs: 5 });
+  const actual = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/p/root.usda', preload: Promise.resolve({ layers: listed, eager: true }) });
+  assert.deepEqual(actual.meta, expected.meta);
+  assert.equal(actual.stats.layers, 3);
+  expected.scene.free();
+  actual.scene.free();
+  assert.deepEqual(fetched(s).sort(), ['https://h/p/a%20b.usda', 'https://h/p/b.usda', 'https://h/p/root.usda', 'https://h/p/unused.usda']);
+});
+
+test('a preload that fails gives way to the regular fetch, with its result', async () => {
+  const files = { 'https://h/root.usda': sublayers('./a.usda', './gone.usda'), 'https://h/a.usda': sublayers('./b.usda'), 'https://h/b.usda': '#usda 1.0' };
+  const s = server(files, { delayMs: 5 });
+  const requested = [];
+  const fetchBytes = (url, budget) => {
+    requested.push(url);
+    if (url === 'https://h/b.usda' && requested.filter((u) => u === url).length === 1) return Promise.reject(new TypeError('network'));
+    return s.fetchBytes(url, budget);
+  };
+  const preload = Promise.resolve({ layers: ['b.usda', 'gone.usda'].map((name) => ({ url: `https://h/${name}`, size: 1 })), eager: false });
+  const { scene, stats } = await composeStage({ UsdLoader, fetchBytes, rootUrl: 'https://h/root.usda', preload });
+  scene.free();
+  assert.equal(stats.layers, 3);
+  assert.deepEqual(stats.warnings.map((w) => w.code), ['layer-missing']);
+  assert.deepEqual(requested.filter((u) => u === 'https://h/b.usda').length, 2);
+});
+
+test('a root with no dependencies fetches nothing ahead unless its package is declared', async () => {
+  for (const eager of [false, true]) {
+    const s = server({ 'https://h/root.usda': `#usda 1.0\n${QUAD}`, 'https://h/other.usda': '#usda 1.0' }, { delayMs: 5 });
+    const preload = Promise.resolve({ layers: [{ url: 'https://h/other.usda', size: 10 }], eager });
+    const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda', preload });
+    scene.free();
+    assert.deepEqual(s.requested, eager ? ['https://h/root.usda', 'https://h/other.usda'] : ['https://h/root.usda']);
+  }
+});
+
+test('the limiter runs tasks marked later after the others', async () => {
+  const throttle = limiter(1);
+  const order = [];
+  const run = (name, options) => throttle(async () => order.push(name), options);
+  await Promise.all([run('first'), run('later', { later: true }), run('second')]);
+  assert.deepEqual(order, ['first', 'second', 'later']);
+});
+
+test('hubPackageLayers lists the SimReady package of a Hub root, and nothing for other URLs', async () => {
+  const requests = [];
+  const tree = [
+    { type: 'file', path: 'pkg/com.nvidia.simready.packaging.json', size: 10 },
+    { type: 'directory', path: 'pkg/usd', size: 0 },
+    { type: 'file', path: 'pkg/usd/root.usd', size: 10 },
+    { type: 'file', path: 'pkg/usd/parts/a b.usdc', size: 10 },
+    { type: 'file', path: 'pkg/materials/m.usda', size: 10 },
+    { type: 'file', path: 'pkg/textures/t.png', size: 10 },
+    { type: 'file', path: 'pkg/huge.usd', size: 2 ** 30 },
+  ];
+  const request = async (url) => (requests.push(url), Response.json(tree));
+  const { layers, eager } = await hubPackageLayers('https://huggingface.co/datasets/o/r/resolve/main/pkg/usd/root.usd?download=true', request);
+  assert.deepEqual(requests, ['https://huggingface.co/api/datasets/o/r/tree/main/pkg?recursive=true']);
+  assert.equal(eager, true);
+  assert.deepEqual(layers.map((l) => l.url), [
+    'https://huggingface.co/datasets/o/r/resolve/main/pkg/usd/root.usd',
+    'https://huggingface.co/datasets/o/r/resolve/main/pkg/usd/parts/a%20b.usdc',
+    'https://huggingface.co/datasets/o/r/resolve/main/pkg/materials/m.usda',
+  ]);
+  // Without a manifest, only the root's own directory.
+  const bare = await hubPackageLayers('https://huggingface.co/o/r/resolve/main/pkg/usd/root.usd', async (url) => (requests.push(url), Response.json(tree.slice(1))));
+  assert.equal(requests.at(-1), 'https://huggingface.co/api/models/o/r/tree/main/pkg?recursive=true');
+  assert.equal(bare.eager, false);
+  assert.deepEqual(bare.layers.map((l) => l.url), ['https://huggingface.co/o/r/resolve/main/pkg/usd/root.usd', 'https://huggingface.co/o/r/resolve/main/pkg/usd/parts/a%20b.usdc']);
+  const none = { layers: [], eager: false };
+  assert.deepEqual(await hubPackageLayers('https://example.com/datasets/o/r/resolve/main/pkg/usd/root.usd', request), none);
+  assert.deepEqual(await hubPackageLayers('https://huggingface.co/datasets/o/r/resolve/main/x.usd', async () => new Response(null, { status: 401 })), none);
+  assert.equal(requests.length, 2);
 });
