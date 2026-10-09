@@ -283,7 +283,7 @@ impl Scene {
 /// at most `max_instances` mesh instances, PointInstancer placements included.
 pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
     let mut scene = Scene {
-        up_axis: token_metadata(stage, "upAxis").unwrap_or_else(|| "Y".to_owned()),
+        up_axis: stage.stage_metadata("upAxis").ok().flatten().as_ref().and_then(material::string).unwrap_or_else(|| "Y".to_owned()),
         meters_per_unit: match stage.stage_metadata("metersPerUnit")? {
             Some(Value::Double(v)) => v,
             Some(Value::Float(v)) => v as f64,
@@ -606,19 +606,7 @@ fn shown_material(
 
 
 pub(crate) fn token_attr(prim: &usd::Prim, name: &str) -> Option<String> {
-    match prim.attribute(name).get::<Value>() {
-        Ok(Some(Value::Token(t))) => Some(t.as_str().to_owned()),
-        Ok(Some(Value::String(s))) => Some(s),
-        _ => None,
-    }
-}
-
-fn token_metadata(stage: &Stage, key: &str) -> Option<String> {
-    match stage.stage_metadata(key) {
-        Ok(Some(Value::Token(t))) => Some(t.as_str().to_owned()),
-        Ok(Some(Value::String(s))) => Some(s),
-        _ => None,
-    }
+    prim.attribute(name).get::<Value>().ok().flatten().as_ref().and_then(material::string)
 }
 
 /// How a primvar's values map onto the mesh.

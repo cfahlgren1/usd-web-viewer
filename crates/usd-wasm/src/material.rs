@@ -492,7 +492,8 @@ fn boolean(value: &Value) -> Option<bool> {
     }
 }
 
-fn string(value: &Value) -> Option<String> {
+/// A token or string value.
+pub(crate) fn string(value: &Value) -> Option<String> {
     match value {
         Value::Token(t) => Some(t.as_str().to_owned()),
         Value::String(s) => Some(s.clone()),
