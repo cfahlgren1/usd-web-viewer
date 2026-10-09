@@ -3,7 +3,7 @@
 // terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { lastPanic, UsdLoader } from '../wasm/usd_wasm.js';
 import { hubPackageLayers } from './hub-prefetch.js';
-import { composeStage, fetchLimited, imageInfo, limiter, loadFailure, readGeometries, sameOrigin, takePackagedTextures, textureJobs } from './load-core.js';
+import { composeStage, fetchLimited, imageInfo, limiter, loadFailure, originAllowed, readGeometries, sameOrigin, takePackagedTextures, textureJobs } from './load-core.js';
 
 // Textures in flight at once (fetch and decode): decoding a large image
 // briefly holds it at full size, so wide parallelism spikes memory.
@@ -59,7 +59,7 @@ self.onmessage = async ({ data }) => {
     return;
   }
   if (data.type === 'chunk') return receiveChunk(data);
-  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes, maxTextureBytes = 512 * 2 ** 20, headers, proxyFetch } = data;
+  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes, maxTextureBytes = 512 * 2 ** 20, maxLayers, allowedOrigins, headers, proxyFetch } = data;
   // Every request, layer or texture, goes through here. The caller's headers
   // (credentials, typically) go only to the root's origin; a custom fetch on
   // the page applies the same rule.
@@ -72,7 +72,10 @@ self.onmessage = async ({ data }) => {
     textureBytes += bytes;
     if (textureBytes > maxTextureBytes) throw new Error(`textures exceed maxTextureBytes (${maxTextureBytes} bytes)`);
   };
-  const fetchBlob = async (target) => new Blob([await fetchLimited(target, chargeTexture, { fetchFn: request })]);
+  const fetchBlob = async (target) => {
+    if (!originAllowed(target, url, allowedOrigins)) throw new Error(`texture not fetched: its origin is not in allowedOrigins: ${target}`);
+    return new Blob([await fetchLimited(target, chargeTexture, { fetchFn: request })]);
+  };
   const progress = (p) => self.postMessage({ type: 'progress', progress: p });
 
   let wasmMemory;
@@ -89,6 +92,8 @@ self.onmessage = async ({ data }) => {
       rootUrl: url,
       maxConcurrentFetches,
       maxLayerBytes,
+      maxLayers,
+      allowedOrigins,
       preload,
       onProgress: progress,
     });

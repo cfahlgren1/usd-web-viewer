@@ -79,16 +79,41 @@ test('headers stay on the root origin: a cross-origin texture gets none', async 
   const usda = (await (await fetch(`${BASE}/conformance/fixtures/uv_set.usda`)).text()).replace('@quadrants.png@', `@${texture}@`);
   await page.context().route(root, (route) => route.fulfill({ body: usda, contentType: 'text/plain' }));
   await fetch(`${BASE}/__stats/reset`);
-  const counts = await page.evaluate(async (url) => {
+  const counts = await page.evaluate(async ([url, origin]) => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');
-    const result = await loadUsd(url, { headers: { Authorization: 'Bearer round2-dummy' } });
+    const result = await loadUsd(url, { headers: { Authorization: 'Bearer round2-dummy' }, allowedOrigins: [origin] });
     const done = await result.complete;
     result.dispose();
     return done;
-  }, root);
+  }, [root, new URL(texture).origin]);
   const requests = (await stats()).filter((r) => r.url.endsWith('quadrants.png'));
   assert.deepEqual(counts, { textures: 1, failed: 0 });
   assert.ok(requests.length > 0 && requests.every((r) => r.auth === null), JSON.stringify(requests));
+});
+
+test('a texture outside allowedOrigins is never requested, through fetch or a custom fetch', async () => {
+  const root = `${BASE}/__fixture/other-origin.usda`;
+  const texture = `http://localhost:${new URL(BASE).port}/conformance/fixtures/quadrants.png`;
+  const usda = (await (await fetch(`${BASE}/conformance/fixtures/uv_set.usda`)).text()).replace('@quadrants.png@', `@${texture}@`);
+  await page.context().route(root, (route) => route.fulfill({ body: usda, contentType: 'text/plain' }));
+  await fetch(`${BASE}/__stats/reset`);
+  const out = await page.evaluate(async (url) => {
+    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const seen = [];
+    const outcomes = [];
+    for (const options of [{}, { fetch: (u, init) => (seen.push(u), fetch(u, init)) }]) {
+      const result = await loadUsd(url, options);
+      outcomes.push({ counts: await result.complete, warning: result.info.warnings.find((w) => w.code === 'texture-failed')?.message });
+      result.dispose();
+    }
+    return { outcomes, seen };
+  }, root);
+  assert.deepEqual((await stats()).filter((r) => r.url.endsWith('quadrants.png')), []);
+  assert.deepEqual(out.seen, [root]);
+  for (const { counts, warning } of out.outcomes) {
+    assert.deepEqual(counts, { textures: 0, failed: 1 });
+    assert.match(warning, /not in allowedOrigins/);
+  }
 });
 
 test('a custom fetch body is read only as far as the layer budget allows', async () => {

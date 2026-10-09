@@ -19,6 +19,8 @@ import { UsdLoadError } from './errors.js';
  * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
  * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
  * @param {number} [o.maxLayerBytes=768 MiB]  total size of the distinct layers held for composition
+ * @param {number} [o.maxLayers=1024]  distinct layer files requested
+ * @param {string[]} [o.allowedOrigins]  see {@link originAllowed}; layers elsewhere are left out with a warning
  * @param {Promise<{ layers: { url: string, size: number }[], eager: boolean }>} [o.preload]  layers likely
  *   to be needed: fetched ahead at lower priority, right away if `eager` or else once the root names a
  *   dependency, and used only if composition asks for them
@@ -32,6 +34,8 @@ export async function composeStage({
   prefetchVariants = false,
   maxConcurrentFetches = 16,
   maxLayerBytes = 768 * 2 ** 20,
+  maxLayers = 1024,
+  allowedOrigins,
   preload,
   onProgress = () => {},
 }) {
@@ -87,8 +91,19 @@ export async function composeStage({
   const drain = async () => {
     while (pending.length) await Promise.all(pending.splice(0));
   };
+  const requested = new Set();
   const fetchLayer = (path) => {
     if (loader.has(path) || started.has(path)) return;
+    requested.add(path);
+    if (requested.size > maxLayers) throw resourceLimit(`more than maxLayers (${maxLayers}) layer files at ${path}`);
+    if (!originAllowed(urlOf(path), rootUrl, allowedOrigins)) {
+      started.set(path, Promise.resolve());
+      stats.missing++;
+      stats.warnings.push({ code: 'layer-missing', message: `layer not fetched: its origin is not in allowedOrigins: ${path}`, path });
+      loader.markUnavailable(path);
+      progress();
+      return;
+    }
     const job = (async () => {
       const t0 = performance.now();
       heldBytes -= layerSizes.get(path) ?? 0;
@@ -310,6 +325,25 @@ export function imageInfo(b) {
     }
   }
   return null;
+}
+
+const HUB_HOST = /(^|\.)(huggingface\.co|hf\.co)$/;
+const isHub = ({ protocol, hostname }) => protocol === 'https:' && HUB_HOST.test(hostname);
+
+/**
+ * Whether a load rooted at `rootUrl` may fetch `url`: anything on the root's
+ * origin or in `allowedOrigins` (`'*'` allows any), and for a root on the
+ * Hugging Face Hub the Hub's hosts and their CDNs. Fetches follow redirects
+ * without a check, so only the requested URL counts.
+ */
+export function originAllowed(url, rootUrl, allowedOrigins = []) {
+  try {
+    const target = new URL(url);
+    const root = new URL(rootUrl);
+    return target.origin === root.origin || allowedOrigins.includes('*') || allowedOrigins.includes(target.origin) || (isHub(root) && isHub(target));
+  } catch {
+    return false;
+  }
 }
 
 /** Whether `url` has the origin of `root`: only those requests carry the caller's headers. */

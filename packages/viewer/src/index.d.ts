@@ -31,6 +31,10 @@ export interface LoadOptions {
   maxConcurrentFetches?: number | undefined;
   /** Total bytes of USD layers to fetch before failing with a `fetch` error. Default 768 MiB. */
   maxLayerBytes?: number | undefined;
+  /** Layer files to request before failing with a `fetch` error. Default 1024. */
+  maxLayers?: number | undefined;
+  /** Origins, besides the root URL's, that layers and textures may be fetched from, e.g. `['https://cdn.example.com']`; `['*']` allows any. A root on the Hugging Face Hub also allows the Hub's hosts and CDNs. Anything else is skipped with a `layer-missing` or `texture-failed` warning, also with a custom `fetch`. Only the requested URL counts, not where it redirects. */
+  allowedOrigins?: readonly string[] | undefined;
   /** Total bytes of texture files to fetch, counted as they download; textures past it fail with a `texture-failed` warning. Default 512 MiB. Images larger than 16384 px a side are always refused. */
   maxTextureBytes?: number | undefined;
 }
@@ -38,7 +42,8 @@ export interface LoadOptions {
 /**
  * - `prim-unsupported`: visible geometry other than meshes and the implicit `Cube` / `Sphere` / `Cylinder` / `Cone` / `Capsule` / `Plane` (e.g. `BasisCurves`, `Points`, `Volume`, Gaussian splats) left out.
  * - `nothing-drawable`: no visible mesh had anything to draw.
- * - `texture-failed`: an image could not be fetched or read, or was refused (past `maxTextureBytes`, or larger than 16384 px a side); its inputs show their own (authored or default) values.
+ * - `layer-missing`: a layer could not be fetched, or is on an origin outside `allowedOrigins`.
+ * - `texture-failed`: an image could not be fetched or read, or was refused (outside `allowedOrigins`, past `maxTextureBytes`, or larger than 16384 px a side); its inputs show their own (authored or default) values.
  */
 export type WarningCode = 'layer-missing' | 'layer-unreadable' | 'prim-unsupported' | 'nothing-drawable' | 'material-fallback' | 'texture-failed' | 'composition';
 

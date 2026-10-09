@@ -51,6 +51,7 @@ scene.add(root);   // THREE.Group, Y-up, metres
 | `signal` | – | `AbortSignal` to cancel the load |
 | `onProgress` | – | Called per stage: `layers`, `compose`, `geometry`, `textures` |
 | `headers` / `fetch` | – | Auth for gated or private files outside huggingface.co |
+| `allowedOrigins` | root's origin (+ Hub hosts) | Other origins layers and textures may come from; `['*']` for any |
 
 Errors are `UsdLoadError`s with a `code`; anything that could not be shown faithfully is listed in `info.warnings`. Every option, error code and warning is typed in [`index.d.ts`](packages/viewer/src/index.d.ts).
 

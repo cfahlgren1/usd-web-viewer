@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { initSync, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, limiter, loadFailure, readGeometries, takePackagedTextures, textureJobs } from '../src/load-core.js';
+import { composeStage, fetchLimited, limiter, loadFailure, originAllowed, readGeometries, takePackagedTextures, textureJobs } from '../src/load-core.js';
 import { UsdLoadError } from '../src/errors.js';
 import { hubPackageLayers } from '../src/hub-prefetch.js';
 
@@ -110,6 +110,41 @@ test('layers past maxLayerBytes fail with a resource limit error', async () => {
   );
 });
 
+test('layers past maxLayers fail with a resource limit error', async () => {
+  const s = server(manyLayers(40));
+  await assert.rejects(composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda', maxLayers: 20 }), /more than maxLayers \(20\)/);
+  const { scene } = await composeStage({ UsdLoader, fetchBytes: server(manyLayers(40)).fetchBytes, rootUrl: 'https://h/root.usda', maxLayers: 41 });
+  scene.free();
+});
+
+test('layers on origins outside allowedOrigins are left out with a warning, never requested', async () => {
+  const files = { 'https://h/root.usda': sublayers('https://other.example/a.usda'), 'https://other.example/a.usda': `#usda 1.0\n${QUAD}` };
+  const blocked = server(files);
+  const { scene, meta, stats } = await composeStage({ UsdLoader, fetchBytes: blocked.fetchBytes, rootUrl: 'https://h/root.usda' });
+  scene.free();
+  assert.deepEqual(fetched(blocked), ['https://h/root.usda']);
+  assert.equal(meta.geometryCount, 0);
+  assert.deepEqual(stats.warnings.map((w) => [w.code, w.path]), [['layer-missing', 'https://other.example/a.usda']]);
+  const allowed = server(files);
+  const result = await composeStage({ UsdLoader, fetchBytes: allowed.fetchBytes, rootUrl: 'https://h/root.usda', allowedOrigins: ['https://other.example'] });
+  result.scene.free();
+  assert.equal(result.meta.geometryCount, 1);
+});
+
+test('originAllowed: the root origin, the list, any with *, and the Hub hosts for a Hub root', () => {
+  const hub = 'https://huggingface.co/datasets/o/r/resolve/main/a.usd';
+  assert.ok(originAllowed('https://h/x/t.png', 'https://h/root.usda'));
+  assert.ok(!originAllowed('https://evil.example/t.png', 'https://h/root.usda'));
+  assert.ok(originAllowed('https://cdn.example/t.png', 'https://h/root.usda', ['https://cdn.example']));
+  assert.ok(originAllowed('https://evil.example/t.png', 'https://h/root.usda', ['*']));
+  assert.ok(originAllowed('https://hf.co/datasets/o/r/resolve/main/b.usd', hub));
+  assert.ok(originAllowed('https://cdn-lfs.hf.co/x', hub));
+  assert.ok(!originAllowed('https://huggingface.co.evil.example/x', hub));
+  assert.ok(!originAllowed('http://huggingface.co/x', hub));
+  assert.ok(!originAllowed('https://huggingface.co/x', 'https://h/root.usda'));
+  assert.ok(!originAllowed('omniverse://server/a.usd', 'https://h/root.usda'));
+});
+
 test('fetchLimited stops reading a streamed body past maxBytes', async (t) => {
   const chunk = Buffer.alloc(64 * 1024);
   let sent = 0;
@@ -191,7 +226,7 @@ test('absolute dependencies keep their scheme and host, and anchor their own rel
     'http://other.example/x/x.usda': sublayers('./y.usda'),
     'http://other.example/x/y.usda': '#usda 1.0',
   });
-  const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+  const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda', allowedOrigins: ['http://other.example'] });
   scene.free();
   assert.deepEqual(fetched(s), ['https://h/root.usda', 'http://other.example/x/x.usda', 'http://other.example/x/y.usda']);
 });
