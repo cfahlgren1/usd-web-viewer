@@ -26,8 +26,21 @@ jobs:
       - run: npm run build:wasm
       - run: npm test
       - run: npm run check:types
-      - run: cargo test
-      - run: cargo clippy -- -D warnings
+      - run: cargo test --locked
+      - run: cargo clippy --locked -- -D warnings
+      - name: WASM size budget (brotli q11 <= 620 KiB)
+        run: |
+          node -e "
+            const zlib = require('node:zlib');
+            const buf = require('node:fs').readFileSync('packages/viewer/wasm/usd_wasm_bg.wasm');
+            const size = zlib.brotliCompressSync(buf, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11 } }).length;
+            console.log('brotli: ' + (size / 1024).toFixed(1) + ' KiB');
+            if (size > 620 * 1024) throw new Error('usd_wasm_bg.wasm brotli is over the 620 KiB budget');
+          "
+      - run: npx playwright install --with-deps chromium
+      - name: Vite example
+        working-directory: examples/vite
+        run: npm ci && node test.mjs
 
   # The lowest three.js in the peer range; unit tests only.
   three-min:
