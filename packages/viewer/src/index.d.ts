@@ -16,10 +16,10 @@ export interface LoadOptions {
   maxTextureSize?: number | undefined;
   /** Aborts fetches and the worker; the load rejects with a UsdLoadError of code `aborted`. */
   signal?: AbortSignal | undefined;
-  /** Sent with every layer and texture request. For embedding on another site, e.g. `{ Authorization: 'Bearer hf_…' }`. */
+  /** Sent with layer and texture requests to the root URL's origin only. For embedding on another site, e.g. `{ Authorization: 'Bearer hf_…' }`. */
   headers?: Record<string, string> | undefined;
-  /** Your own fetch for every request, run on the page (requests are proxied from the worker). */
-  fetch?: ((url: string, init: { headers?: Record<string, string> | undefined; signal?: AbortSignal | undefined }) => Promise<Response>) | undefined;
+  /** Your own fetch for every request, run on the page (requests are proxied from the worker). `init.headers` is `headers` for the root URL's origin and absent elsewhere; `init.signal` aborts when the load stops. */
+  fetch?: ((url: string, init: { headers?: Record<string, string>; signal: AbortSignal }) => Promise<Response>) | undefined;
   onProgress?: ((progress: LoadProgress) => void) | undefined;
   /** Where the `.wasm` binary is served from. Defaults to the copy next to the package. */
   wasmUrl?: string | URL | undefined;

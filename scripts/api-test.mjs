@@ -72,6 +72,25 @@ test('headers reach layer and texture requests', async () => {
   assert.ok(data.every((r) => r.auth === 'Bearer test-token'), JSON.stringify(data.map((r) => [r.url, r.auth])));
 });
 
+test('headers stay on the root origin: a cross-origin texture gets none', async () => {
+  // The root (served through a route) authors its texture on another origin of the same server.
+  const root = `${BASE}/__fixture/cross-origin.usda`;
+  const texture = `http://localhost:${new URL(BASE).port}/conformance/fixtures/quadrants.png`;
+  const usda = (await (await fetch(`${BASE}/conformance/fixtures/uv_set.usda`)).text()).replace('@quadrants.png@', `@${texture}@`);
+  await page.context().route(root, (route) => route.fulfill({ body: usda, contentType: 'text/plain' }));
+  await fetch(`${BASE}/__stats/reset`);
+  const counts = await page.evaluate(async (url) => {
+    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const result = await loadUsd(url, { headers: { Authorization: 'Bearer round2-dummy' } });
+    const done = await result.complete;
+    result.dispose();
+    return done;
+  }, root);
+  const requests = (await stats()).filter((r) => r.url.endsWith('quadrants.png'));
+  assert.deepEqual(counts, { textures: 1, failed: 0 });
+  assert.ok(requests.length > 0 && requests.every((r) => r.auth === null), JSON.stringify(requests));
+});
+
 test('a custom fetch body is read only as far as the layer budget allows', async () => {
   const out = await page.evaluate(async () => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');

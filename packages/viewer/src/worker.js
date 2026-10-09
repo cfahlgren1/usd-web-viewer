@@ -2,7 +2,7 @@
 // textures as downscaled ImageBitmaps. One worker per load: the page
 // terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, limiter, takeGeometries, takePackagedTextures, textureJobs } from './load-core.js';
+import { composeStage, fetchLimited, limiter, sameOrigin, takeGeometries, takePackagedTextures, textureJobs } from './load-core.js';
 
 // Textures in flight at once (fetch and decode): decoding a large image
 // briefly holds it at full size, so wide parallelism spikes memory.
@@ -56,8 +56,10 @@ self.onmessage = async ({ data }) => {
   }
   if (data.type === 'chunk') return receiveChunk(data);
   const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes = 2 ** 30, headers, proxyFetch } = data;
-  // Every request, layer or texture, goes through here.
-  const request = proxyFetch ? proxiedFetch : (target) => fetch(target, { headers });
+  // Every request, layer or texture, goes through here. The caller's headers
+  // (credentials, typically) go only to the root's origin; a custom fetch on
+  // the page applies the same rule.
+  const request = proxyFetch ? proxiedFetch : (target) => fetch(target, { headers: sameOrigin(target, url) ? headers : undefined });
   const fetchBytes = (target, budget) => fetchLimited(target, budget, { fetchFn: request });
   // Images stay a Blob (the browser may keep it off the JS heap) until decoded.
   const fetchBlob = async (target) => {

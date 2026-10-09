@@ -192,6 +192,12 @@ export async function fetchLimited(url, budget, { fetchFn = fetch } = {}) {
   return out;
 }
 
+/** Whether `url` has the origin of `root`: only those requests carry the caller's headers. */
+export function sameOrigin(url, root) {
+  const origin = new URL(url).origin;
+  return origin !== 'null' && origin === new URL(root).origin;
+}
+
 /** Moves every geometry's arrays out of WASM into JS typed arrays. */
 export function takeGeometries(scene, meta) {
   return meta.geometries.map((g, i) => ({

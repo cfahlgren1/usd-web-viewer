@@ -163,6 +163,19 @@ async function proxiedLoad(fetch, options = {}) {
   return { worker: FakeWorker.last, loading, stop: () => controller.abort() };
 }
 
+test('caller headers go only to requests on the root origin', { timeout: 3000 }, async () => {
+  const seen = [];
+  const { worker, stop } = await proxiedLoad(async (url, init) => (seen.push([url, init.headers]), new Response('x')), { headers: { Authorization: 'Bearer t' } });
+  worker.send({ type: 'fetch', id: 1, url: 'https://example.test/a.usda' });
+  worker.send({ type: 'fetch', id: 2, url: 'https://cdn.other.test/t.png' });
+  await tick();
+  assert.deepEqual(seen, [
+    ['https://example.test/a.usda', { Authorization: 'Bearer t' }],
+    ['https://cdn.other.test/t.png', undefined],
+  ]);
+  stop();
+});
+
 test('a proxied body streams to the worker chunk by chunk and stops when it cancels', { timeout: 3000 }, async () => {
   let pulls = 0;
   let cancelled = false;

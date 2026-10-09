@@ -66,8 +66,8 @@ scene.add(root);   // THREE.Group, Y-up, metres
 | `maxTextureSize` | `1024` | Long-side cap; textures are decoded straight to this size in the worker |
 | `signal` | – | `AbortSignal`: cancels fetches, terminates the worker, rejects with a `UsdLoadError` of code `aborted` |
 | `onProgress` | – | `{ stage: 'layers', loaded, total, bytes }`, `{ stage: 'compose', round }`, `{ stage: 'textures', loaded, total, bytes }` |
-| `headers` | – | Sent with every layer and texture request (see [Embedding elsewhere](#embedding-elsewhere)) |
-| `fetch` | – | Your own `fetch(url, { headers, signal })`, used for every request (proxied from the worker) |
+| `headers` | – | Sent with layer and texture requests to the root URL's origin only (see [Embedding elsewhere](#embedding-elsewhere)) |
+| `fetch` | – | Your own `fetch(url, { headers, signal })`, used for every request (proxied from the worker); `headers` is set only for the root URL's origin, `signal` aborts when the load stops |
 | `wasmUrl` / `workerUrl` | bundled | Serve the `.wasm` / worker script from your own CDN |
 | `maxConcurrentFetches` | `16` | Requests in flight at once (textures: at most 4 fetched and decoded at once) |
 | `maxLayerBytes` | 1 GiB | Total size of USD layers to fetch before failing with a `fetch` error |
@@ -82,7 +82,7 @@ Hub `resolve` URLs work as they are, with no token: on huggingface.co the page's
 
 ### Embedding elsewhere
 
-On another origin there are no Hub cookies: pass `headers: { Authorization: 'Bearer <token>' }` for gated or private repos, or your own `fetch` (e.g. one that goes through your backend). Both apply to every layer and texture request.
+On another origin there are no Hub cookies: pass `headers: { Authorization: 'Bearer <token>' }` for gated or private repos, or your own `fetch` (e.g. one that goes through your backend). Headers go only to requests on the root URL's origin, so a token is never sent to another host a layer happens to reference; your `fetch` receives every URL and can decide for itself.
 
 ## Compared with other browser USD viewers
 

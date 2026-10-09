@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { UsdLoadError } from './errors.js';
+import { sameOrigin } from './load-core.js';
 import { applyFallback, attachTexture, configureTexture, createMaterial, variant } from './materials.js';
 
 export { UsdLoadError };
@@ -136,7 +137,7 @@ export async function loadUsd(url, options = {}) {
   /** Runs one worker request through the caller's `fetch`; the body follows chunk by chunk. */
   async function proxyFetch({ id, url: target }) {
     try {
-      const init = { headers, signal: requestSignal };
+      const init = sameOrigin(target, absoluteUrl) && headers ? { headers, signal: requestSignal } : { signal: requestSignal };
       const response = await options.fetch(target, init);
       if (response.ok) bodies.set(id, (response.body ?? new Blob().stream()).getReader());
       else response.body?.cancel();
