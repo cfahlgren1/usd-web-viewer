@@ -1,19 +1,13 @@
 //! Per-vertex `displayColor` becomes a color attribute; a constant one tints
 //! the material instead.
 
-use usd_wasm::{Composed, Loader, Scene};
+mod common;
 
-fn compose(layer: String) -> Scene {
-    let mut loader = Loader::new();
-    loader.add_layer("/h/root.usda", layer.into_bytes()).unwrap();
-    match loader.compose("/h/root.usda", usize::MAX).unwrap() {
-        Composed::Scene(scene) => scene.read_all().expect("reads geometry"),
-        Composed::Missing(_) => panic!("missing layers"),
-    }
-}
+use usd_wasm::Scene;
+
 
 fn scene(display_color: &str) -> Scene {
-    compose(format!(
+    common::scene(&format!(
         r#"#usda 1.0
 def Mesh "Tri"
 {{
@@ -46,7 +40,7 @@ const RGB: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
 #[test]
 fn a_subset_material_reading_display_color_gets_per_vertex_colors() {
-    let s = compose(include_str!("../../../fixtures/subset_colors.usda").to_owned());
+    let s = common::scene(include_str!("../../../fixtures/subset_colors.usda"));
     assert_eq!(s.geometries[0].colors, RGB);
     let names: Vec<_> = s.instances[0].materials.iter().map(|&m| &s.materials[m as usize]).map(|m| (m.path.as_str(), m.color_primvar.as_deref())).collect();
     assert_eq!(names, [("/Mat", Some("displayColor"))]);
@@ -54,6 +48,6 @@ fn a_subset_material_reading_display_color_gets_per_vertex_colors() {
 
 #[test]
 fn a_primvar_reader_varname_names_the_color_primvar() {
-    let s = compose(include_str!("../../../fixtures/primvar_colors.usda").to_owned());
+    let s = common::scene(include_str!("../../../fixtures/primvar_colors.usda"));
     assert_eq!(s.geometries[0].colors, RGB);
 }

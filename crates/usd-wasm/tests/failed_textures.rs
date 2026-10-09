@@ -1,16 +1,11 @@
 //! What an input shows when its image cannot be read: the input's own value,
 //! not the texture's `fallback` (that is for a texture node with no image).
 
-use usd_wasm::{Composed, Loader, Scene};
+mod common;
 
-fn scene(usda: &str) -> Scene {
-    let mut loader = Loader::new();
-    loader.add_layer("/h/root.usda", usda.as_bytes().to_vec()).unwrap();
-    let Composed::Scene(scene) = loader.compose("/h/root.usda", usize::MAX).unwrap() else {
-        panic!("missing layers");
-    };
-    scene.read_all().unwrap()
-}
+use common::scene;
+use usd_wasm::Scene;
+
 
 const MESH: &str = r#"#usda 1.0
 def Mesh "Quad" (prepend apiSchemas = ["MaterialBindingAPI"])

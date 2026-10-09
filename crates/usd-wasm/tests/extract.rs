@@ -1,17 +1,10 @@
 //! Extraction from in-memory USDA stages, through the same Loader the browser uses.
 
-use usd_wasm::{Composed, Loader, Scene};
+mod common;
 
-fn scene(usda: &str) -> Scene {
-    let mut loader = Loader::new();
-    loader
-        .add_layer("/h/root.usda", usda.as_bytes().to_vec())
-        .expect("layer parses");
-    match loader.compose("/h/root.usda", usize::MAX).expect("composes") {
-        Composed::Scene(scene) => scene.read_all().expect("reads geometry"),
-        Composed::Missing(missing) => panic!("missing layers: {missing:?}"),
-    }
-}
+use common::scene;
+use usd_wasm::Scene;
+
 
 /// Two quads side by side in the XY plane.
 const TWO_QUADS: &str = r#"

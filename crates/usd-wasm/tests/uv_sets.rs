@@ -1,6 +1,6 @@
 //! A texture that names its UV primvar must be sampled with that primvar.
 
-use usd_wasm::{Composed, Loader};
+mod common;
 
 const LAYER: &str = r#"#usda 1.0
 def Mesh "Quad" (prepend apiSchemas = ["MaterialBindingAPI"])
@@ -39,12 +39,7 @@ def Material "Mat"
 
 #[test]
 fn texture_samples_the_primvar_it_names() {
-    let mut loader = Loader::new();
-    loader.add_layer("/h/root.usda", LAYER.as_bytes().to_vec()).unwrap();
-    let Composed::Scene(scene) = loader.compose("/h/root.usda", usize::MAX).unwrap() else {
-        panic!("missing layers");
-    };
-    let scene = scene.read_all().unwrap();
+    let scene = common::scene(LAYER);
     let geometry = &scene.geometries[0];
     let texture = &scene.materials[0].maps[0].1;
     assert_eq!(texture.uv_set.as_deref(), Some("custom"));

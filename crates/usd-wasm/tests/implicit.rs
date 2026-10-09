@@ -1,16 +1,11 @@
 //! Implicit gprims (Cube, Sphere, Cylinder, Cone, Capsule, Plane) are drawn as
 //! tessellated meshes with the size, axis, transform and material they author.
 
-use usd_wasm::{Composed, Loader, Scene};
+mod common;
 
-fn scene(usda: &str) -> Scene {
-    let mut loader = Loader::new();
-    loader.add_layer("/h/root.usda", usda.as_bytes().to_vec()).unwrap();
-    let Composed::Scene(scene) = loader.compose("/h/root.usda", usize::MAX).unwrap() else {
-        panic!("missing layers");
-    };
-    scene.read_all().unwrap()
-}
+use common::scene;
+use usd_wasm::Scene;
+
 
 /// World-space bounds of an instance (local bounds through its matrix; the
 /// tests only translate and scale).
