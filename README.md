@@ -108,6 +108,7 @@ A Pixar `usd-core` oracle and our WASM build dump the same JSON per package (mes
 |---|---|
 | 6 benchmark assets | **6/6** |
 | usd-wg/assets material scenes | **10/10** |
+| Edge-case fixtures (instancers, colors, UV sets, missing files) | **9/9** |
 | Random Hub sample (nvidia, LG, Robotiq, Standard Bots, agibot, imagine.io) | **186/187** |
 
 The one miss is a 1.2e-5 unit offset on four lid meshes. Details: [`conformance/results`](conformance/results/README.md).
