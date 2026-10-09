@@ -143,9 +143,9 @@ fn texture(o: &mut String, t: &Texture) {
     floats(o, &t.scale);
     o.push_str(",\"bias\":");
     floats(o, &t.bias);
-    if let Some(fallback) = &t.fallback {
-        o.push_str(",\"fallback\":");
-        floats(o, fallback);
+    if let Some(value) = &t.value {
+        o.push_str(",\"value\":");
+        floats(o, value);
     }
     let tokens = [("colorSpace", &t.color_space), ("uvSet", &t.uv_set), ("wrapS", &t.wrap[0]), ("wrapT", &t.wrap[1])];
     for (key, value) in tokens {
