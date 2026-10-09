@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 OPT_LEVEL="${OPT_LEVEL:-s}"
 OUT=packages/viewer/wasm
 
-CARGO_PROFILE_RELEASE_OPT_LEVEL="$OPT_LEVEL" cargo build --release --target wasm32-unknown-unknown -p usd-wasm
+CARGO_PROFILE_RELEASE_OPT_LEVEL="$OPT_LEVEL" cargo build --locked --release --target wasm32-unknown-unknown -p usd-wasm
 wasm-bindgen --target web --no-typescript --out-dir "$OUT" target/wasm32-unknown-unknown/release/usd_wasm.wasm
 node_modules/.bin/wasm-opt -O"$OPT_LEVEL" --strip-debug --strip-producers \
   --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals \
