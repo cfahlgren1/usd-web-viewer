@@ -66,10 +66,10 @@ scene.add(root);   // THREE.Group, Y-up, metres
 | `maxTextureSize` | `1024` | Long-side cap; textures are decoded straight to this size in the worker |
 | `signal` | – | `AbortSignal`: cancels fetches, terminates the worker, rejects with a `UsdLoadError` of code `aborted` |
 | `onProgress` | – | `{ stage: 'layers', loaded, total, bytes }`, `{ stage: 'compose', round }`, `{ stage: 'textures', loaded, total, bytes }` |
-| `headers` | – | Sent with every layer and texture request (see [Embedding elsewhere](#embedding-elsewhere)) |
-| `fetch` | – | Your own `fetch(url, { headers, signal })`, used for every request (proxied from the worker) |
+| `headers` | – | Sent with layer and texture requests to the root URL's origin only (see [Embedding elsewhere](#embedding-elsewhere)) |
+| `fetch` | – | Your own `fetch(url, { headers, signal })`, used for every request (proxied from the worker); `headers` is set only for the root URL's origin, `signal` aborts when the load stops |
 | `wasmUrl` / `workerUrl` | bundled | Serve the `.wasm` / worker script from your own CDN |
-| `maxConcurrentFetches` | `16` | Requests in flight at once (textures: at most 4 fetched and decoded at once) |
+| `maxConcurrentFetches` | `16` | Requests in flight at once, a positive integer (textures: at most 4 fetched and decoded at once) |
 | `maxLayerBytes` | 1 GiB | Total size of USD layers to fetch before failing with a `fetch` error |
 
 Errors are `UsdLoadError`s with a `code` (`aborted`, `fetch`, `compose`, `worker`, `webgl`), the failing `url` and, for a root layer that could not be fetched, the HTTP `status` (401 / 403 for a gated or private repo, 404 when missing). A missing sublayer, reference or payload is not an error: it is left out with a warning. `complete` rejects too if the load is aborted or disposed, or the worker dies after the geometry arrived.
@@ -82,7 +82,7 @@ Hub `resolve` URLs work as they are, with no token: on huggingface.co the page's
 
 ### Embedding elsewhere
 
-On another origin there are no Hub cookies: pass `headers: { Authorization: 'Bearer <token>' }` for gated or private repos, or your own `fetch` (e.g. one that goes through your backend). Both apply to every layer and texture request.
+On another origin there are no Hub cookies: pass `headers: { Authorization: 'Bearer <token>' }` for gated or private repos, or your own `fetch` (e.g. one that goes through your backend). Headers go only to requests on the root URL's origin, so a token is never sent to another host a layer happens to reference; your `fetch` receives every URL and can decide for itself.
 
 ## Compared with other browser USD viewers
 
@@ -108,6 +108,7 @@ A Pixar `usd-core` oracle and our WASM build dump the same JSON per package (mes
 |---|---|
 | 6 benchmark assets | **6/6** |
 | usd-wg/assets material scenes | **10/10** |
+| Edge-case fixtures (instancers, colors, UV sets, missing files) | **9/9** |
 | Random Hub sample (nvidia, LG, Robotiq, Standard Bots, agibot, imagine.io) | **186/187** |
 
 The one miss is a 1.2e-5 unit offset on four lid meshes. Details: [`conformance/results`](conformance/results/README.md).
@@ -147,7 +148,9 @@ npm install
 cargo install wasm-bindgen-cli --version 0.2.129   # once
 npm run build:wasm      # cargo -> wasm-bindgen -> wasm-opt -Os
 npm run serve           # http://127.0.0.1:8811/examples/index.html?url=<root .usd URL>
+npm test                                            # unit tests (Node, real WASM)
 node scripts/node-test.mjs                          # compose + extract in Node
+npx tsc --noEmit --strict --exactOptionalPropertyTypes --skipLibCheck --module nodenext --target es2022 packages/viewer/test/types.ts
 node scripts/api-test.mjs                           # progress, abort, headers, fetch, warnings, <usd-viewer>
 (cd examples/vite && npm install && node test.mjs)  # Vite production build loading a Hub URL
 node bench/run.mjs --configs usd-wasm,gltf --runs 3

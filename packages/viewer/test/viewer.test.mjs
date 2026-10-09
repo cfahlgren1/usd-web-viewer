@@ -6,12 +6,21 @@ import * as THREE from 'three';
 
 class FakeWorker {
   static last = null;
+  /** Thrown by the next construction, as a browser does for a cross-origin script. */
+  static failNext = null;
   terminated = false;
+  received = [];
   constructor() {
+    if (FakeWorker.failNext) {
+      const error = FakeWorker.failNext;
+      FakeWorker.failNext = null;
+      throw error;
+    }
     FakeWorker.last = this;
   }
   postMessage(request) {
-    this.request = request;
+    this.request ??= request;
+    this.received.push(request);
   }
   terminate() {
     this.terminated = true;
@@ -148,4 +157,108 @@ test('complete reports texture counts and failures become warnings', async () =>
   worker.send({ type: 'done' });
   assert.deepEqual(await complete, { textures: 1, failed: 1 });
   assert.deepEqual(info.warnings, [{ code: 'texture-failed', message: 'HTTP 404', path: 'https://example.test/u.png' }]);
+});
+
+const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Starts a load with a custom fetch; the fake worker then asks the page for requests. */
+async function proxiedLoad(fetch, options = {}) {
+  const controller = new AbortController();
+  const loading = loadUsd('https://example.test/scene.usda', { fetch, signal: controller.signal, ...options });
+  loading.catch(() => {});
+  await tick();
+  return { worker: FakeWorker.last, loading, stop: () => controller.abort() };
+}
+
+test('caller headers go only to requests on the root origin', { timeout: 3000 }, async () => {
+  const seen = [];
+  const { worker, stop } = await proxiedLoad(async (url, init) => (seen.push([url, init.headers]), new Response('x')), { headers: { Authorization: 'Bearer t' } });
+  worker.send({ type: 'fetch', id: 1, url: 'https://example.test/a.usda' });
+  worker.send({ type: 'fetch', id: 2, url: 'https://cdn.other.test/t.png' });
+  await tick();
+  assert.deepEqual(seen, [
+    ['https://example.test/a.usda', { Authorization: 'Bearer t' }],
+    ['https://cdn.other.test/t.png', undefined],
+  ]);
+  stop();
+});
+
+test('a proxied body streams to the worker chunk by chunk and stops when it cancels', { timeout: 3000 }, async () => {
+  let pulls = 0;
+  let cancelled = false;
+  const endless = () =>
+    new Response(
+      new ReadableStream({
+        async pull(controller) {
+          pulls++;
+          await tick();
+          controller.enqueue(new Uint8Array(4096));
+        },
+        cancel: () => void (cancelled = true),
+      }),
+    );
+  const { worker, stop } = await proxiedLoad(async () => endless());
+  worker.send({ type: 'fetch', id: 1, url: 'https://example.test/a.usda' });
+  await tick(20);
+  worker.send({ type: 'pull', id: 1 });
+  await tick(20);
+  const chunks = worker.received.filter((m) => m.type === 'chunk' && m.id === 1);
+  assert.equal(chunks.length, 1);
+  assert.equal(chunks[0].chunk.byteLength, 4096);
+  worker.send({ type: 'cancel', id: 1 });
+  await tick(20);
+  assert.equal(cancelled, true);
+  assert.ok(pulls <= 3, `read only what the worker asked for (${pulls} pulls)`);
+  stop();
+});
+
+test('dispose aborts requests still running in the caller fetch', { timeout: 3000 }, async () => {
+  let signal;
+  const loading = loadUsd('https://example.test/scene.usda', { fetch: (url, init) => ((signal = init.signal), new Promise(() => {})) });
+  await tick();
+  const worker = FakeWorker.last;
+  worker.send(sceneMessage(IDENTITY));
+  const result = await loading;
+  worker.send({ type: 'fetch', id: 1, url: 'https://example.test/t.png' });
+  await tick();
+  assert.equal(signal.aborted, false);
+  result.dispose();
+  assert.equal(signal.aborted, true);
+});
+
+test('a worker that cannot be constructed fails with a worker UsdLoadError', { timeout: 3000 }, async () => {
+  FakeWorker.failNext = Object.assign(new Error('cross-origin worker script'), { name: 'SecurityError', code: 18 });
+  await assert.rejects(loadUsd('scene.usda', { workerUrl: 'https://cdn.other.test/worker.js' }), { name: 'UsdLoadError', code: 'worker' });
+});
+
+test('maxConcurrentFetches must be a finite positive integer', { timeout: 3000 }, async () => {
+  for (const value of [0, -1, 1.5, Infinity, NaN]) {
+    await assert.rejects(loadUsd('scene.usda', { maxConcurrentFetches: value }), RangeError, String(value));
+  }
+});
+
+test('a material shared by meshes with different UV sets reads the named set on each', async () => {
+  const emissive = { ...TEXTURE, uvSet: 'custom' };
+  const message = sceneMessage(IDENTITY);
+  const quad = message.geometries[0];
+  const uv = () => new Float32Array(6);
+  message.meta.materials[0].maps = { emissiveColor: emissive };
+  message.meta.geometries = [
+    { groups: [[0, 3]], bounds: [0, 0, 0, 1, 1, 0], uvSets: ['st', 'custom'], hasColors: false },
+    { groups: [[0, 3]], bounds: [0, 0, 0, 1, 1, 0], uvSets: ['custom'], hasColors: false },
+  ];
+  message.geometries = [{ ...quad, uvs: [uv(), uv()] }, { ...quad, uvs: [uv()] }];
+  message.meta.instances = [
+    { path: '/WithSt', geometry: 0, materials: [0], doubleSided: false, matrix: IDENTITY },
+    { path: '/OnlyCustom', geometry: 1, materials: [0], doubleSided: false, matrix: IDENTITY },
+  ];
+  const loading = loadUsd('scene.usda');
+  await tick();
+  const worker = FakeWorker.last;
+  worker.send(message);
+  const { root } = await loading;
+  worker.send({ type: 'texture', path: TEXTURE.path, bitmap: fakeBitmap() });
+  const [withSt, onlyCustom] = root.children;
+  assert.equal(withSt.material.emissiveMap.channel, 1);
+  assert.equal(onlyCustom.material.emissiveMap.channel, 0);
 });

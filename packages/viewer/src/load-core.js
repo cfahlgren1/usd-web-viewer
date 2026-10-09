@@ -11,8 +11,10 @@ import { UsdLoadError } from './errors.js';
  *
  * @param {object} o
  * @param {typeof import('../wasm/usd_wasm.js').UsdLoader} o.UsdLoader
- * @param {(url: string, maxBytes: number) => Promise<Uint8Array | null>} o.fetchBytes  null or a
- *   `fetch` UsdLoadError when missing; may stop reading once a body passes `maxBytes`
+ * @param {(url: string, budget: (bytes: number) => void) => Promise<Uint8Array | null>} o.fetchBytes  null
+ *   or a `fetch` UsdLoadError when missing. Calling `budget` with each chunk's size as it
+ *   arrives throws once all layers together pass `maxLayerBytes`; a body never passed
+ *   through it is charged whole when it returns.
  * @param {string} o.rootUrl  absolute
  * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
  * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
@@ -36,22 +38,35 @@ export async function composeStage({
   const started = new Map();
   const progress = () => onProgress({ stage: 'layers', loaded: stats.layers + stats.missing, total: started.size, bytes: stats.layerBytes });
   const throttle = limiter(maxConcurrentFetches);
+  // One budget for every layer body, charged as its bytes arrive, so fetches
+  // in parallel cannot each count on the whole remainder.
+  let heldBytes = 0;
+  const charge = (bytes, path) => {
+    heldBytes += bytes;
+    if (heldBytes > maxLayerBytes) throw resourceLimit(`layers exceed maxLayerBytes (${maxLayerBytes} bytes) at ${path}`);
+  };
   // Re-fetched layers replace their earlier bytes, so count each path once.
   const layerSizes = new Map();
-  let heldBytes = 0;
 
   const fetchLayer = (path) => {
     if (loader.has(path) || started.has(path)) return started.get(path);
     const job = (async () => {
       const t0 = performance.now();
-      const remaining = maxLayerBytes - heldBytes + (layerSizes.get(path) ?? 0);
+      heldBytes -= layerSizes.get(path) ?? 0;
+      layerSizes.delete(path);
+      let charged = 0;
+      const budget = (bytes) => {
+        charged += bytes;
+        charge(bytes, path);
+      };
       // Any fetch failure, HTTP or network: the root fails the load, any
       // other layer is left out with a warning.
       let bytes = null;
       let failure = null;
       try {
-        bytes = await throttle(() => fetchBytes(urlOf(path), remaining));
+        bytes = await throttle(() => fetchBytes(urlOf(path), budget));
       } catch (error) {
+        heldBytes -= charged;
         // HTTP errors carry a status; network errors are TypeErrors (as from fetch).
         if (error?.status === undefined && !(error instanceof TypeError)) throw error;
         failure = error;
@@ -68,9 +83,8 @@ export async function composeStage({
         progress();
         return;
       }
-      heldBytes += bytes.byteLength - (layerSizes.get(path) ?? 0);
+      charge(bytes.byteLength - charged, path);
       layerSizes.set(path, bytes.byteLength);
-      if (heldBytes > maxLayerBytes) throw resourceLimit(`layers exceed maxLayerBytes (${maxLayerBytes} bytes) at ${path}`);
       stats.layers++;
       stats.layerBytes += bytes.byteLength;
       const t1 = performance.now();
@@ -145,29 +159,28 @@ export function limiter(max) {
 }
 
 /**
- * Fetches a body, giving up once it passes `maxBytes`. An HTTP error throws a
+ * Fetches a body, passing each chunk's size to `budget` as it arrives and
+ * giving up (cancelling the body) when `budget` throws. An HTTP error throws a
  * `fetch` UsdLoadError carrying the status. `fetchFn` is the global fetch or a
  * stand-in with the same contract.
  */
-export async function fetchLimited(url, maxBytes, { headers, fetchFn = fetch } = {}) {
-  const response = await fetchFn(url, { headers });
+export async function fetchLimited(url, budget, { fetchFn = fetch } = {}) {
+  const response = await fetchFn(url);
   if (!response.ok) throw new UsdLoadError('fetch', `HTTP ${response.status} for ${url}`, { url, status: response.status });
-  const tooBig = () => resourceLimit(`${url} is larger than ${maxBytes} bytes`);
-  if (Number(response.headers.get('content-length')) > maxBytes) {
-    await response.body?.cancel();
-    throw tooBig();
-  }
+  if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
   const chunks = [];
   let size = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    size += value.byteLength;
-    if (size > maxBytes) {
+    try {
+      budget(value.byteLength);
+    } catch (error) {
       await reader.cancel();
-      throw tooBig();
+      throw error;
     }
+    size += value.byteLength;
     chunks.push(value);
   }
   const out = new Uint8Array(size);
@@ -177,6 +190,38 @@ export async function fetchLimited(url, maxBytes, { headers, fetchFn = fetch } =
     offset += chunk.byteLength;
   }
   return out;
+}
+
+/**
+ * Size of a PNG or JPEG from its header, without decoding, and whether it is
+ * color: 8-bit RGB(A) or palette, rather than greyscale or 16-bit data (the
+ * images `sourceColorSpace = "auto"` decodes as sRGB). Null for other formats.
+ */
+export function imageInfo(b) {
+  if (b.length > 25 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
+    const v = new DataView(b.buffer, b.byteOffset);
+    const [bitDepth, colorType] = [b[24], b[25]];
+    const color = colorType === 3 || (bitDepth === 8 && (colorType === 2 || colorType === 6));
+    return { width: v.getUint32(16), height: v.getUint32(20), color };
+  }
+  if (b[0] === 0xff && b[1] === 0xd8) {
+    let i = 2;
+    while (i + 9 < b.length) {
+      if (b[i] !== 0xff) return null;
+      const marker = b[i + 1];
+      const length = (b[i + 2] << 8) | b[i + 3];
+      const isFrame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+      if (isFrame) return { height: (b[i + 5] << 8) | b[i + 6], width: (b[i + 7] << 8) | b[i + 8], color: b[i + 4] === 8 && b[i + 9] >= 3 };
+      i += 2 + length;
+    }
+  }
+  return null;
+}
+
+/** Whether `url` has the origin of `root`: only those requests carry the caller's headers. */
+export function sameOrigin(url, root) {
+  const origin = new URL(url).origin;
+  return origin !== 'null' && origin === new URL(root).origin;
 }
 
 /** Moves every geometry's arrays out of WASM into JS typed arrays. */
@@ -190,13 +235,21 @@ export function takeGeometries(scene, meta) {
   }));
 }
 
-/** Textures stored inside a USDZ package, by path: they cannot be fetched by URL. */
-export function takePackagedTextures(scene, meta) {
+/**
+ * Images stored inside a USDZ package (they cannot be fetched by URL) that the
+ * texture mode loads, each read once, by path. One that cannot be read maps
+ * to its error, so it fails as that texture rather than the whole load.
+ */
+export function takePackagedTextures(scene, meta, { textures = 'preview' } = {}) {
   const out = new Map();
-  for (const { path } of textureJobs(meta, { textures: 'full' })) {
+  for (const { path } of textureJobs(meta, { textures })) {
     if (!path.includes('[')) continue;
-    const bytes = scene.packagedFile(path);
-    if (bytes) out.set(path, bytes);
+    try {
+      const bytes = scene.packagedFile(path);
+      if (bytes) out.set(path, bytes);
+    } catch (error) {
+      out.set(path, error);
+    }
   }
   return out;
 }

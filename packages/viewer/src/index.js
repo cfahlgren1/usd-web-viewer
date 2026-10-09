@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { UsdLoadError } from './errors.js';
+import { sameOrigin } from './load-core.js';
 import { applyFallback, attachTexture, configureTexture, createMaterial, variant } from './materials.js';
 
 export { UsdLoadError };
@@ -38,15 +39,28 @@ async function compile(url) {
 export async function loadUsd(url, options = {}) {
   const { maxTextureSize = 1024, textures: textureMode = 'preview', maxConcurrentFetches, maxLayerBytes } = options;
   const { onProgress, signal, headers } = options;
+  if (maxConcurrentFetches !== undefined && !(Number.isInteger(maxConcurrentFetches) && maxConcurrentFetches > 0)) {
+    throw new RangeError(`maxConcurrentFetches must be a positive integer, got ${maxConcurrentFetches}`);
+  }
   const aborted = () => new UsdLoadError('aborted', 'the load was aborted', { url, cause: signal?.reason });
   if (signal?.aborted) throw aborted();
   const absoluteUrl = new URL(url, location.href).href;
   const module = await compileWasm(options.wasmUrl);
   if (signal?.aborted) throw aborted();
-  // Inline `new Worker(new URL(...))` is the pattern bundlers recognise and bundle.
-  const worker = options.workerUrl
-    ? new Worker(options.workerUrl, { type: 'module' })
-    : new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  let worker;
+  try {
+    // Inline `new Worker(new URL(...))` is the pattern bundlers recognise and bundle.
+    worker = options.workerUrl
+      ? new Worker(options.workerUrl, { type: 'module' })
+      : new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  } catch (error) {
+    throw new UsdLoadError('worker', `could not start the worker: ${error.message}`, { url: options.workerUrl && String(options.workerUrl), cause: error });
+  }
+  // Ends the caller's fetches (custom `fetch` requests) when the load stops.
+  const requests = new AbortController();
+  const requestSignal = signal ? AbortSignal.any([signal, requests.signal]) : requests.signal;
+  // Bodies of custom-fetch responses the worker is reading, by request id.
+  const bodies = new Map();
 
   let resolveScene, rejectScene, resolveComplete, rejectComplete;
   const scenePromise = new Promise((resolve, reject) => ((resolveScene = resolve), (rejectScene = reject)));
@@ -63,6 +77,7 @@ export async function loadUsd(url, options = {}) {
     if (stopped) return;
     stopped = true;
     worker.terminate();
+    requests.abort();
     signal?.removeEventListener('abort', abort);
     rejectScene(error);
     if (error) rejectComplete(error);
@@ -83,7 +98,14 @@ export async function loadUsd(url, options = {}) {
     }
     switch (data.type) {
       case 'fetch':
-        proxyFetch(options.fetch, data, headers, signal).then(({ message, transfer }) => worker.postMessage(message, transfer));
+        proxyFetch(data);
+        break;
+      case 'pull':
+        pullChunk(data.id);
+        break;
+      case 'cancel':
+        bodies.get(data.id)?.cancel();
+        bodies.delete(data.id);
         break;
       case 'progress':
         onProgress?.(data.progress);
@@ -98,7 +120,7 @@ export async function loadUsd(url, options = {}) {
         break;
       case 'texture':
         if (data.bitmap) {
-          built.applyTexture(data.path, data.bitmap);
+          built.applyTexture(data.path, data.bitmap, data.color);
           counts.textures++;
         } else {
           built.textureFailed(data.path);
@@ -120,6 +142,35 @@ export async function loadUsd(url, options = {}) {
   };
   worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, maxConcurrentFetches, maxLayerBytes, headers, proxyFetch: !!options.fetch });
 
+  /** Runs one worker request through the caller's `fetch`; the body follows chunk by chunk. */
+  async function proxyFetch({ id, url: target }) {
+    try {
+      const init = sameOrigin(target, absoluteUrl) && headers ? { headers, signal: requestSignal } : { signal: requestSignal };
+      const response = await options.fetch(target, init);
+      if (response.ok) bodies.set(id, (response.body ?? new Blob().stream()).getReader());
+      else response.body?.cancel();
+      worker.postMessage({ type: 'fetched', id, ok: response.ok, status: response.status });
+    } catch (error) {
+      worker.postMessage({ type: 'fetched', id, error: String(error) });
+    }
+  }
+
+  /** Reads the next chunk of a custom-fetch body for the worker, which asks once per chunk. */
+  async function pullChunk(id) {
+    try {
+      const { done, value } = await bodies.get(id).read();
+      if (done) {
+        bodies.delete(id);
+        return worker.postMessage({ type: 'chunk', id, done });
+      }
+      const chunk = value.byteLength === value.buffer.byteLength ? value : value.slice();
+      worker.postMessage({ type: 'chunk', id, chunk }, [chunk.buffer]);
+    } catch (error) {
+      bodies.delete(id);
+      worker.postMessage({ type: 'chunk', id, error: String(error) });
+    }
+  }
+
   const scene = await scenePromise;
   return {
     root: scene.root,
@@ -132,17 +183,6 @@ export async function loadUsd(url, options = {}) {
   };
 }
 
-/** Runs one worker request through the caller's `fetch` and packages the reply. */
-async function proxyFetch(fetchFn, { id, url }, headers, signal) {
-  try {
-    const response = await fetchFn(url, { headers, signal });
-    const buffer = response.ok ? await response.arrayBuffer() : null;
-    return { message: { type: 'fetched', id, ok: response.ok, status: response.status, buffer }, transfer: buffer ? [buffer] : [] };
-  } catch (error) {
-    return { message: { type: 'fetched', id, ok: false, status: 0, buffer: null, error: String(error) }, transfer: [] };
-  }
-}
-
 function buildScene(meta, arrays) {
   const root = new THREE.Group();
   root.name = 'usd';
@@ -152,10 +192,11 @@ function buildScene(meta, arrays) {
 
   const materials = meta.materials.map((m) => createMaterial(m));
   const variants = new Map();
-  const materialFor = (index, doubleSided, vertexColors) => {
-    if (!doubleSided && !vertexColors) return materials[index];
-    const key = `${index}|${doubleSided}|${vertexColors}`;
-    if (!variants.has(key)) variants.set(key, variant(materials[index], { doubleSided, vertexColors }));
+  const materialFor = (index, doubleSided, vertexColors, uvChannels) => {
+    const routed = Object.keys(uvChannels).length > 0;
+    if (!doubleSided && !vertexColors && !routed) return materials[index];
+    const key = `${index}|${doubleSided}|${vertexColors}|${JSON.stringify(uvChannels)}`;
+    if (!variants.has(key)) variants.set(key, variant(materials[index], { doubleSided, vertexColors, uvChannels }));
     return variants.get(key);
   };
 
@@ -179,12 +220,14 @@ function buildScene(meta, arrays) {
     const g = meta.geometries[inst.geometry];
     const mats = inst.materials.map((m) => {
       const usd = materials[m].userData.usd;
-      // Route each named UV set to its attribute; the first mesh using a material decides.
+      // Route each named UV set to its attribute on this geometry; meshes that
+      // lay their UV sets out differently get their own copy of the material.
+      const uvChannels = {};
       for (const ref of Object.values(usd.maps)) {
         const k = g.uvSets.indexOf(ref.uvSet);
-        if (k > 0) usd.uvChannels[ref.uvSet] ??= k;
+        if (k > 0) uvChannels[ref.uvSet] = k;
       }
-      return materialFor(m, inst.doubleSided, g.hasColors && !!usd.colorPrimvar);
+      return materialFor(m, inst.doubleSided, g.hasColors && !!usd.colorPrimvar, uvChannels);
     });
     const mesh = new THREE.Mesh(geometries[inst.geometry], mats.length > 1 ? mats : mats[0]);
     mesh.name = inst.path;
@@ -198,13 +241,13 @@ function buildScene(meta, arrays) {
 
   const allMaterials = () => [...materials, ...variants.values()];
   const textures = new Map();
-  const applyTexture = (path, bitmap) => {
+  const applyTexture = (path, bitmap, isColor) => {
     const base = new THREE.Texture(bitmap);
     base.flipY = false;
     base.anisotropy = 4;
     textures.set(path, base);
     const textureFor = (ref, colorSpace, uvChannel) => configureTexture(base, ref, colorSpace, uvChannel);
-    for (const material of allMaterials()) attachTexture(material, path, textureFor);
+    for (const material of allMaterials()) attachTexture(material, path, isColor, textureFor);
   };
   const textureFailed = (path) => allMaterials().forEach((material) => applyFallback(material, path));
 

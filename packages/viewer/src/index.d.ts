@@ -16,16 +16,16 @@ export interface LoadOptions {
   maxTextureSize?: number | undefined;
   /** Aborts fetches and the worker; the load rejects with a UsdLoadError of code `aborted`. */
   signal?: AbortSignal | undefined;
-  /** Sent with every layer and texture request. For embedding on another site, e.g. `{ Authorization: 'Bearer hf_…' }`. */
+  /** Sent with layer and texture requests to the root URL's origin only. For embedding on another site, e.g. `{ Authorization: 'Bearer hf_…' }`. */
   headers?: Record<string, string> | undefined;
-  /** Your own fetch for every request, run on the page (requests are proxied from the worker). */
-  fetch?: ((url: string, init: { headers?: Record<string, string> | undefined; signal?: AbortSignal | undefined }) => Promise<Response>) | undefined;
+  /** Your own fetch for every request, run on the page (requests are proxied from the worker). `init.headers` is `headers` for the root URL's origin and absent elsewhere; `init.signal` aborts when the load stops. */
+  fetch?: ((url: string, init: { headers?: Record<string, string>; signal: AbortSignal }) => Promise<Response>) | undefined;
   onProgress?: ((progress: LoadProgress) => void) | undefined;
   /** Where the `.wasm` binary is served from. Defaults to the copy next to the package. */
   wasmUrl?: string | URL | undefined;
   /** Where the worker script is served from. Defaults to the copy next to the package. */
   workerUrl?: string | URL | undefined;
-  /** Requests in flight at once. Default 16 (textures: at most 4 fetched and decoded at once). */
+  /** Requests in flight at once, a positive integer (anything else throws a RangeError). Default 16 (textures: at most 4 fetched and decoded at once). */
   maxConcurrentFetches?: number | undefined;
   /** Total bytes of USD layers to fetch before failing with a `fetch` error. Default 1 GiB. */
   maxLayerBytes?: number | undefined;
@@ -81,6 +81,7 @@ export interface LoadResult {
 export type UsdLoadErrorCode = 'aborted' | 'fetch' | 'compose' | 'worker' | 'webgl';
 
 export class UsdLoadError extends Error {
+  constructor(code: UsdLoadErrorCode, message: string, details?: { url?: string | undefined; status?: number | undefined; cause?: unknown });
   readonly name: 'UsdLoadError';
   readonly code: UsdLoadErrorCode;
   /** The URL that failed, when there is one. */

@@ -2,43 +2,68 @@
 // textures as downscaled ImageBitmaps. One worker per load: the page
 // terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, limiter, takeGeometries, takePackagedTextures, textureJobs } from './load-core.js';
+import { composeStage, fetchLimited, imageInfo, limiter, sameOrigin, takeGeometries, takePackagedTextures, textureJobs } from './load-core.js';
 
 // Textures in flight at once (fetch and decode): decoding a large image
 // briefly holds it at full size, so wide parallelism spikes memory.
 const TEXTURE_CONCURRENCY = 4;
 
-// Requests answered by the page, for a caller-supplied `fetch`.
-const proxied = new Map();
+// Requests answered by the page, for a caller-supplied `fetch`. The page sends
+// the body one chunk per pull, so byte budgets apply as it arrives and
+// cancelling the body stops the caller's read.
+const replies = new Map();
+const pulls = new Map();
 let nextId = 0;
 
-/** A fetch that asks the page (which runs the caller's `fetch`) and waits for the reply. */
+/** A fetch that asks the page (which runs the caller's `fetch`) and streams its reply. */
 function proxiedFetch(url) {
   const id = nextId++;
   self.postMessage({ type: 'fetch', id, url });
-  return new Promise((resolve) => proxied.set(id, resolve)).then(
-    ({ ok, status, buffer, error }) => {
-      // A network failure in the caller's fetch reads like one from fetch itself.
-      if (error) throw new TypeError(error);
-      return new Response(ok ? buffer : null, { status: ok ? 200 : status || 500 });
-    },
-  );
+  return new Promise((resolve) => replies.set(id, resolve)).then(({ ok, status, error }) => {
+    // A network failure in the caller's fetch reads like one from fetch itself.
+    if (error) throw new TypeError(error);
+    if (!ok) return new Response(null, { status: status || 500 });
+    const body = new ReadableStream(
+      {
+        pull: (controller) =>
+          new Promise((resolve) => {
+            pulls.set(id, { controller, resolve });
+            self.postMessage({ type: 'pull', id });
+          }),
+        cancel: () => self.postMessage({ type: 'cancel', id }),
+      },
+      { highWaterMark: 0 },
+    );
+    return new Response(body);
+  });
+}
+
+/** Delivers one chunk (or the end, or a failure) of a proxied body. */
+function receiveChunk({ id, chunk, done, error }) {
+  const { controller, resolve } = pulls.get(id);
+  pulls.delete(id);
+  if (error) controller.error(new TypeError(error));
+  else if (done) controller.close();
+  else controller.enqueue(new Uint8Array(chunk));
+  resolve();
 }
 
 self.onmessage = async ({ data }) => {
   if (data.type === 'fetched') {
-    proxied.get(data.id)?.(data);
-    proxied.delete(data.id);
+    replies.get(data.id)?.(data);
+    replies.delete(data.id);
     return;
   }
+  if (data.type === 'chunk') return receiveChunk(data);
   const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes = 2 ** 30, headers, proxyFetch } = data;
-  // Every request, layer or texture, goes through here.
-  const fetchFn = proxyFetch ? proxiedFetch : fetch;
-  const fetchOptions = { headers, fetchFn };
-  const fetchBytes = (target, maxBytes) => fetchLimited(target, maxBytes, fetchOptions);
+  // Every request, layer or texture, goes through here. The caller's headers
+  // (credentials, typically) go only to the root's origin; a custom fetch on
+  // the page applies the same rule.
+  const request = proxyFetch ? proxiedFetch : (target) => fetch(target, { headers: sameOrigin(target, url) ? headers : undefined });
+  const fetchBytes = (target, budget) => fetchLimited(target, budget, { fetchFn: request });
   // Images stay a Blob (the browser may keep it off the JS heap) until decoded.
   const fetchBlob = async (target) => {
-    const response = await fetchFn(target, { headers });
+    const response = await request(target);
     if (!response.ok) throw new Error(`HTTP ${response.status} for ${target}`);
     return response.blob();
   };
@@ -58,7 +83,7 @@ self.onmessage = async ({ data }) => {
       onProgress: progress,
     });
     const geometries = takeGeometries(scene, meta);
-    const packaged = takePackagedTextures(scene, meta);
+    const packaged = takePackagedTextures(scene, meta, { textures });
     scene.free();
     stats.initMs = tInit - t0;
     stats.totalMs = performance.now() - t0;
@@ -78,10 +103,12 @@ self.onmessage = async ({ data }) => {
       jobs.map(({ path, size }) =>
         throttle(async () => {
           try {
-            const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await fetchBlob(path);
+            const entry = packaged.get(path);
+            if (entry instanceof Error) throw entry;
+            const blob = entry ? new Blob([entry]) : await fetchBlob(path);
             bytes += blob.size;
-            const bitmap = await decodeTexture(blob, size);
-            self.postMessage({ type: 'texture', path, bitmap }, [bitmap]);
+            const { bitmap, color } = await decodeTexture(blob, size);
+            self.postMessage({ type: 'texture', path, bitmap, color }, [bitmap]);
           } catch (error) {
             self.postMessage({ type: 'texture', path, error: String(error?.message || error) });
           }
@@ -98,10 +125,18 @@ self.onmessage = async ({ data }) => {
   }
 };
 
-/** Decodes an image straight to at most `maxSize` px on its long side. */
+/**
+ * Decodes an image straight to at most `maxSize` px on its long side, and
+ * tells whether it holds color (what `sourceColorSpace = "auto"` decodes as
+ * sRGB); formats whose header is not read here count as color.
+ */
 async function decodeTexture(blob, maxSize) {
   const head = new Uint8Array(await blob.slice(0, 65536).arrayBuffer());
-  const size = imageSize(head);
+  const info = imageInfo(head);
+  return { bitmap: await decodeBitmap(blob, info, maxSize), color: info?.color ?? true };
+}
+
+async function decodeBitmap(blob, size, maxSize) {
   // USD texture coordinates put (0,0) at the bottom-left, three.js's default.
   const options = { imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none' };
   if (size) {
@@ -123,24 +158,4 @@ async function decodeTexture(blob, maxSize) {
   });
   full.close();
   return small;
-}
-
-/** Width and height from a PNG or JPEG header, without decoding. */
-function imageSize(b) {
-  if (b.length > 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
-    const v = new DataView(b.buffer, b.byteOffset);
-    return { width: v.getUint32(16), height: v.getUint32(20) };
-  }
-  if (b[0] === 0xff && b[1] === 0xd8) {
-    let i = 2;
-    while (i + 9 < b.length) {
-      if (b[i] !== 0xff) return null;
-      const marker = b[i + 1];
-      const length = (b[i + 2] << 8) | b[i + 3];
-      const isFrame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
-      if (isFrame) return { height: (b[i + 5] << 8) | b[i + 6], width: (b[i + 7] << 8) | b[i + 8] };
-      i += 2 + length;
-    }
-  }
-  return null;
 }
