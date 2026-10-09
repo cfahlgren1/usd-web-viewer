@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { UsdLoadError } from './errors.js';
-import { sameOrigin } from './load-core.js';
+import { OUT_OF_MEMORY, requestPolicy } from './load-core.js';
 import { applyFallback, attachTexture, configureTexture, createMaterial, variant } from './materials.js';
 
 export { UsdLoadError };
@@ -40,7 +40,7 @@ async function compile(url) {
  * @returns {Promise<import('./index.js').LoadResult>}
  */
 export async function loadUsd(url, options = {}) {
-  const { maxTextureSize = 1024, textures: textureMode = 'preview', maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, allowedOrigins } = options;
+  const { maxTextureSize = 1024, textures: textureMode = 'preview', maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxTriangles, allowedOrigins } = options;
   const { onProgress, signal, headers } = options;
   if (maxConcurrentFetches !== undefined && !(Number.isInteger(maxConcurrentFetches) && maxConcurrentFetches > 0)) {
     throw new RangeError(`maxConcurrentFetches must be a positive integer, got ${maxConcurrentFetches}`);
@@ -159,14 +159,20 @@ export async function loadUsd(url, options = {}) {
   }
   worker.onerror = (event) => {
     event.preventDefault?.();
-    fail(new UsdLoadError('worker', event.message || 'the worker failed', { url: absoluteUrl }));
+    const message = event.message || 'the worker failed';
+    // The worker itself ran out of memory, outside the handler that reports it.
+    if (OUT_OF_MEMORY.test(message)) fail(new UsdLoadError('compose', `scene too large to load: ran out of memory: ${message}`, { url: absoluteUrl }));
+    else fail(new UsdLoadError('worker', message, { url: absoluteUrl }));
   };
-  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, allowedOrigins, headers, proxyFetch: !!options.fetch });
+  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxTriangles, allowedOrigins, headers, proxyFetch: !!options.fetch });
 
   /** Runs one worker request through the caller's `fetch`; the body follows chunk by chunk. */
   async function proxyFetch({ id, url: target }) {
     try {
-      const init = sameOrigin(target, absoluteUrl) && headers ? { headers, signal: requests.signal } : { signal: requests.signal };
+      const policy = requestPolicy(target, absoluteUrl, allowedOrigins);
+      if (policy.refused) throw new TypeError(`request refused: ${policy.refused}`);
+      const init = { ...policy, signal: requests.signal };
+      if (policy.credentials === 'same-origin' && headers) init.headers = headers;
       const response = await options.fetch(target, init);
       if (response.ok) bodies.set(id, (response.body ?? new Blob().stream()).getReader());
       else response.body?.cancel();

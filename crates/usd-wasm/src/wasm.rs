@@ -4,6 +4,7 @@ use std::sync::Mutex;
 
 use wasm_bindgen::prelude::*;
 
+use crate::extract::Read;
 use crate::{Composed, Loader, Scene, resolver};
 
 /// The message of the last panic. With `panic = "abort"` a panic traps as a
@@ -129,10 +130,24 @@ impl UsdScene {
     }
 
     /// Reads geometry `index` and returns its metadata as JSON, or `None` when
-    /// the mesh has nothing drawable.
-    pub fn read(&mut self, index: usize) -> Result<Option<String>, JsError> {
-        self.current = self.scene.read_geometry(index).map_err(js_error)?;
-        Ok(self.current.as_ref().map(crate::json::geometry_meta))
+    /// the mesh has nothing drawable. A mesh with more than `max_triangles` is
+    /// left unread: `{"overBudget": triangles, "path": prim path}`.
+    pub fn read(&mut self, index: usize, max_triangles: usize) -> Result<Option<String>, JsError> {
+        self.current = None;
+        Ok(match self.scene.read_geometry(index, max_triangles).map_err(js_error)? {
+            Read::Geometry(geometry) => {
+                let json = crate::json::geometry_meta(&geometry);
+                self.current = Some(geometry);
+                Some(json)
+            }
+            Read::Nothing => None,
+            Read::OverBudget { path, triangles } => {
+                let mut json = format!("{{\"overBudget\":{triangles},\"path\":");
+                crate::json::string(&mut json, &path);
+                json.push('}');
+                Some(json)
+            }
+        })
     }
 
     /// Releases the stage once every geometry has been read.
@@ -176,15 +191,16 @@ impl UsdScene {
     }
 
     /// A texture that lives inside a USDZ package, if `path` names one there.
+    /// Fails rather than expand it past `limit` bytes.
     #[wasm_bindgen(js_name = packagedFile)]
-    pub fn packaged_file(&self, path: &str) -> Result<Option<Vec<u8>>, JsError> {
+    pub fn packaged_file(&self, path: &str, limit: f64) -> Result<Option<Vec<u8>>, JsError> {
         let Some((package, inner)) = resolver::split_packaged(path) else {
             return Ok(None);
         };
         let Some(bytes) = self.packages.get(package) else {
             return Ok(None);
         };
-        match resolver::read_packaged(bytes, inner, resolver::MAX_PACKAGED_FILE_BYTES) {
+        match resolver::read_packaged(bytes, inner, resolver::MAX_PACKAGED_FILE_BYTES.min(limit as u64)) {
             Ok(file) => Ok(Some(file)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(js_error(e)),

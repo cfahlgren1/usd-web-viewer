@@ -49,6 +49,9 @@ impl Loader {
     /// Stores a layer under its identifier and returns the asset paths it
     /// authors, so the host can prefetch them in parallel.
     pub fn add_layer(&mut self, path: &str, bytes: Vec<u8>) -> openusd::Result<Vec<Dependency>> {
+        if bytes.starts_with(b"PK\x03\x04") {
+            resolver::check_package(&bytes)?;
+        }
         resolver::lock(&self.files).bytes.insert(path.to_owned(), bytes);
         let layer = sdf::Layer::open_with(self.resolver(false, None), path)?;
         let real_path = layer.resolved_path().unwrap_or(path).to_owned();

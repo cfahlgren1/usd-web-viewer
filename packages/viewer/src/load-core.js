@@ -20,7 +20,7 @@ import { UsdLoadError } from './errors.js';
  * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
  * @param {number} [o.maxLayerBytes=768 MiB]  total size of the distinct layers held for composition
  * @param {number} [o.maxLayers=1024]  distinct layer files requested
- * @param {string[]} [o.allowedOrigins]  see {@link originAllowed}; layers elsewhere are left out with a warning
+ * @param {string[]} [o.allowedOrigins]  see {@link requestPolicy}; layers it refuses are left out with a warning
  * @param {Promise<{ layers: { url: string, size: number }[], eager: boolean }>} [o.preload]  layers likely
  *   to be needed: fetched ahead at lower priority, right away if `eager` or else once the root names a
  *   dependency, and used only if composition asks for them
@@ -60,14 +60,17 @@ export async function composeStage({
   // the regular fetch, so the result is the same as without them.
   const preloaded = new Map();
   let composed = false;
+  // Every distinct layer URL requested, preloads included, for maxLayers.
+  const requested = new Set();
   const startPreload = (layers) => {
-    const requested = new Set([...started.keys()].map(urlKey));
     let bytes = 0;
     for (const { url, size } of layers) {
       const key = urlKey(url);
       bytes += size;
       if (composed || bytes > maxLayerBytes) break;
-      if (requested.has(key) || preloaded.has(key)) continue;
+      if (requested.has(key)) continue;
+      if (requested.size >= maxLayers) break;
+      requested.add(key);
       const entry = { started: false };
       preloaded.set(key, entry);
       entry.bytes = throttle(async () => {
@@ -91,15 +94,15 @@ export async function composeStage({
   const drain = async () => {
     while (pending.length) await Promise.all(pending.splice(0));
   };
-  const requested = new Set();
   const fetchLayer = (path) => {
     if (loader.has(path) || started.has(path)) return;
-    requested.add(path);
+    requested.add(urlKey(path));
     if (requested.size > maxLayers) throw resourceLimit(`more than maxLayers (${maxLayers}) layer files at ${path}`);
-    if (!originAllowed(urlOf(path), rootUrl, allowedOrigins)) {
+    const { refused } = requestPolicy(urlOf(path), rootUrl, allowedOrigins);
+    if (refused) {
       started.set(path, Promise.resolve());
       stats.missing++;
-      stats.warnings.push({ code: 'layer-missing', message: `layer not fetched: its origin is not in allowedOrigins: ${path}`, path });
+      stats.warnings.push({ code: 'layer-missing', message: `layer not fetched: ${refused}`, path });
       loader.markUnavailable(path);
       progress();
       return;
@@ -169,7 +172,10 @@ export async function composeStage({
   const rootHasDependencies = () => started.get(root).then(() => started.size > 1, () => false);
   preload?.then(async ({ layers, eager }) => (eager || (await rootHasDependencies())) && startPreload(layers));
   await drain();
-  if (!loader.has(root)) throw new UsdLoadError('compose', `could not read ${rootUrl}`, { url: rootUrl });
+  if (!loader.has(root)) {
+    const reason = stats.warnings.find((w) => w.path === rootUrl)?.message;
+    throw new UsdLoadError('compose', `could not read ${rootUrl}${reason ? `: ${reason}` : ''}`, { url: rootUrl });
+  }
 
   for (;;) {
     stats.rounds++;
@@ -196,9 +202,9 @@ export async function composeStage({
  * keep their code, url and status; anything the WASM side throws is a
  * composition failure. Running out of WASM memory (4 GiB at most) reads as a
  * scene too large to load: an allocation that fails while reading a layer
- * reports "out of memory", one that aborts traps as `unreachable`. A Rust
- * panic, which also traps as `unreachable`, gives its message, read with
- * `lastPanic` (the module's export). Overflowing the stack, the WASM one (an
+ * reports "out of memory", one that aborts traps as a bare `unreachable`. A
+ * Rust panic, which also traps as `unreachable`, gives its message instead,
+ * read with `lastPanic` (the module's export). Overflowing the stack, the WASM one (an
  * out-of-bounds access) or the engine's, means layers nested too deeply to read.
  */
 export function loadFailure(error, wasmMemoryBytes, lastPanic) {
@@ -206,16 +212,19 @@ export function loadFailure(error, wasmMemoryBytes, lastPanic) {
   const message = String(error?.message || error);
   const failure = (detail) => ({ code, message: detail, url, status });
   if (code !== 'compose') return failure(message);
-  if (/out of memory|memory allocation/i.test(message) || (error instanceof WebAssembly.RuntimeError && wasmMemoryBytes > 3 * 2 ** 30)) {
-    const gib = (wasmMemoryBytes / 2 ** 30).toFixed(1);
-    return failure(`scene too large to load: ran out of memory (${gib} GiB of WebAssembly memory in use): ${message}`);
-  }
+  const tooLarge = () => failure(`scene too large to load: ran out of memory (${(wasmMemoryBytes / 2 ** 30).toFixed(1)} GiB of WebAssembly memory in use): ${message}`);
+  if (OUT_OF_MEMORY.test(message) || (error instanceof WebAssembly.RuntimeError && wasmMemoryBytes > 3 * 2 ** 30)) return tooLarge();
   if (!isTrap(error)) return failure(message);
   const panic = readPanic(lastPanic);
   if (panic) return failure(`${message}: ${panic}`);
   if (/out of bounds|call stack|recursion/i.test(message)) return failure(`stack overflow: the layers nest too deeply to read (${message})`);
+  // Rust aborts on a failed allocation without a panic: a bare `unreachable`.
+  if (/unreachable/i.test(message)) return tooLarge();
   return failure(message);
 }
+
+/** Messages of allocations that failed, in Rust or in the engine. */
+export const OUT_OF_MEMORY = /out of memory|memory allocation|allocation failed|memory size exceeded|could not allocate/i;
 
 /** Reading the panic calls into the trapped module, which can trap again (an exhausted stack does). */
 function readPanic(lastPanic) {
@@ -302,13 +311,15 @@ export async function fetchLimited(url, budget, { fetchFn = fetch } = {}) {
 }
 
 /**
- * Size of a PNG or JPEG from its header, without decoding, and whether it is
- * color: 8-bit RGB(A) or palette, rather than greyscale or 16-bit data (the
- * images `sourceColorSpace = "auto"` decodes as sRGB). Null for other formats.
+ * Size of a PNG, JPEG or WebP from its header, without decoding, and whether
+ * it is color: 8-bit RGB(A) or palette, rather than greyscale or 16-bit data
+ * (the images `sourceColorSpace = "auto"` decodes as sRGB; WebP is always
+ * color). Null for other formats, whose size cannot be checked before decoding.
  */
 export function imageInfo(b) {
-  if (b.length > 25 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
-    const v = new DataView(b.buffer, b.byteOffset);
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const ascii = (at, text) => [...text].every((c, i) => b[at + i] === c.charCodeAt(0));
+  if (b.length > 25 && b[0] === 0x89 && ascii(1, 'PNG')) {
     const [bitDepth, colorType] = [b[24], b[25]];
     const color = colorType === 3 || (bitDepth === 8 && (colorType === 2 || colorType === 6));
     return { width: v.getUint32(16), height: v.getUint32(20), color };
@@ -323,77 +334,137 @@ export function imageInfo(b) {
       if (isFrame) return { height: (b[i + 5] << 8) | b[i + 6], width: (b[i + 7] << 8) | b[i + 8], color: b[i + 4] === 8 && b[i + 9] >= 3 };
       i += 2 + length;
     }
+    return null;
+  }
+  if (b.length >= 30 && ascii(0, 'RIFF') && ascii(8, 'WEBP')) {
+    // The first chunk: lossy (VP8), lossless (VP8L) or extended (VP8X).
+    if (ascii(12, 'VP8 ')) return { width: v.getUint16(26, true) & 0x3fff, height: v.getUint16(28, true) & 0x3fff, color: true };
+    if (ascii(12, 'VP8L')) {
+      const bits = v.getUint32(21, true);
+      return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1, color: true };
+    }
+    if (ascii(12, 'VP8X')) {
+      const u24 = (at) => b[at] | (b[at + 1] << 8) | (b[at + 2] << 16);
+      return { width: u24(24) + 1, height: u24(27) + 1, color: true };
+    }
   }
   return null;
 }
 
-const HUB_HOST = /(^|\.)(huggingface\.co|hf\.co)$/;
-const isHub = ({ protocol, hostname }) => protocol === 'https:' && HUB_HOST.test(hostname);
+const HUB_HOST = /^(huggingface\.co|hf\.co)$/;
+const HUB_CDN = /\.hf\.co$/;
+// Paths of Hub repo files and of the tree listing the prefetch reads: the
+// only Hub URLs a load requests, never `/api/*` endpoints or account pages.
+const HUB_FILE = /^\/(?:(datasets|spaces)\/)?([^/]+)\/([^/]+)\/resolve\//;
+const HUB_TREE = /^\/api\/(datasets|models|spaces)\/([^/]+)\/([^/]+)\/tree\//;
 
-/**
- * Whether a load rooted at `rootUrl` may fetch `url`: anything on the root's
- * origin or in `allowedOrigins` (`'*'` allows any), and for a root on the
- * Hugging Face Hub the Hub's hosts and their CDNs. Fetches follow redirects
- * without a check, so only the requested URL counts.
- */
-export function originAllowed(url, rootUrl, allowedOrigins = []) {
-  try {
-    const target = new URL(url);
-    const root = new URL(rootUrl);
-    return target.origin === root.origin || allowedOrigins.includes('*') || allowedOrigins.includes(target.origin) || (isHub(root) && isHub(target));
-  } catch {
-    return false;
-  }
+/** `type/owner/repo` of a Hub file or tree-listing URL, else null. */
+function hubRepo(url) {
+  if (!HUB_HOST.test(url.hostname) || url.protocol !== 'https:') return null;
+  const file = url.pathname.match(HUB_FILE);
+  if (file) return `${file[1] ?? 'models'}/${file[2]}/${file[3]}`;
+  const tree = url.pathname.match(HUB_TREE);
+  return tree ? `${tree[1]}/${tree[2]}/${tree[3]}` : null;
 }
 
-/** Whether `url` has the origin of `root`: only those requests carry the caller's headers. */
-export function sameOrigin(url, root) {
-  const origin = new URL(url).origin;
-  return origin !== 'null' && origin === new URL(root).origin;
+/**
+ * How a load rooted at `rootUrl` may request `url`: `{ refused }` with the
+ * reason, or the fetch options to use. Every request a load makes goes
+ * through this first. Only the requested URL is checked: fetches follow
+ * redirects (a Hub `resolve` URL redirects to its CDN, which the Hub controls).
+ *
+ * - The root URL itself, as the caller gave it, is always allowed.
+ * - Only http(s), with no user name or password in the URL.
+ * - Origins: the root's, those in `allowedOrigins` (`'*'` for any) and, for a
+ *   root on the Hugging Face Hub, the Hub and its CDN hosts.
+ * - On huggingface.co and hf.co, only repo files (`…/resolve/…`) and tree
+ *   listings, with no encoded slashes.
+ * - Credentials (cookies and the caller's headers) go only to the root's own
+ *   origin or, for a Hub root, only to the root's own repo.
+ */
+export function requestPolicy(url, rootUrl, allowedOrigins = []) {
+  const refused = refusal(url, rootUrl, allowedOrigins);
+  if (refused) return { refused };
+  return { credentials: credentialed(new URL(url), new URL(rootUrl)) ? 'same-origin' : 'omit', referrerPolicy: 'no-referrer' };
+}
+
+function refusal(url, rootUrl, allowedOrigins) {
+  if (url === rootUrl) return null;
+  let target;
+  try {
+    target = new URL(url);
+  } catch {
+    return `not a URL: ${url}`;
+  }
+  const root = new URL(rootUrl);
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') return `only http(s) URLs are fetched: ${url}`;
+  if (target.username || target.password) return `URLs with credentials are not fetched: ${url}`;
+  const hub = HUB_HOST.test(target.hostname);
+  if (hub && (!hubRepo(target) || /%2f|%5c/i.test(target.pathname))) return `only Hub repo files are fetched from ${target.host}: ${url}`;
+  const fromHub = HUB_HOST.test(root.hostname) && (hub || HUB_CDN.test(target.hostname)) && target.protocol === 'https:';
+  if (target.origin === root.origin || fromHub || allowedOrigins.includes('*') || allowedOrigins.includes(target.origin)) return null;
+  return `its origin is not in allowedOrigins: ${url}`;
+}
+
+function credentialed(target, root) {
+  if (target.origin !== root.origin) return false;
+  const repo = hubRepo(root);
+  return HUB_HOST.test(root.hostname) ? !!repo && hubRepo(target) === repo : true;
 }
 
 /**
  * Reads each geometry out of WASM in turn, so only one mesh's arrays are in
  * WASM memory at a time, and calls `onGeometry(index, meta, arrays)` with
  * JS-owned typed arrays (`meta` and `arrays` are null for a mesh with nothing
- * drawable). Releases the stage afterwards. Returns warnings: a
- * `nothing-drawable` one when no mesh had anything to draw.
+ * drawable, or left out). Meshes that would take the triangles read past
+ * `maxTriangles` are left out unread. Releases the stage afterwards. Returns
+ * warnings: `triangle-limit` for meshes left out, `nothing-drawable` when no
+ * mesh had anything to draw.
  */
-export function readGeometries(scene, meta, onGeometry) {
+export function readGeometries(scene, meta, onGeometry, { maxTriangles = 20e6 } = {}) {
   let drawn = 0;
+  let left = maxTriangles;
+  const skipped = [];
   for (let i = 0; i < meta.geometryCount; i++) {
-    const json = scene.read(i);
-    if (!json) {
+    const json = scene.read(i, Math.min(left, 2 ** 32 - 1));
+    const g = json && JSON.parse(json);
+    if (!g || g.overBudget !== undefined) {
+      if (g) skipped.push(g.path);
       onGeometry(i, null, null);
       continue;
     }
     drawn++;
-    const g = JSON.parse(json);
+    left -= g.groups.reduce((n, [, count]) => n + count / 3, 0);
     onGeometry(i, g, {
       positions: scene.positions(),
       normals: scene.normals(),
       uvs: g.uvSets.map((_, k) => scene.uvs(k)),
       colors: g.hasColors ? scene.colors() : null,
-      indices: g.vertices < 65536 ? scene.indices16() : scene.indices(),
+      indices: g.maxIndex < 65536 ? scene.indices16() : scene.indices(),
     });
   }
   scene.finish();
-  if (drawn) return [];
-  return [{ code: 'nothing-drawable', message: 'nothing to draw: the stage has no visible meshes with geometry' }];
+  const warnings = [];
+  if (skipped.length) warnings.push({ code: 'triangle-limit', message: `${skipped.length} meshes left out: past maxTriangles (${maxTriangles})`, path: skipped[0] });
+  if (!drawn) warnings.push({ code: 'nothing-drawable', message: 'nothing to draw: the stage has no visible meshes with geometry' });
+  return warnings;
 }
 
 /**
  * Images stored inside a USDZ package (they cannot be fetched by URL) that the
- * texture mode loads, each read once, by path. One that cannot be read maps
- * to its error, so it fails as that texture rather than the whole load.
+ * texture mode loads, each read once, by path, all together at most
+ * `maxBytes`. One that cannot be read maps to its error, so it fails as that
+ * texture rather than the whole load.
  */
-export function takePackagedTextures(scene, meta, { textures = 'preview' } = {}) {
+export function takePackagedTextures(scene, meta, { textures = 'preview', maxBytes = Infinity } = {}) {
   const out = new Map();
+  let left = maxBytes;
   for (const { path } of textureJobs(meta, { textures })) {
     if (!path.includes('[')) continue;
     try {
-      const bytes = scene.packagedFile(path);
+      const bytes = scene.packagedFile(path, left);
       if (bytes) out.set(path, bytes);
+      left -= bytes?.byteLength ?? 0;
     } catch (error) {
       out.set(path, error);
     }

@@ -112,9 +112,44 @@ fn split_origin(id: &str) -> (&str, &str) {
 }
 
 /// Most bytes one file inside a package may expand to.
-pub const MAX_PACKAGED_FILE_BYTES: u64 = 1 << 30;
-/// Most bytes all package reads during one composition may expand to.
-pub const MAX_PACKAGED_TOTAL_BYTES: u64 = 2 << 30;
+pub const MAX_PACKAGED_FILE_BYTES: u64 = 512 << 20;
+/// Most bytes all package reads during one composition, or all the files of
+/// one package together, may expand to.
+pub const MAX_PACKAGED_TOTAL_BYTES: u64 = 1 << 30;
+
+/// Refuses a package whose files would expand past the limits, before
+/// openusd reads them whole (it trusts no limit of its own). Stored files
+/// cannot outgrow the package; a compressed file's declared size is checked
+/// against what it actually inflates to, read into nothing.
+/// What a file expands to by its headers: its stored length if stored.
+fn expanded_size(entry: &zip::read::ZipFile<'_, impl Read>) -> u64 {
+    match entry.compression() {
+        zip::CompressionMethod::Stored => entry.compressed_size(),
+        _ => entry.size(),
+    }
+}
+
+pub fn check_package(package: &[u8]) -> io::Result<()> {
+    let mut archive = zip::ZipArchive::new(io::Cursor::new(package)).map_err(io::Error::other)?;
+    let mut total = 0u64;
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i).map_err(io::Error::other)?;
+        let declared = expanded_size(&entry);
+        total = total.saturating_add(declared);
+        if declared > MAX_PACKAGED_FILE_BYTES || total > MAX_PACKAGED_TOTAL_BYTES {
+            return Err(io::Error::other(format!(
+                "resource limit exceeded: package files expand past {MAX_PACKAGED_FILE_BYTES} bytes each or {MAX_PACKAGED_TOTAL_BYTES} together"
+            )));
+        }
+        if entry.compression() != zip::CompressionMethod::Stored {
+            let name = entry.name().to_owned();
+            if io::copy(&mut entry.take(declared + 1), &mut io::sink())? != declared {
+                return Err(io::Error::other(format!("{name} does not expand to the size its header declares")));
+            }
+        }
+    }
+    Ok(())
+}
 
 /// Reads one file out of a USDZ (zip) package held in memory, refusing to
 /// expand it past `limit` bytes. Zip headers are untrusted: the declared size
@@ -127,6 +162,9 @@ pub fn read_packaged(package: &[u8], inner: &str, limit: u64) -> io::Result<Vec<
     let entry = archive
         .by_name(inner)
         .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
+    if expanded_size(&entry) > limit {
+        return Err(io::Error::other(format!("resource limit exceeded: {inner} expands past {limit} bytes")));
+    }
     let mut out = Vec::with_capacity(entry.size().min(package.len() as u64) as usize);
     entry.take(limit + 1).read_to_end(&mut out)?;
     if out.len() as u64 > limit {
@@ -177,6 +215,9 @@ impl Store {
         let budget = MAX_PACKAGED_TOTAL_BYTES.saturating_sub(self.expanded);
         let bytes = read_packaged(package, inner, MAX_PACKAGED_FILE_BYTES.min(budget))?;
         self.expanded += bytes.len() as u64;
+        if extension(inner) == "usdz" {
+            check_package(&bytes)?;
+        }
         Ok(bytes)
     }
 }

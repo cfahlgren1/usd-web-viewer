@@ -18,10 +18,10 @@ export interface LoadOptions {
   maxTextureSize?: number | undefined;
   /** Aborts fetches and the worker; the load rejects with a UsdLoadError of code `aborted`. */
   signal?: AbortSignal | undefined;
-  /** Sent with layer and texture requests to the root URL's origin only. For embedding on another site, e.g. `{ Authorization: 'Bearer hf_…' }`. */
+  /** Sent only with the requests that carry credentials: those to the root URL's origin or, for a root on the Hugging Face Hub, to the root's own repo. For embedding on another site, e.g. `{ Authorization: 'Bearer hf_…' }`. */
   headers?: Record<string, string> | undefined;
-  /** Your own fetch for every request, run on the page (requests are proxied from the worker). `init.headers` is `headers` for the root URL's origin and absent elsewhere; `init.signal` aborts when the load stops. */
-  fetch?: ((url: string, init: { headers?: Record<string, string>; signal: AbortSignal }) => Promise<Response>) | undefined;
+  /** Your own fetch for every request the request policy allows (see `allowedOrigins`), run on the page (requests are proxied from the worker). `init.headers` is `headers` where credentials may go and absent elsewhere; `init.credentials` and `init.referrerPolicy` are what the built-in fetch would use; `init.signal` aborts when the load stops. */
+  fetch?: ((url: string, init: { headers?: Record<string, string>; credentials: 'same-origin' | 'omit'; referrerPolicy: 'no-referrer'; signal: AbortSignal }) => Promise<Response>) | undefined;
   onProgress?: ((progress: LoadProgress) => void) | undefined;
   /** Where the `.wasm` binary is served from. Defaults to the copy next to the package. */
   wasmUrl?: string | URL | undefined;
@@ -33,19 +33,28 @@ export interface LoadOptions {
   maxLayerBytes?: number | undefined;
   /** Layer files to request before failing with a `fetch` error. Default 1024. */
   maxLayers?: number | undefined;
-  /** Origins, besides the root URL's, that layers and textures may be fetched from, e.g. `['https://cdn.example.com']`; `['*']` allows any. A root on the Hugging Face Hub also allows the Hub's hosts and CDNs. Anything else is skipped with a `layer-missing` or `texture-failed` warning, also with a custom `fetch`. Only the requested URL counts, not where it redirects. */
+  /**
+   * Origins, besides the root URL's, that layers and textures may be fetched from, e.g. `['https://cdn.example.com']`; `['*']` allows any.
+   * A root on the Hugging Face Hub also allows the Hub's hosts and CDNs. Every request, a custom `fetch`'s too, also follows these rules:
+   * only http(s) URLs without user names; on huggingface.co and hf.co, only repo files (`…/resolve/…`) and tree listings; cookies and
+   * `headers` only for the root's origin or, for a Hub root, the root's own repo; no referrer. Only the requested URL is checked, not
+   * where it redirects. Anything refused is skipped with a `layer-missing` or `texture-failed` warning.
+   */
   allowedOrigins?: readonly string[] | undefined;
-  /** Total bytes of texture files to fetch, counted as they download; textures past it fail with a `texture-failed` warning. Default 512 MiB. Images larger than 16384 px a side are always refused. */
+  /** Triangles read across all meshes, each geometry counted once however often it is instanced; meshes past it are left out unread with a `triangle-limit` warning. Default 20 million. */
+  maxTriangles?: number | undefined;
+  /** Total bytes of texture files, read from packages or fetched (counted as they download); textures past it fail with a `texture-failed` warning. Default 512 MiB. Only PNG, JPEG and WebP up to 16384 px a side are decoded; others are refused from their header. */
   maxTextureBytes?: number | undefined;
 }
 
 /**
  * - `prim-unsupported`: visible geometry other than meshes and the implicit `Cube` / `Sphere` / `Cylinder` / `Cone` / `Capsule` / `Plane` (e.g. `BasisCurves`, `Points`, `Volume`, Gaussian splats) left out.
  * - `nothing-drawable`: no visible mesh had anything to draw.
- * - `layer-missing`: a layer could not be fetched, or is on an origin outside `allowedOrigins`.
- * - `texture-failed`: an image could not be fetched or read, or was refused (outside `allowedOrigins`, past `maxTextureBytes`, or larger than 16384 px a side); its inputs show their own (authored or default) values.
+ * - `layer-missing`: a layer could not be fetched, or the request policy refused it (see `allowedOrigins`).
+ * - `texture-failed`: an image could not be fetched or read, or was refused (by the request policy, past `maxTextureBytes`, larger than 16384 px a side, or not PNG, JPEG or WebP); its inputs show their own (authored or default) values.
+ * - `triangle-limit`: meshes left out past `maxTriangles`.
  */
-export type WarningCode = 'layer-missing' | 'layer-unreadable' | 'prim-unsupported' | 'nothing-drawable' | 'material-fallback' | 'texture-failed' | 'composition';
+export type WarningCode = 'layer-missing' | 'layer-unreadable' | 'prim-unsupported' | 'nothing-drawable' | 'material-fallback' | 'texture-failed' | 'triangle-limit' | 'composition';
 
 export interface LoadWarning {
   readonly code: WarningCode;

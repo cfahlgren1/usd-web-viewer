@@ -1,5 +1,7 @@
 //! The asset paths one layer authors: what a loader prefetches before composing.
 
+use std::collections::HashMap;
+
 use openusd::sdf::{self, AbstractData, Value};
 
 /// An asset path a layer names, anchored to an identifier.
@@ -20,14 +22,18 @@ pub struct Dependency {
 /// than failing the walk (composition reports real problems later).
 pub fn layer_dependencies(data: &dyn AbstractData, anchor: &str) -> Vec<Dependency> {
     let mut out: Vec<Dependency> = Vec::new();
+    let mut seen: HashMap<String, usize> = HashMap::new();
     let mut push = |path: &str, arc: bool, in_variant: bool| {
         let Some(path) = crate::resolver::anchor_path(path, Some(anchor)) else {
             return;
         };
-        match out.iter_mut().find(|d| d.path == path) {
+        match seen.get(&path) {
             // A path needed outside any variant is needed unconditionally.
-            Some(existing) => existing.in_variant &= in_variant,
-            None => out.push(Dependency { path, arc, in_variant }),
+            Some(&i) => out[i].in_variant &= in_variant,
+            None => {
+                seen.insert(path.clone(), out.len());
+                out.push(Dependency { path, arc, in_variant });
+            }
         }
     };
 

@@ -3,7 +3,7 @@
 // terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { lastPanic, UsdLoader } from '../wasm/usd_wasm.js';
 import { hubPackageLayers } from './hub-prefetch.js';
-import { composeStage, fetchLimited, imageInfo, limiter, loadFailure, originAllowed, readGeometries, sameOrigin, takePackagedTextures, textureJobs } from './load-core.js';
+import { composeStage, fetchLimited, imageInfo, limiter, loadFailure, readGeometries, requestPolicy, takePackagedTextures, textureJobs } from './load-core.js';
 
 // Textures in flight at once (fetch and decode): decoding a large image
 // briefly holds it at full size, so wide parallelism spikes memory.
@@ -59,22 +59,25 @@ self.onmessage = async ({ data }) => {
     return;
   }
   if (data.type === 'chunk') return receiveChunk(data);
-  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes, maxTextureBytes = 512 * 2 ** 20, maxLayers, allowedOrigins, headers, proxyFetch } = data;
-  // Every request, layer or texture, goes through here. The caller's headers
-  // (credentials, typically) go only to the root's origin; a custom fetch on
-  // the page applies the same rule.
-  const request = proxyFetch ? proxiedFetch : (target) => fetch(target, { headers: sameOrigin(target, url) ? headers : undefined });
+  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes, maxTextureBytes = 512 * 2 ** 20, maxLayers, maxTriangles, allowedOrigins, headers, proxyFetch } = data;
+  // Every request (layer, texture, Hub listing) goes through here, and
+  // through the request policy first. The caller's headers go only where
+  // cookies may; a custom fetch on the page applies the same policy.
+  const request = async (target) => {
+    const policy = requestPolicy(target, url, allowedOrigins);
+    // Reads like a network failure: a missing layer or a failed texture.
+    if (policy.refused) throw new TypeError(`request refused: ${policy.refused}`);
+    if (proxyFetch) return proxiedFetch(target);
+    return fetch(target, { ...policy, headers: policy.credentials === 'same-origin' ? headers : undefined });
+  };
   const fetchBytes = (target, budget) => fetchLimited(target, budget, { fetchFn: request });
-  // One budget for every texture body, charged as its bytes arrive. Bytes of
-  // a body cut short stay charged: they were downloaded.
+  // One budget for every texture, packaged ones first, then each fetched
+  // body as its bytes arrive. Bytes of a body cut short stay charged: they
+  // were downloaded.
   let textureBytes = 0;
   const chargeTexture = (bytes) => {
     textureBytes += bytes;
     if (textureBytes > maxTextureBytes) throw new Error(`textures exceed maxTextureBytes (${maxTextureBytes} bytes)`);
-  };
-  const fetchBlob = async (target) => {
-    if (!originAllowed(target, url, allowedOrigins)) throw new Error(`texture not fetched: its origin is not in allowedOrigins: ${target}`);
-    return new Blob([await fetchLimited(target, chargeTexture, { fetchFn: request })]);
   };
   const progress = (p) => self.postMessage({ type: 'progress', progress: p });
 
@@ -100,12 +103,14 @@ self.onmessage = async ({ data }) => {
     stats.initMs = tInit - t0;
     self.postMessage({ type: 'meta', meta });
     // One mesh at a time: each is transferred (not copied) as soon as it is read.
-    const warnings = readGeometries(scene, meta, (index, g, arrays) => {
+    const onGeometry = (index, g, arrays) => {
       const transfer = arrays ? [arrays.positions, arrays.normals, arrays.colors, arrays.indices, ...arrays.uvs].filter(Boolean).map((a) => a.buffer) : [];
       self.postMessage({ type: 'geometry', index, meta: g, arrays }, transfer);
       progress({ stage: 'geometry', loaded: index + 1, total: meta.geometryCount });
-    });
-    const packaged = takePackagedTextures(scene, meta, { textures });
+    };
+    const warnings = readGeometries(scene, meta, onGeometry, { maxTriangles });
+    const packaged = takePackagedTextures(scene, meta, { textures, maxBytes: maxTextureBytes });
+    for (const entry of packaged.values()) if (!(entry instanceof Error)) textureBytes += entry.byteLength;
     scene.free();
     stats.warnings.push(...warnings);
     stats.totalMs = performance.now() - t0;
@@ -124,9 +129,11 @@ self.onmessage = async ({ data }) => {
           try {
             const entry = packaged.get(path);
             if (entry instanceof Error) throw entry;
-            const blob = entry ? new Blob([entry]) : await fetchBlob(path);
-            bytes += blob.size;
-            const { bitmap, color } = await decodeTexture(blob, size);
+            // A packaged path is never a URL to fetch.
+            if (!entry && path.includes('[')) throw new Error(`not found in its package: ${path}`);
+            const image = entry ?? (await fetchLimited(path, chargeTexture, { fetchFn: request }));
+            bytes += image.byteLength;
+            const { bitmap, color } = await decodeTexture(image, size);
             self.postMessage({ type: 'texture', path, bitmap, color }, [bitmap]);
           } catch (error) {
             self.postMessage({ type: 'texture', path, error: String(error?.message || error) });
@@ -142,37 +149,22 @@ self.onmessage = async ({ data }) => {
 };
 
 /**
- * Decodes an image straight to at most `maxSize` px on its long side, and
- * tells whether it holds color (what `sourceColorSpace = "auto"` decodes as
- * sRGB); formats whose header is not read here count as color.
+ * Decodes a PNG, JPEG or WebP straight to at most `maxSize` px on its long
+ * side, and tells whether it holds color (what `sourceColorSpace = "auto"`
+ * decodes as sRGB). Images whose size the header does not give, or that are
+ * too large, are refused before decoding.
  */
-async function decodeTexture(blob, maxSize) {
-  const head = new Uint8Array(await blob.slice(0, 65536).arrayBuffer());
-  const info = imageInfo(head);
-  if (info && Math.max(info.width, info.height) > MAX_IMAGE_SIZE) throw new Error(`image too large: ${info.width}x${info.height} (at most ${MAX_IMAGE_SIZE} px a side)`);
-  return { bitmap: await decodeBitmap(blob, info, maxSize), color: info?.color ?? true };
-}
-
-async function decodeBitmap(blob, size, maxSize) {
+async function decodeTexture(bytes, maxSize) {
+  const info = imageInfo(bytes);
+  if (!info) throw new Error('unsupported image format: only PNG, JPEG and WebP are read');
+  if (Math.max(info.width, info.height) > MAX_IMAGE_SIZE) throw new Error(`image too large: ${info.width}x${info.height} (at most ${MAX_IMAGE_SIZE} px a side)`);
   // USD texture coordinates put (0,0) at the bottom-left, three.js's default.
   const options = { imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none' };
-  if (size) {
-    const scale = Math.min(1, maxSize / Math.max(size.width, size.height));
-    if (scale < 1) {
-      options.resizeWidth = Math.max(1, Math.round(size.width * scale));
-      options.resizeHeight = Math.max(1, Math.round(size.height * scale));
-      options.resizeQuality = 'high';
-    }
-    return createImageBitmap(blob, options);
+  const scale = Math.min(1, maxSize / Math.max(info.width, info.height));
+  if (scale < 1) {
+    options.resizeWidth = Math.max(1, Math.round(info.width * scale));
+    options.resizeHeight = Math.max(1, Math.round(info.height * scale));
+    options.resizeQuality = 'high';
   }
-  const full = await createImageBitmap(blob, options);
-  const scale = Math.min(1, maxSize / Math.max(full.width, full.height));
-  if (scale === 1) return full;
-  const small = await createImageBitmap(full, {
-    resizeWidth: Math.max(1, Math.round(full.width * scale)),
-    resizeHeight: Math.max(1, Math.round(full.height * scale)),
-    resizeQuality: 'high',
-  });
-  full.close();
-  return small;
+  return { bitmap: await createImageBitmap(new Blob([bytes]), options), color: info.color };
 }

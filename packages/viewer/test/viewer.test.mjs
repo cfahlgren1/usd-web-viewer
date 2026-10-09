@@ -171,6 +171,13 @@ test('a message the page cannot handle fails the load and stops the worker', asy
   assert.equal(worker.terminated, true);
 });
 
+test('a worker that dies of running out of memory fails as a scene too large to load', async () => {
+  const loading = loadUsd('scene.usda');
+  await tick();
+  FakeWorker.last.onerror({ message: 'Uncaught RangeError: WebAssembly.Memory.grow(): Maximum memory size exceeded' });
+  await assert.rejects(loading, { name: 'UsdLoadError', code: 'compose', message: /^scene too large to load/ });
+});
+
 test('complete reports texture counts and failures become warnings', async () => {
   const { complete, worker, info } = await load();
   worker.send({ type: 'texture', path: 'https://example.test/t.png', bitmap: fakeBitmap() });
@@ -189,16 +196,19 @@ async function proxiedLoad(fetch, options = {}) {
   return { worker: FakeWorker.last, loading, stop: () => controller.abort() };
 }
 
-test('caller headers go only to requests on the root origin', { timeout: 3000 }, async () => {
+test('the page applies the request policy to a custom fetch: headers and cookies only to the root origin', { timeout: 3000 }, async () => {
   const seen = [];
-  const { worker, stop } = await proxiedLoad(async (url, init) => (seen.push([url, init.headers]), new Response('x')), { headers: { Authorization: 'Bearer t' } });
+  const fetchFn = async (url, init) => (seen.push([url, init.headers, init.credentials, init.referrerPolicy]), new Response('x'));
+  const { worker, stop } = await proxiedLoad(fetchFn, { headers: { Authorization: 'Bearer t' }, allowedOrigins: ['https://cdn.other.test'] });
   worker.send({ type: 'fetch', id: 1, url: 'https://example.test/a.usda' });
   worker.send({ type: 'fetch', id: 2, url: 'https://cdn.other.test/t.png' });
+  worker.send({ type: 'fetch', id: 3, url: 'https://attacker.example/t.png' });
   await tick();
   assert.deepEqual(seen, [
-    ['https://example.test/a.usda', { Authorization: 'Bearer t' }],
-    ['https://cdn.other.test/t.png', undefined],
+    ['https://example.test/a.usda', { Authorization: 'Bearer t' }, 'same-origin', 'no-referrer'],
+    ['https://cdn.other.test/t.png', undefined, 'omit', 'no-referrer'],
   ]);
+  assert.match(worker.received.find((m) => m.id === 3).error, /request refused/);
   stop();
 });
 

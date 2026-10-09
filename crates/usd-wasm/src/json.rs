@@ -107,8 +107,9 @@ pub fn geometry_meta(g: &Geometry) -> String {
     let [[x0, y0, z0], [x1, y1, z1]] = g.bounds.map(|p| p.map(|v| num(v.into())));
     let _ = write!(
         o,
-        "{{\"vertices\":{},\"points\":{},\"hasColors\":{},\"bounds\":[{x0},{y0},{z0},{x1},{y1},{z1}],\"uvSets\":[",
+        "{{\"vertices\":{},\"maxIndex\":{},\"points\":{},\"hasColors\":{},\"bounds\":[{x0},{y0},{z0},{x1},{y1},{z1}],\"uvSets\":[",
         g.positions.len() / 3,
+        g.indices.iter().max().copied().unwrap_or(0),
         g.points,
         !g.colors.is_empty()
     );
@@ -176,7 +177,7 @@ fn num(v: f64) -> String {
     if v.is_finite() { format!("{v}") } else { "0".to_owned() }
 }
 
-fn string(o: &mut String, s: &str) {
+pub(crate) fn string(o: &mut String, s: &str) {
     o.push('"');
     for c in s.chars() {
         match c {

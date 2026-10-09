@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { initSync, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, limiter, loadFailure, originAllowed, readGeometries, takePackagedTextures, textureJobs } from '../src/load-core.js';
+import { composeStage, fetchLimited, imageInfo, limiter, loadFailure, readGeometries, requestPolicy, takePackagedTextures, textureJobs } from '../src/load-core.js';
 import { UsdLoadError } from '../src/errors.js';
 import { hubPackageLayers } from '../src/hub-prefetch.js';
 
@@ -38,17 +38,19 @@ function server(files, { delayMs = 0 } = {}) {
   return s;
 }
 
-/** A zip of stored (uncompressed) entries, each optionally declaring a size it does not have. */
+/** A zip of stored (or, with `deflate`, deflated) entries, each optionally declaring a size it does not have. */
 function storedZip(entries) {
   const locals = [];
   const centrals = [];
   let offset = 0;
-  for (const { name, data, declaredSize = data.length } of entries) {
+  for (const { name, data: raw, declaredSize = raw.length, deflate = false } of entries) {
     const nameBytes = Buffer.from(name);
-    const crc = zlib.crc32(data);
+    const crc = zlib.crc32(raw);
+    const data = deflate ? zlib.deflateRawSync(raw) : raw;
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(20, 4);
+    local.writeUInt16LE(deflate ? 8 : 0, 8);
     local.writeUInt32LE(crc, 14);
     local.writeUInt32LE(data.length, 18);
     local.writeUInt32LE(declaredSize, 22);
@@ -57,6 +59,7 @@ function storedZip(entries) {
     central.writeUInt32LE(0x02014b50, 0);
     central.writeUInt16LE(20, 4);
     central.writeUInt16LE(20, 6);
+    central.writeUInt16LE(deflate ? 8 : 0, 10);
     central.writeUInt32LE(crc, 16);
     central.writeUInt32LE(data.length, 20);
     central.writeUInt32LE(declaredSize, 24);
@@ -88,6 +91,54 @@ test('a package entry that lies about its size is read without trusting the head
   assert.equal(triangles, 2);
 });
 
+test('a usdz layer whose files would expand too far is refused before openusd reads it', { timeout: 5000 }, async () => {
+  // bomb.usdz, smaller: a deflated entry declaring 600 MiB, and one declaring less than it inflates to.
+  const quad = Buffer.from(`#usda 1.0\n${QUAD}`);
+  for (const entry of [
+    { name: 'root.usda', data: quad, deflate: true, declaredSize: 600 * 2 ** 20 },
+    { name: 'root.usda', data: Buffer.concat([quad, Buffer.alloc(1 << 20, 32)]), deflate: true, declaredSize: quad.length },
+  ]) {
+    const s = server({ 'https://h/bomb.usdz': storedZip([entry]) });
+    const error = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/bomb.usdz' }).then(() => null, (e) => e);
+    assert.equal(error?.code, 'compose');
+  }
+  // An honest deflated package still loads.
+  const s = server({ 'https://h/ok.usdz': storedZip([{ name: 'root.usda', data: quad, deflate: true }]) });
+  const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/ok.usdz' });
+  scene.free();
+  assert.equal(meta.geometryCount, 1);
+});
+
+test('packaged texture reads share one byte budget', async () => {
+  // overlap.zip, smaller: three images in one package, read past the budget.
+  const mesh = (n) => `def Mesh "M${n}" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+  int[] faceVertexCounts = [3]
+  int[] faceVertexIndices = [0, 1, 2]
+  point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+  rel material:binding = </Mat${n}>
+}
+def Material "Mat${n}" {
+  token outputs:surface.connect = </Mat${n}/P.outputs:surface>
+  def Shader "P" {
+    uniform token info:id = "UsdPreviewSurface"
+    color3f inputs:diffuseColor.connect = </Mat${n}/T.outputs:rgb>
+    token outputs:surface
+  }
+  def Shader "T" {
+    uniform token info:id = "UsdUVTexture"
+    asset inputs:file = @${n}.png@
+    float3 outputs:rgb
+  }
+}`;
+  const names = ['a', 'b', 'c'];
+  const usdz = storedZip([{ name: 'root.usda', data: Buffer.from(`#usda 1.0\n${names.map(mesh).join('\n')}`) }, ...names.map((n) => ({ name: `${n}.png`, data: Buffer.alloc(1 << 20) }))]);
+  const s = server({ 'https://h/p.usdz': usdz });
+  const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/p.usdz' });
+  const packaged = takePackagedTextures(scene, meta, { maxBytes: 2.5 * 2 ** 20 });
+  scene.free();
+  assert.deepEqual([...packaged.values()].map((v) => (v instanceof Error ? 'refused' : v.byteLength)), [1 << 20, 1 << 20, 'refused']);
+});
+
 const manyLayers = (n) => {
   const files = { 'https://h/root.usda': `#usda 1.0\n(subLayers = [${Array.from({ length: n }, (_, i) => `@./l${i}.usda@`).join(', ')}])` };
   for (let i = 0; i < n; i++) files[`https://h/l${i}.usda`] = `#usda 1.0\ndef Xform "X${i}" {}`;
@@ -113,6 +164,7 @@ test('layers past maxLayerBytes fail with a resource limit error', async () => {
 test('layers past maxLayers fail with a resource limit error', async () => {
   const s = server(manyLayers(40));
   await assert.rejects(composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda', maxLayers: 20 }), /more than maxLayers \(20\)/);
+  assert.ok(s.requested.length <= 20, `${s.requested.length} requests`);
   const { scene } = await composeStage({ UsdLoader, fetchBytes: server(manyLayers(40)).fetchBytes, rootUrl: 'https://h/root.usda', maxLayers: 41 });
   scene.free();
 });
@@ -131,18 +183,99 @@ test('layers on origins outside allowedOrigins are left out with a warning, neve
   assert.equal(result.meta.geometryCount, 1);
 });
 
-test('originAllowed: the root origin, the list, any with *, and the Hub hosts for a Hub root', () => {
-  const hub = 'https://huggingface.co/datasets/o/r/resolve/main/a.usd';
-  assert.ok(originAllowed('https://h/x/t.png', 'https://h/root.usda'));
-  assert.ok(!originAllowed('https://evil.example/t.png', 'https://h/root.usda'));
-  assert.ok(originAllowed('https://cdn.example/t.png', 'https://h/root.usda', ['https://cdn.example']));
-  assert.ok(originAllowed('https://evil.example/t.png', 'https://h/root.usda', ['*']));
-  assert.ok(originAllowed('https://hf.co/datasets/o/r/resolve/main/b.usd', hub));
-  assert.ok(originAllowed('https://cdn-lfs.hf.co/x', hub));
-  assert.ok(!originAllowed('https://huggingface.co.evil.example/x', hub));
-  assert.ok(!originAllowed('http://huggingface.co/x', hub));
-  assert.ok(!originAllowed('https://huggingface.co/x', 'https://h/root.usda'));
-  assert.ok(!originAllowed('omniverse://server/a.usd', 'https://h/root.usda'));
+test('requestPolicy: origins, schemes, Hub paths and where credentials go', () => {
+  const root = 'https://huggingface.co/datasets/o/r/resolve/main/pkg/root.usda';
+  const policy = (url, base = root, allowed) => requestPolicy(url, base, allowed);
+  const refused = (url, base, allowed) => !!policy(url, base, allowed).refused;
+  // The root itself, whatever its scheme: the caller chose it.
+  assert.equal(policy('blob:https://page.example/1234', 'blob:https://page.example/1234').credentials, 'same-origin');
+  // Own repo: credentials. Other repos and the CDN: allowed, no credentials.
+  assert.deepEqual(policy('https://huggingface.co/datasets/o/r/resolve/main/pkg/a.usda'), { credentials: 'same-origin', referrerPolicy: 'no-referrer' });
+  assert.equal(policy('https://huggingface.co/api/datasets/o/r/tree/main/pkg?recursive=true').credentials, 'same-origin');
+  assert.equal(policy('https://huggingface.co/victim/private-repo/resolve/main/secret.usda').credentials, 'omit');
+  assert.equal(policy('https://hf.co/datasets/o/r/resolve/main/b.usd').credentials, 'omit');
+  assert.equal(policy('https://cdn-lfs.hf.co/x').credentials, 'omit');
+  // What ssrf.usda authors, resolved against a Hub root.
+  for (const url of [
+    'https://huggingface.co/api/whoami-v2.usda',
+    'https://huggingface.co/api/settings/tokens',
+    'https://huggingface.co/logout',
+    'https://attacker.example/beacon.usd?u=1',
+    'https://attacker.example/x.usda',
+    'http://127.0.0.1:8080/admin.usda',
+    'https://huggingface.co@attacker.example/a.usda',
+    'https://user:pw@huggingface.co/datasets/o/r/resolve/main/a.usda',
+    'https://huggingface.co/datasets/o/r/resolve/main/..%2f..%2f..%2fapi%2fx.usda',
+    'data:image/png;base64,AAAA',
+    'javascript:alert(1)//x.png',
+    'file:///etc/passwd',
+    'http://huggingface.co/datasets/o/r/resolve/main/a.usda',
+    'https://huggingface.co.attacker.example/x',
+    'omniverse://server/a.usd',
+  ]) {
+    assert.ok(refused(url), url);
+  }
+  // Other roots: the root's origin with credentials, listed origins without.
+  assert.equal(policy('https://h/x/t.png', 'https://h/root.usda').credentials, 'same-origin');
+  assert.ok(refused('https://evil.example/t.png', 'https://h/root.usda'));
+  assert.equal(policy('https://cdn.example/t.png', 'https://h/root.usda', ['https://cdn.example']).credentials, 'omit');
+  assert.ok(!refused('https://evil.example/t.png', 'https://h/root.usda', ['*']));
+  assert.ok(refused('https://huggingface.co/datasets/o/r/resolve/main/a.usd', 'https://h/root.usda'));
+  assert.ok(refused('https://huggingface.co/api/whoami-v2', 'https://h/root.usda', ['*']));
+});
+
+test('imageInfo reads PNG, JPEG and WebP sizes, nothing else', () => {
+  const bytes = (...parts) => new Uint8Array(parts.flatMap((p) => (typeof p === 'string' ? [...p].map((c) => c.charCodeAt(0)) : p)));
+  const le16 = (n) => [n & 255, n >> 8];
+  const le24 = (n) => [n & 255, (n >> 8) & 255, n >> 16];
+  const riff = (chunk, data) => bytes('RIFF', [0, 0, 0, 0], 'WEBP', chunk, [0, 0, 0, 0], data, new Array(16).fill(0));
+  assert.deepEqual(imageInfo(riff('VP8 ', [0, 0, 0, 0x9d, 1, 0x2a, ...le16(640), ...le16(480)])), { width: 640, height: 480, color: true });
+  const vp8l = (639 | (479 << 14)) >>> 0;
+  assert.deepEqual(imageInfo(riff('VP8L', [0x2f, vp8l & 255, (vp8l >> 8) & 255, (vp8l >> 16) & 255, vp8l >>> 24])), { width: 640, height: 480, color: true });
+  assert.deepEqual(imageInfo(riff('VP8X', [0, 0, 0, 0, ...le24(20000 - 1), ...le24(30 - 1)])), { width: 20000, height: 30, color: true });
+  assert.equal(imageInfo(bytes('GIF89a', le16(20000), le16(20000), new Array(20).fill(0))), null);
+  assert.equal(imageInfo(bytes('BM', new Array(40).fill(0))), null);
+});
+
+test('a mesh whose corners share one point welds in linear time', { timeout: 10000 }, async () => {
+  // weld.usda, smaller: every corner on point 0, each with its own normal.
+  const faces = 20000;
+  const normals = Array.from({ length: faces * 3 }, (_, i) => `(${i}, 1, 0)`).join(', ');
+  const usda = `#usda 1.0
+def Mesh "M" {
+  int[] faceVertexCounts = [${new Array(faces).fill(3).join(',')}]
+  int[] faceVertexIndices = [${new Array(faces * 3).fill(0).join(',')}]
+  point3f[] points = [(0, 0, 0)]
+  normal3f[] normals = [${normals}] (interpolation = "faceVarying")
+}`;
+  const s = server({ 'https://h/root.usda': usda });
+  const t0 = performance.now();
+  const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+  let vertices = 0;
+  readGeometries(scene, meta, (i, g) => (vertices = g.vertices));
+  scene.free();
+  assert.equal(vertices, faces * 3);
+  assert.ok(performance.now() - t0 < 3000, `${Math.round(performance.now() - t0)} ms`);
+});
+
+test('meshes past maxTriangles are left out unread with a warning', async () => {
+  const tri = (name) => `def Mesh "${name}" {\n  int[] faceVertexCounts = [3, 3]\n  int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]\n  point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]\n}`;
+  const s = server({ 'https://h/root.usda': `#usda 1.0\n${tri('A')}\n${tri('B')}\n${tri('C')}` });
+  const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+  const read = [];
+  const warnings = readGeometries(scene, meta, (i, g) => read.push(!!g), { maxTriangles: 5 });
+  scene.free();
+  assert.deepEqual(read, [true, true, false]);
+  assert.deepEqual(warnings.map((w) => [w.code, w.path]), [['triangle-limit', '/C']]);
+});
+
+test('16-bit indices are chosen from the largest index', async () => {
+  const s = server({ 'https://h/root.usda': `#usda 1.0\n${QUAD}` });
+  const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+  let out;
+  readGeometries(scene, meta, (i, g, a) => (out = [g.maxIndex, a.indices.constructor.name]));
+  scene.free();
+  assert.deepEqual(out, [3, 'Uint16Array']);
 });
 
 test('fetchLimited stops reading a streamed body past maxBytes', async (t) => {
@@ -291,7 +424,7 @@ def Material "Mat${i}" {
     const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/shared.usdz' });
     const read = [];
     const packagedFile = scene.packagedFile.bind(scene);
-    scene.packagedFile = (path) => (read.push(path), packagedFile(path));
+    scene.packagedFile = (path, limit) => (read.push(path), packagedFile(path, limit));
     const packaged = takePackagedTextures(scene, meta, { textures });
     scene.free();
     assert.equal(read.length, reads, textures);
@@ -328,8 +461,8 @@ test('reading geometry out of order or out of range throws instead of trapping',
   const s = server({ 'https://h/root.usda': `#usda 1.0\n${QUAD}` });
   const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
   assert.throws(() => scene.positions(), { message: /call read\(\) first/ });
-  assert.throws(() => scene.read(7), { message: /no geometry 7: the scene has 1/ });
-  assert.ok(scene.read(0));
+  assert.throws(() => scene.read(7, 100), { message: /no geometry 7: the scene has 1/ });
+  assert.ok(scene.read(0, 100));
   assert.throws(() => scene.uvs(3), { message: /no UV set 3/ });
   // Still usable: none of these trapped.
   assert.equal(scene.positions().length, 12);
@@ -343,7 +476,9 @@ test('running out of WASM memory fails as a scene too large to load; a panic giv
   assert.equal(loadFailure(oom, 1 * GiB).code, 'compose');
   // An allocation that aborts traps; near the 4 GiB ceiling that is memory, not a bug.
   assert.match(loadFailure(new WebAssembly.RuntimeError('unreachable'), 3.9 * GiB).message, /^scene too large to load/);
-  assert.deepEqual(loadFailure(new WebAssembly.RuntimeError('unreachable'), 0.1 * GiB), { code: 'compose', message: 'unreachable', url: undefined, status: undefined });
+  // Without a panic message, a bare `unreachable` is Rust aborting on a failed allocation.
+  assert.match(loadFailure(new WebAssembly.RuntimeError('unreachable'), 0.1 * GiB).message, /^scene too large to load: ran out of memory/);
+  assert.match(loadFailure(new RangeError('Array buffer allocation failed'), 0.1 * GiB).message, /^scene too large to load/);
   const panic = 'panicked at crates/usd-wasm/src/extract.rs:1:1:\nindex out of bounds';
   assert.equal(loadFailure(new WebAssembly.RuntimeError('unreachable'), 0.1 * GiB, () => panic).message, `unreachable: ${panic}`);
   const fetchError = loadFailure(new UsdLoadError('fetch', 'HTTP 404 for https://h/a.usd', { url: 'https://h/a.usd', status: 404 }), 4 * GiB);

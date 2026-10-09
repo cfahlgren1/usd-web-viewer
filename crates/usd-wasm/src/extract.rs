@@ -79,6 +79,15 @@ pub struct Geometry {
     pub bounds: [[f32; 3]; 2],
 }
 
+/// What [`Scene::read_geometry`] found.
+pub enum Read {
+    Geometry(Geometry),
+    /// Nothing drawable.
+    Nothing,
+    /// Left unread: more triangles than allowed.
+    OverBudget { path: String, triangles: usize },
+}
+
 pub struct Group {
     pub start: u32,
     pub count: u32,
@@ -139,7 +148,7 @@ impl Scene {
     pub fn read_all(mut self) -> openusd::Result<Scene> {
         let mut index = vec![None; self.sources.len()];
         for (i, slot) in index.iter_mut().enumerate() {
-            if let Some(geometry) = self.read_geometry(i)? {
+            if let Read::Geometry(geometry) = self.read_geometry(i, usize::MAX)? {
                 *slot = Some(self.geometries.len() as u32);
                 self.geometries.push(geometry);
             }
@@ -162,9 +171,9 @@ impl Scene {
         Ok(self)
     }
 
-    /// Reads the triangle data of `sources[index]`; `None` when the mesh has
-    /// nothing drawable.
-    pub fn read_geometry(&self, index: usize) -> openusd::Result<Option<Geometry>> {
+    /// Reads the triangle data of `sources[index]`, unless the mesh has more
+    /// than `max_triangles` (counted from its faces, before reading the rest).
+    pub fn read_geometry(&self, index: usize, max_triangles: usize) -> openusd::Result<Read> {
         let Some(source) = self.sources.get(index) else {
             let message = format!("no geometry {index}: the scene has {}", self.sources.len());
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, message).into());
@@ -172,9 +181,17 @@ impl Scene {
         if let Some(ty) = source.prim.type_name()?
             && implicit::is_implicit(ty.as_str())
         {
-            return Ok(implicit::read(&source.prim, ty.as_str()));
+            return Ok(implicit::read(&source.prim, ty.as_str()).map_or(Read::Nothing, Read::Geometry));
         }
-        read_mesh(&source.prim, source.color_primvar.as_deref(), &source.uv_sets)
+        let triangles: usize = ints(source.prim.attribute("faceVertexCounts").get::<Value>()?)
+            .unwrap_or_default()
+            .iter()
+            .map(|&n| (n.max(2) - 2) as usize)
+            .sum();
+        if triangles > max_triangles {
+            return Ok(Read::OverBudget { path: source.prim.path().as_str().to_owned(), triangles });
+        }
+        Ok(read_mesh(&source.prim, source.color_primvar.as_deref(), &source.uv_sets)?.map_or(Read::Nothing, Read::Geometry))
     }
 }
 
@@ -721,6 +738,10 @@ fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) 
     }))
 }
 
+/// Distinct vertices a point's chain keeps: past this, corners of the same
+/// point are not welded, which costs vertices but keeps welding linear.
+const WELD_CHAIN: usize = 64;
+
 /// Merges per-corner vertices that share a point and have bit-identical
 /// attributes, rewriting `attrs` (each with its width) in place. Returns the
 /// corner-to-vertex map and each vertex's first corner. Candidates are chained
@@ -739,14 +760,19 @@ fn weld(point_of: &[u32], point_count: usize, attrs: &mut [(&mut Vec<f32>, usize
             })
         };
         let mut candidate = head[point as usize];
+        let mut chain = 0;
         while candidate != NONE && !same(first_corner[candidate as usize] as usize) {
             candidate = next[candidate as usize];
+            chain += 1;
         }
         if candidate == NONE {
             candidate = first_corner.len() as u32;
             first_corner.push(corner as u32);
-            next.push(head[point as usize]);
-            head[point as usize] = candidate;
+            next.push(NONE);
+            if chain < WELD_CHAIN {
+                next[candidate as usize] = head[point as usize];
+                head[point as usize] = candidate;
+            }
         }
         remap.push(candidate);
     }
