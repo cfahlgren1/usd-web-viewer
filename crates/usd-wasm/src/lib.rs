@@ -69,6 +69,7 @@ impl Loader {
     /// returned list also names the layers this attempt consumed: the host
     /// adds those again too (normally from its HTTP cache).
     pub fn compose(&self, root: &str) -> openusd::Result<Composed> {
+        resolver::lock(&self.files).expanded = 0;
         let resolver = self.resolver(true, Some(root));
         let missing = resolver.missing.clone();
         let stage = usd::Stage::builder()
@@ -93,10 +94,8 @@ impl Loader {
     }
 
     /// A file inside a stored USDZ package (`/h/pkg.usdz[tex.png]`), e.g. a texture.
-    pub fn packaged_file(&self, path: &str) -> Option<Vec<u8>> {
-        let (package, inner) = resolver::split_packaged(path)?;
-        let files = resolver::lock(&self.files);
-        resolver::read_packaged(files.bytes.get(package)?, inner)
+    pub fn packaged_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
+        resolver::lock(&self.files).read_packaged(path)
     }
 
     /// Drops every stored layer.

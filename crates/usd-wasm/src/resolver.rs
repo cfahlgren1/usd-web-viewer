@@ -76,13 +76,27 @@ pub fn anchor_path(asset_path: &str, anchor: Option<&str>) -> Option<String> {
     Some(normalize(&format!("{dir}/{path}")))
 }
 
-/// Reads one file out of a USDZ (zip) package held in memory.
-pub fn read_packaged(package: &[u8], inner: &str) -> Option<Vec<u8>> {
-    let mut archive = zip::ZipArchive::new(io::Cursor::new(package)).ok()?;
-    let mut entry = archive.by_name(inner).ok()?;
-    let mut out = Vec::with_capacity(entry.size() as usize);
-    entry.read_to_end(&mut out).ok()?;
-    Some(out)
+/// Most bytes one file inside a package may expand to.
+pub const MAX_PACKAGED_FILE_BYTES: u64 = 1 << 30;
+/// Most bytes all package reads during one composition may expand to.
+pub const MAX_PACKAGED_TOTAL_BYTES: u64 = 2 << 30;
+
+/// Reads one file out of a USDZ (zip) package held in memory, refusing to
+/// expand it past `limit` bytes. Zip headers are untrusted: the declared size
+/// only sizes the buffer up to the package's own length.
+pub fn read_packaged(package: &[u8], inner: &str, limit: u64) -> io::Result<Vec<u8>> {
+    let mut archive = zip::ZipArchive::new(io::Cursor::new(package)).map_err(io::Error::other)?;
+    let entry = archive
+        .by_name(inner)
+        .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
+    let mut out = Vec::with_capacity(entry.size().min(package.len() as u64) as usize);
+    entry.take(limit + 1).read_to_end(&mut out)?;
+    if out.len() as u64 > limit {
+        return Err(io::Error::other(format!(
+            "resource limit exceeded: {inner} expands past {limit} bytes"
+        )));
+    }
+    Ok(out)
 }
 
 /// Collapses `.`, `..` and repeated separators, and drops a query string.
@@ -109,6 +123,22 @@ pub struct Store {
     /// Layers a composing stage took ownership of: present for this stage,
     /// gone for any later one.
     pub taken: Vec<String>,
+    /// Bytes package reads expanded to since the last composition began.
+    pub expanded: u64,
+}
+
+impl Store {
+    /// Reads a packaged file (`/h/pkg.usdz[inner]`) within the per-file and
+    /// per-composition expansion limits.
+    pub fn read_packaged(&mut self, path: &str) -> io::Result<Vec<u8>> {
+        let not_found = || io::Error::new(io::ErrorKind::NotFound, path.to_owned());
+        let (package, inner) = split_packaged(path).ok_or_else(not_found)?;
+        let package = self.bytes.get(package).ok_or_else(not_found)?;
+        let budget = MAX_PACKAGED_TOTAL_BYTES.saturating_sub(self.expanded);
+        let bytes = read_packaged(package, inner, MAX_PACKAGED_FILE_BYTES.min(budget))?;
+        self.expanded += bytes.len() as u64;
+        Ok(bytes)
+    }
 }
 
 /// Resolves virtual paths against the [`Store`], recording every layer that
@@ -157,13 +187,9 @@ impl ar::Resolver for MemoryResolver {
 
     fn open_asset(&self, resolved_path: &ResolvedPath) -> io::Result<Box<dyn Asset>> {
         let key = resolved_path.to_string_lossy().into_owned();
-        if let Some((package, inner)) = split_packaged(&key) {
-            let files = lock(&self.files);
-            let bytes = files.bytes.get(package).and_then(|p| read_packaged(p, inner));
-            return match bytes {
-                Some(bytes) => Ok(Box::new(MemAsset(io::Cursor::new(bytes)))),
-                None => Err(io::Error::new(io::ErrorKind::NotFound, key.clone())),
-            };
+        if split_packaged(&key).is_some() {
+            let bytes = lock(&self.files).read_packaged(&key)?;
+            return Ok(Box::new(MemAsset(io::Cursor::new(bytes))));
         }
         let first_root_read = self.keep.borrow().as_deref() == Some(key.as_str());
         if first_root_read {
@@ -321,5 +347,33 @@ mod tests {
         assert_eq!(anchor_path("a.usdc", Some("/h/p.usdz")).unwrap(), "/h/p.usdz[a.usdc]");
         assert_eq!(anchor_path("./p.usdz[x/y.usd]", Some("/h/r.usda")).unwrap(), "/h/p.usdz[x/y.usd]");
         assert!(is_layer_path("/h/p.usdz[x/y.usdc]"));
+    }
+
+    /// A package with one deflated entry of `size` zero bytes.
+    fn zeros_package(size: usize) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
+        let options = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("big.usdc", options).unwrap();
+        io::Write::write_all(&mut zip, &vec![0; size]).unwrap();
+        zip.finish().unwrap().into_inner()
+    }
+
+    #[test]
+    fn packaged_file_expanding_past_the_limit_is_refused() {
+        let package = zeros_package(1 << 20);
+        assert!(package.len() < 4096, "a decompression bomb");
+        let error = read_packaged(&package, "big.usdc", 1 << 16).unwrap_err();
+        assert!(error.to_string().contains("resource limit exceeded"), "{error}");
+        assert_eq!(read_packaged(&package, "big.usdc", 1 << 20).unwrap().len(), 1 << 20);
+    }
+
+    #[test]
+    fn packaged_files_share_one_expansion_budget() {
+        let mut store = Store::default();
+        store.bytes.insert("/h/p.usdz".to_owned(), zeros_package(100));
+        store.expanded = MAX_PACKAGED_TOTAL_BYTES - 150;
+        assert_eq!(store.read_packaged("/h/p.usdz[big.usdc]").unwrap().len(), 100);
+        let error = store.read_packaged("/h/p.usdz[big.usdc]").unwrap_err();
+        assert!(error.to_string().contains("resource limit exceeded"), "{error}");
     }
 }

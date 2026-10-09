@@ -19,30 +19,49 @@ export function pathToUrl(path, protocols) {
  *
  * @param {object} o
  * @param {typeof import('../wasm/usd_wasm.js').UsdLoader} o.UsdLoader
- * @param {(url: string) => Promise<Uint8Array | null>} o.fetchBytes  null when missing
+ * @param {(url: string, maxBytes: number) => Promise<Uint8Array | null>} o.fetchBytes  null when
+ *   missing; may stop reading once a body passes `maxBytes`
  * @param {string} o.rootUrl
  * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
+ * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
+ * @param {number} [o.maxLayerBytes=1 GiB]  total size of the distinct layers held for composition
  * @param {(stage: string, detail?: object) => void} [o.onProgress]
  * @returns {Promise<{ scene: import('../wasm/usd_wasm.js').UsdScene, meta: object, stats: object, protocols: Map<string,string> }>}
  */
-export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVariants = false, onProgress = () => {} }) {
+export async function composeStage({
+  UsdLoader,
+  fetchBytes,
+  rootUrl,
+  prefetchVariants = false,
+  maxConcurrentFetches = 16,
+  maxLayerBytes = 2 ** 30,
+  onProgress = () => {},
+}) {
   const protocols = new Map([[new URL(rootUrl).host, new URL(rootUrl).protocol]]);
   const root = urlToPath(rootUrl);
   const loader = new UsdLoader();
   const stats = { layers: 0, layerBytes: 0, missing: 0, rounds: 0, fetchMs: 0, parseMs: 0, composeMs: 0, warnings: [] };
   const started = new Map();
+  const throttle = limiter(maxConcurrentFetches);
+  // Re-fetched layers replace their earlier bytes, so count each path once.
+  const layerSizes = new Map();
+  let heldBytes = 0;
 
   const fetchLayer = (path) => {
     if (loader.has(path) || started.has(path)) return started.get(path);
     const job = (async () => {
       const t0 = performance.now();
-      const bytes = await fetchBytes(pathToUrl(path, protocols));
+      const remaining = maxLayerBytes - heldBytes + (layerSizes.get(path) ?? 0);
+      const bytes = await throttle(() => fetchBytes(pathToUrl(path, protocols), remaining));
       stats.fetchMs = Math.max(stats.fetchMs, performance.now() - t0);
       if (!bytes) {
         stats.missing++;
         loader.markUnavailable(path);
         return;
       }
+      heldBytes += bytes.byteLength - (layerSizes.get(path) ?? 0);
+      layerSizes.set(path, bytes.byteLength);
+      if (heldBytes > maxLayerBytes) throw resourceLimit(`layers exceed maxLayerBytes (${maxLayerBytes} bytes) at ${path}`);
       stats.layers++;
       stats.layerBytes += bytes.byteLength;
       const t1 = performance.now();
@@ -87,6 +106,63 @@ export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVar
   loader.free();
   const meta = JSON.parse(scene.meta());
   return { scene, meta, stats, protocols };
+}
+
+function resourceLimit(detail) {
+  return new Error(`resource limit exceeded: ${detail}`);
+}
+
+/** Runs at most `max` of the given tasks at once. */
+export function limiter(max) {
+  let active = 0;
+  const queue = [];
+  const next = () => {
+    if (active >= max || !queue.length) return;
+    active++;
+    const { task, resolve, reject } = queue.shift();
+    task()
+      .then(resolve, reject)
+      .finally(() => {
+        active--;
+        next();
+      });
+  };
+  return (task) =>
+    new Promise((resolve, reject) => {
+      queue.push({ task, resolve, reject });
+      next();
+    });
+}
+
+/** Fetches a body, giving up once it passes `maxBytes`; null on an HTTP error. */
+export async function fetchLimited(url, maxBytes) {
+  const response = await fetch(url);
+  if (!response.ok) return null;
+  const tooBig = () => resourceLimit(`${url} is larger than ${maxBytes} bytes`);
+  if (Number(response.headers.get('content-length')) > maxBytes) {
+    await response.body?.cancel();
+    throw tooBig();
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel();
+      throw tooBig();
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
 
 /** Moves every geometry's arrays out of WASM into JS typed arrays. */

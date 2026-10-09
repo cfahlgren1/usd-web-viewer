@@ -25,12 +25,14 @@ function compileWasm(url = WASM_URL) {
  * @param {number} [options.maxTextureSize=1024]  long-side cap for decoded textures
  * @param {boolean} [options.normalMaps=false]  also load normal maps
  * @param {boolean} [options.prefetchVariants=false]  fetch layers named inside variants before composing
+ * @param {number} [options.maxConcurrentFetches=16]  requests in flight at once
+ * @param {number} [options.maxLayerBytes=1 GiB]  total size of the distinct USD layers fetched before giving up
  * @param {() => void} [options.onTexture]  called after each texture is applied
  * @param {string | URL} [options.wasmUrl]  override where the WASM binary lives
  * @returns {Promise<{ root: THREE.Group, info: object, textures: Promise<void>, dispose: () => void }>}
  */
 export async function loadUsd(url, options = {}) {
-  const { maxTextureSize = 1024, normalMaps = false, prefetchVariants = false, onTexture = () => {} } = options;
+  const { maxTextureSize = 1024, normalMaps = false, prefetchVariants = false, maxConcurrentFetches, maxLayerBytes, onTexture = () => {} } = options;
   const absoluteUrl = new URL(url, location.href).href;
   const module = await compileWasm(options.wasmUrl);
   const worker = new Worker(WORKER_URL, { type: 'module' });
@@ -71,7 +73,7 @@ export async function loadUsd(url, options = {}) {
     rejectScene(new Error(event.message || 'worker failed to start'));
     resolveTextures();
   };
-  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, normalMaps, prefetchVariants });
+  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, normalMaps, prefetchVariants, maxConcurrentFetches, maxLayerBytes });
 
   const scene = await scenePromise;
   return { root: scene.root, info: scene.info, textures, dispose: scene.dispose };

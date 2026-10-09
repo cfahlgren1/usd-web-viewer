@@ -2,16 +2,23 @@
 // base-color textures as downscaled ImageBitmaps. One worker per load: the
 // page terminates it when done, which releases all WASM memory at once.
 import init, { UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, pathToUrl, takeGeometries, takePackagedTextures, texturePaths } from './load-core.js';
+import { composeStage, fetchLimited, limiter, pathToUrl, takeGeometries, takePackagedTextures, texturePaths } from './load-core.js';
 
 self.onmessage = async (event) => {
-  const { url, wasmModule, maxTextureSize = 1024, normalMaps = false, prefetchVariants = false } = event.data;
+  const { url, wasmModule, maxTextureSize = 1024, normalMaps = false, prefetchVariants = false, maxConcurrentFetches = 16, maxLayerBytes } = event.data;
   try {
     const t0 = performance.now();
     const wasm = await init({ module_or_path: wasmModule });
     const tInit = performance.now();
 
-    const { scene, meta, stats, protocols } = await composeStage({ UsdLoader, fetchBytes, rootUrl: url, prefetchVariants });
+    const { scene, meta, stats, protocols } = await composeStage({
+      UsdLoader,
+      fetchBytes: fetchLimited,
+      rootUrl: url,
+      prefetchVariants,
+      maxConcurrentFetches,
+      maxLayerBytes,
+    });
     const geometries = takeGeometries(scene, meta);
     const packaged = takePackagedTextures(scene, meta);
     scene.free();
@@ -23,10 +30,11 @@ self.onmessage = async (event) => {
     for (const g of geometries) for (const a of [g.positions, g.normals, g.uvs, g.indices]) if (a) transfer.push(a.buffer);
     self.postMessage({ type: 'scene', meta, geometries, stats }, transfer);
 
+    const throttle = limiter(maxConcurrentFetches);
     await Promise.all(
       texturePaths(meta, { normalMaps }).map(async (path) => {
         try {
-          const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await fetchBlob(pathToUrl(path, protocols));
+          const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await throttle(() => fetchBlob(pathToUrl(path, protocols)));
           const bitmap = await decodeTexture(blob, maxTextureSize);
           self.postMessage({ type: 'texture', path, bitmap }, [bitmap]);
         } catch (error) {
@@ -39,12 +47,6 @@ self.onmessage = async (event) => {
     self.postMessage({ type: 'error', message: String(error?.stack || error?.message || error) });
   }
 };
-
-async function fetchBytes(url) {
-  const response = await fetch(url);
-  if (!response.ok) return null;
-  return new Uint8Array(await response.arrayBuffer());
-}
 
 async function fetchBlob(url) {
   const response = await fetch(url);

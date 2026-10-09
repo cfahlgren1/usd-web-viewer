@@ -39,6 +39,8 @@ scene.add(root);   // THREE.Group, Y-up, metres
 | `maxTextureSize` | `1024` | Long-side cap; textures are decoded straight to this size in the worker |
 | `normalMaps` | `false` | Also fetch and apply normal maps |
 | `prefetchVariants` | `false` | Fetch layers inside variants the layer doesn't select |
+| `maxConcurrentFetches` | `16` | Requests in flight at once |
+| `maxLayerBytes` | 1 GiB | Total size of USD layers to fetch before failing with a `resource limit exceeded` error |
 | `onTexture` | – | Called after each texture is applied |
 | `wasmUrl` | bundled | Serve the `.wasm` from your own CDN |
 

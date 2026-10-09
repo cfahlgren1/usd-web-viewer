@@ -238,13 +238,21 @@ fn add_placements(prim: &usd::Prim, world: Matrix4d, out: &mut Vec<Prototype>) -
         return Ok(());
     };
     let orientations: Vec<[f64; 4]> = match prim.attribute("orientations").get::<Value>()? {
-        Some(Value::QuathVec(q)) => q.iter().map(|q| [q.w, q.x, q.y, q.z].map(|v| v.to_f32() as f64)).collect(),
+        Some(Value::QuathVec(q)) => q
+            .iter()
+            .map(|q| [q.w, q.x, q.y, q.z].map(|v| v.to_f32() as f64))
+            .collect(),
         _ => match prim.attribute("orientationsf").get::<Value>()? {
             Some(Value::QuatfVec(q)) => q.iter().map(|&q| q.into()).collect(),
             _ => Vec::new(),
         },
     };
-    let scales = prim.attribute("scales").get::<Value>()?.as_ref().and_then(vec3s).unwrap_or_default();
+    let scales = prim
+        .attribute("scales")
+        .get::<Value>()?
+        .as_ref()
+        .and_then(vec3s)
+        .unwrap_or_default();
     let ids = match prim.attribute("ids").get::<Value>()? {
         Some(Value::Int64Vec(ids)) => ids,
         _ => Vec::new(),
