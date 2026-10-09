@@ -484,10 +484,6 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
         point_of.extend(0..points.len() as u32);
     }
 
-    let mut positions = Vec::with_capacity(vertex_count * 3);
-    for &p in &point_of {
-        positions.extend_from_slice(&points[p as usize]);
-    }
     let mut normals = match normals {
         Some(n) => expand3(&n, &point_of, &face_of, per_corner),
         None if faceted => face_normals(&points, &counts, &face_indices, &face_of, left_handed),
@@ -499,14 +495,13 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
     };
 
     // Corners that agree on point, normal and UV become one vertex again.
-    let remap = if per_corner {
-        let welded = weld(&point_of, points.len(), &positions, &normals, &uvs);
-        positions = welded.positions;
+    let (positions, remap) = if per_corner {
+        let welded = weld(&point_of, &points, &normals, &uvs);
         normals = welded.normals;
         uvs = welded.uvs;
-        Some(welded.remap)
+        (welded.positions, Some(welded.remap))
     } else {
-        None
+        (points.as_flattened().to_vec(), None)
     };
 
     // Triangle fans, ordered by subset so each subset is one contiguous range.
@@ -589,10 +584,10 @@ struct Welded {
 
 /// Merges per-corner vertices that share a point and have bit-identical
 /// normal and UV. Candidates are chained per point, so the search stays local.
-fn weld(point_of: &[u32], point_count: usize, positions: &[f32], normals: &[f32], uvs: &[f32]) -> Welded {
+fn weld(point_of: &[u32], points: &[[f32; 3]], normals: &[f32], uvs: &[f32]) -> Welded {
     const NONE: u32 = u32::MAX;
     let has_uv = !uvs.is_empty();
-    let mut head = vec![NONE; point_count];
+    let mut head = vec![NONE; points.len()];
     let mut next: Vec<u32> = Vec::new();
     let mut first_corner: Vec<u32> = Vec::new();
     let mut remap = Vec::with_capacity(point_of.len());
@@ -621,7 +616,7 @@ fn weld(point_of: &[u32], point_count: usize, positions: &[f32], normals: &[f32]
         out
     };
     Welded {
-        positions: gather(positions, 3),
+        positions: first_corner.iter().flat_map(|&c| points[point_of[c as usize] as usize]).collect(),
         normals: gather(normals, 3),
         uvs: if has_uv { gather(uvs, 2) } else { Vec::new() },
         remap,
