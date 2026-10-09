@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build:wasm": "bash scripts/build-wasm.sh",
-    "build": "bash scripts/build-wasm.sh && node scripts/bundle.mjs",
+    "build": "bash scripts/build-wasm.sh",
     "serve": "node bench/server.mjs",
     "test": "node --test 'packages/viewer/test/*.test.mjs'",
     "test:node": "node scripts/node-test.mjs",

@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { UsdLoadError } from './errors.js';
 import { applyFallback, attachTexture, configureTexture, createMaterial, variant } from './materials.js';
 
-export { findSimReadyRoot, hubUrl } from './hub.js';
+export { UsdLoadError };
 
 let wasmModule = null;
 
@@ -11,52 +12,66 @@ let wasmModule = null;
 function compileWasm(url) {
   // Written inline so bundlers (Vite, webpack) emit the asset and rewrite the URL.
   url ??= new URL('../wasm/usd_wasm_bg.wasm', import.meta.url);
-  wasmModule ||= WebAssembly.compileStreaming(fetch(url)).catch((error) => {
+  wasmModule ||= compile(url).catch((error) => {
     wasmModule = null;
-    throw error;
+    throw new UsdLoadError('worker', `could not load the WASM module from ${url}: ${error.message}`, { url: String(url), cause: error });
   });
   return wasmModule;
 }
 
+async function compile(url) {
+  const response = await fetch(url);
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  // Servers that do not send `application/wasm` break streaming compilation.
+  if (response.headers.get('content-type')?.startsWith('application/wasm')) return WebAssembly.compileStreaming(response);
+  return WebAssembly.compile(await response.arrayBuffer());
+}
+
 /**
  * Loads a USD stage into a three.js group. Resolves once geometry is ready;
- * `textures` resolves when every texture has streamed in.
+ * `complete` settles when every texture has streamed in.
  *
  * @param {string} url  root layer URL (relative URLs resolve against the page)
  * @param {import('./index.js').LoadOptions} [options]
  * @returns {Promise<import('./index.js').LoadResult>}
- *   `dispose` also stops any textures still streaming and settles `textures`.
  */
 export async function loadUsd(url, options = {}) {
-  const { maxTextureSize = 1024, textures: textureMode = 'preview', prefetchVariants = false, maxConcurrentFetches, maxLayerBytes } = options;
-  const { onTexture, onProgress, signal, headers } = options;
-  signal?.throwIfAborted();
+  const { maxTextureSize = 1024, textures: textureMode = 'preview', maxConcurrentFetches, maxLayerBytes } = options;
+  const { onProgress, signal, headers } = options;
+  const aborted = () => new UsdLoadError('aborted', 'the load was aborted', { url, cause: signal?.reason });
+  if (signal?.aborted) throw aborted();
   const absoluteUrl = new URL(url, location.href).href;
   const module = await compileWasm(options.wasmUrl);
-  signal?.throwIfAborted();
+  if (signal?.aborted) throw aborted();
   // Inline `new Worker(new URL(...))` is the pattern bundlers recognise and bundle.
-  const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  const worker = options.workerUrl
+    ? new Worker(options.workerUrl, { type: 'module' })
+    : new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 
-  let resolveScene, rejectScene, resolveTextures;
+  let resolveScene, rejectScene, resolveComplete, rejectComplete;
   const scenePromise = new Promise((resolve, reject) => ((resolveScene = resolve), (rejectScene = reject)));
-  const textures = new Promise((resolve) => (resolveTextures = resolve));
+  const complete = new Promise((resolve, reject) => ((resolveComplete = resolve), (rejectComplete = reject)));
+  // A rejection nobody awaits (e.g. after dispose) must not surface as unhandled.
+  complete.catch(() => {});
+  const counts = { textures: 0, failed: 0 };
   let built = null;
   let delivered = false;
   let stopped = false;
-  // One way out for done, error, dispose and abort: stop the worker (freeing
-  // its WASM memory) and settle `textures`.
-  const stop = () => {
+  // The one way out (done, error, dispose, abort): stop the worker, which
+  // frees its WASM memory, and settle both promises (a no-op if settled).
+  const stop = (error) => {
     if (stopped) return;
     stopped = true;
     worker.terminate();
     signal?.removeEventListener('abort', abort);
-    resolveTextures();
+    rejectScene(error);
+    if (error) rejectComplete(error);
+    else resolveComplete({ ...counts });
   };
   function abort() {
-    stop();
     // Before geometry resolves nothing has reached the caller: free it here.
     if (built && !delivered) built.dispose();
-    rejectScene(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+    stop(aborted());
   }
   signal?.addEventListener('abort', abort, { once: true });
 
@@ -74,43 +89,47 @@ export async function loadUsd(url, options = {}) {
         onProgress?.(data.progress);
         break;
       case 'scene':
+        if (signal?.aborted) return abort();
         built = buildScene(data.meta, data.geometries);
         built.info.stats = data.stats;
-        built.info.warnings = [...data.meta.warnings, ...data.stats.warnings];
+        built.info.warnings.push(...data.meta.warnings, ...data.stats.warnings);
         delivered = true;
         resolveScene(built);
         break;
       case 'texture':
-        if (data.bitmap && built) {
+        if (data.bitmap) {
           built.applyTexture(data.path, data.bitmap);
-          onTexture?.();
-        } else if (data.error && built) {
+          counts.textures++;
+        } else {
           built.textureFailed(data.path);
-          built.info.textureErrors.push(`${data.path}: ${data.error}`);
-          built.info.warnings.push(`texture not loaded: ${data.path}: ${data.error}`);
+          counts.failed++;
+          built.info.warnings.push({ code: 'texture-failed', message: data.error, path: data.path });
         }
         break;
       case 'done':
         stop();
         break;
       case 'error':
-        stop();
-        rejectScene(new Error(data.message));
+        stop(new UsdLoadError(data.code, data.message, { url: data.url, status: data.status }));
         break;
     }
   };
   worker.onerror = (event) => {
-    stop();
-    rejectScene(new Error(event.message || 'worker failed to start'));
+    event.preventDefault?.();
+    stop(new UsdLoadError('worker', event.message || 'the worker failed', { url: absoluteUrl }));
   };
-  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, prefetchVariants, maxConcurrentFetches, maxLayerBytes, headers, proxyFetch: !!options.fetch });
+  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, maxConcurrentFetches, maxLayerBytes, headers, proxyFetch: !!options.fetch });
 
   const scene = await scenePromise;
-  const dispose = () => {
-    stop();
-    scene.dispose();
+  return {
+    root: scene.root,
+    info: scene.info,
+    complete,
+    dispose() {
+      stop(aborted());
+      scene.dispose();
+    },
   };
-  return { root: scene.root, info: scene.info, textures, dispose };
 }
 
 /** Runs one worker request through the caller's `fetch` and packages the reply. */
@@ -209,7 +228,7 @@ function buildScene(meta, arrays) {
     triangles: meta.stats.triangles,
     materials: meta.materials.length,
     materialKinds: countBy(meta.materials, (m) => m.kind),
-    textureErrors: [],
+    warnings: [],
   };
   return { root, info, applyTexture, textureFailed, dispose };
 }
@@ -222,24 +241,33 @@ function countBy(list, key) {
 
 /**
  * A ready-made viewer: renderer, studio lighting, orbit controls and
- * on-demand rendering around {@link loadUsd}.
+ * on-demand rendering around {@link loadUsd}. The canvas is transparent unless
+ * a `background` is given. Throws a `webgl` UsdLoadError without WebGL.
  *
  * @param {HTMLElement | HTMLCanvasElement} target  a canvas, or a container to append one to
- * @param {object} [options]
- * @param {THREE.ColorRepresentation} [options.background=0xf2f2f2]
+ * @param {import('./index.js').ViewerOptions} [options]
+ * @returns {import('./index.js').Viewer}
  */
-export async function createViewer(target, options = {}) {
-  const canvas = target instanceof HTMLCanvasElement ? target : target.appendChild(document.createElement('canvas'));
-  const container = target instanceof HTMLCanvasElement ? canvas.parentElement : target;
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+export function createViewer(target, options = {}) {
+  const ownsCanvas = !(target instanceof HTMLCanvasElement);
+  const canvas = ownsCanvas ? target.appendChild(document.createElement('canvas')) : target;
+  const container = ownsCanvas ? target : canvas.parentElement;
+  let renderer;
+  try {
+    renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+  } catch (error) {
+    if (ownsCanvas) canvas.remove();
+    throw new UsdLoadError('webgl', `WebGL is not available: ${error.message}`, { cause: error });
+  }
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.NeutralToneMapping;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(options.background ?? 0xf2f2f2);
+  scene.background = options.background == null ? null : new THREE.Color(options.background);
   const pmrem = new THREE.PMREMGenerator(renderer);
-  scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  const environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+  scene.environment = environment;
   pmrem.dispose();
   scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.6));
   const sun = new THREE.DirectionalLight(0xffffff, 1.2);
@@ -250,15 +278,20 @@ export async function createViewer(target, options = {}) {
   camera.position.set(2, 1.5, 2);
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
+  // Focusable, with arrow keys panning the camera.
+  canvas.tabIndex = 0;
+  controls.listenToKeyEvents(canvas);
 
   let frameRequested = false;
+  let disposed = false;
   const render = () => {
     frameRequested = false;
+    if (disposed) return;
     if (controls.update()) requestRender();
     renderer.render(scene, camera);
   };
   const requestRender = () => {
-    if (frameRequested) return;
+    if (frameRequested || disposed) return;
     frameRequested = true;
     requestAnimationFrame(render);
   };
@@ -267,7 +300,7 @@ export async function createViewer(target, options = {}) {
   const resize = () => {
     const width = container?.clientWidth || canvas.clientWidth || 800;
     const height = container?.clientHeight || canvas.clientHeight || 600;
-    renderer.setSize(width, height, !(target instanceof HTMLCanvasElement));
+    renderer.setSize(width, height, ownsCanvas);
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
     requestRender();
@@ -277,31 +310,69 @@ export async function createViewer(target, options = {}) {
   resize();
 
   let current = null;
+  // The load in flight; a newer load or dispose aborts it.
+  let pending = null;
+  const clear = () => {
+    if (!current) return;
+    scene.remove(current.root);
+    current.dispose();
+    current = null;
+    requestRender();
+  };
   const viewer = {
     renderer,
     scene,
     camera,
     controls,
     requestRender,
-    /** Loads a stage, replacing the current one. Resolves when geometry shows. */
+    /** Loads a stage, replacing the current one once its geometry shows. A newer load aborts this one. */
     async load(url, loadOptions = {}) {
-      const result = await loadUsd(url, { ...loadOptions, onTexture: requestRender });
-      if (current) {
-        scene.remove(current.root);
-        current.dispose();
+      if (disposed) throw new UsdLoadError('aborted', 'the viewer was disposed', { url });
+      pending?.abort();
+      const controller = (pending = new AbortController());
+      const signal = loadOptions.signal ? AbortSignal.any([loadOptions.signal, controller.signal]) : controller.signal;
+      const onProgress = (progress) => {
+        if (progress.stage === 'textures') requestRender();
+        loadOptions.onProgress?.(progress);
+      };
+      try {
+        const result = await loadUsd(url, { ...loadOptions, signal, onProgress });
+        // Superseded (or the viewer disposed) as geometry arrived: drop it.
+        if (controller.signal.aborted || disposed) {
+          result.dispose();
+          throw new UsdLoadError('aborted', 'superseded by a newer load', { url });
+        }
+        clear();
+        current = result;
+        scene.add(result.root);
+        frame(camera, controls, result.root);
+        requestRender();
+        result.complete.then(requestRender, () => {});
+        return result;
+      } finally {
+        if (pending === controller) pending = null;
       }
-      current = result;
-      scene.add(result.root);
-      frame(camera, controls, result.root);
-      requestRender();
-      result.textures.then(requestRender);
-      return result;
     },
+    /** Removes and frees the current stage. */
+    clear,
+    /** Points the camera at `object`, by default the current stage. */
+    frame(object = current?.root) {
+      if (object) frame(camera, controls, object);
+      requestRender();
+    },
+    /** Frees the renderer, the GPU context, the current stage and any load in flight. Safe to call twice. */
     dispose() {
+      if (disposed) return;
+      disposed = true;
+      pending?.abort();
+      if (current) current.dispose();
+      current = null;
       observer.disconnect();
       controls.dispose();
-      if (current) current.dispose();
+      environment.dispose();
       renderer.dispose();
+      renderer.forceContextLoss();
+      if (ownsCanvas) canvas.remove();
     },
   };
   return viewer;

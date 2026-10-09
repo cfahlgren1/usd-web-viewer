@@ -26,6 +26,7 @@ globalThis.location = { href: 'https://example.test/' };
 globalThis.Worker = FakeWorker;
 globalThis.fetch = async () => new Response(new Uint8Array());
 WebAssembly.compileStreaming = async () => ({});
+WebAssembly.compile = async () => ({});
 const { loadUsd } = await import('../src/index.js');
 
 const TEXTURE = { path: 'https://example.test/t.png', channel: 'rgb', scale: [1, 1, 1, 1], bias: [0, 0, 0, 0], uvScale: [1, 1], uvRotation: 0, uvTranslation: [0, 0] };
@@ -60,7 +61,7 @@ const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
 
 async function load(matrix = IDENTITY) {
   let textures = 0;
-  const loading = loadUsd('scene.usda', { onTexture: () => textures++ });
+  const loading = loadUsd('scene.usda', { onProgress: (p) => p.stage === 'textures' && textures++ });
   await new Promise((resolve) => setTimeout(resolve));
   const worker = FakeWorker.last;
   worker.send(sceneMessage(matrix));
@@ -83,11 +84,11 @@ test('a rotated child under a non-uniformly scaled parent keeps its shear', asyn
   mesh.matrixWorld.elements.forEach((v, i) => assert.ok(Math.abs(v - matrix[i]) < 1e-9, `element ${i}: ${v} vs ${matrix[i]}`));
 });
 
-test('dispose stops the worker and settles the textures promise', async () => {
-  const { worker, textures, dispose } = await load();
+test('dispose stops the worker and settles the complete promise', async () => {
+  const { worker, complete, dispose } = await load();
   dispose();
   assert.equal(worker.terminated, true);
-  const settled = await Promise.race([textures.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), 50))]);
+  const settled = await Promise.race([complete.then(() => true, (e) => e.code === 'aborted'), new Promise((resolve) => setTimeout(() => resolve(false), 50))]);
   assert.equal(settled, true);
 });
 
@@ -109,13 +110,13 @@ test('geometry bounds come from the worker, so framing does not rescan positions
   assert.ok(geometry.boundingSphere.radius >= Math.SQRT1_2);
 });
 
-test('abort before geometry rejects with AbortError and stops the worker', async () => {
+test('abort before geometry rejects with an aborted UsdLoadError and stops the worker', async () => {
   const controller = new AbortController();
   const loading = loadUsd('scene.usda', { signal: controller.signal });
   await new Promise((resolve) => setTimeout(resolve));
   const worker = FakeWorker.last;
   controller.abort();
-  await assert.rejects(loading, { name: 'AbortError' });
+  await assert.rejects(loading, { name: 'UsdLoadError', code: 'aborted' });
   assert.equal(worker.terminated, true);
   // A scene that was already on its way is dropped.
   worker.send(sceneMessage(IDENTITY));
@@ -127,9 +128,24 @@ test('abort after geometry stops textures but leaves the model to its owner', as
   await new Promise((resolve) => setTimeout(resolve));
   const worker = FakeWorker.last;
   worker.send(sceneMessage(IDENTITY));
-  const { root, textures } = await loading;
+  const { root, complete } = await loading;
   controller.abort();
   assert.equal(worker.terminated, true);
-  await textures;
+  await assert.rejects(complete, { code: 'aborted' });
   assert.equal(root.children.length, 1);
+});
+
+test('a worker error after geometry rejects complete instead of vanishing', async () => {
+  const { complete, worker } = await load();
+  worker.send({ type: 'error', code: 'compose', message: 'boom' });
+  await assert.rejects(complete, { name: 'UsdLoadError', code: 'compose', message: 'boom' });
+});
+
+test('complete reports texture counts and failures become warnings', async () => {
+  const { complete, worker, info } = await load();
+  worker.send({ type: 'texture', path: 'https://example.test/t.png', bitmap: fakeBitmap() });
+  worker.send({ type: 'texture', path: 'https://example.test/u.png', error: 'HTTP 404' });
+  worker.send({ type: 'done' });
+  assert.deepEqual(await complete, { textures: 1, failed: 1 });
+  assert.deepEqual(info.warnings, [{ code: 'texture-failed', message: 'HTTP 404', path: 'https://example.test/u.png' }]);
 });

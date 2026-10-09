@@ -4,19 +4,20 @@
 // or as the Rust side resolved them from authored paths, and fetched by that
 // URL. Only the root keeps its query (a signed URL, say) for fetching:
 // relative references do not inherit it.
+import { UsdLoadError } from './errors.js';
 
 /**
  * Loads and composes the stage at `rootUrl`.
  *
  * @param {object} o
  * @param {typeof import('../wasm/usd_wasm.js').UsdLoader} o.UsdLoader
- * @param {(url: string, maxBytes: number) => Promise<Uint8Array | null>} o.fetchBytes  null when
- *   missing; may stop reading once a body passes `maxBytes`
+ * @param {(url: string, maxBytes: number) => Promise<Uint8Array | null>} o.fetchBytes  null or a
+ *   `fetch` UsdLoadError when missing; may stop reading once a body passes `maxBytes`
  * @param {string} o.rootUrl  absolute
  * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
  * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
  * @param {number} [o.maxLayerBytes=1 GiB]  total size of the distinct layers held for composition
- * @param {(progress: { stage: 'layers' | 'compose', loaded: number, total: number, bytes: number }) => void} [o.onProgress]
+ * @param {(progress: { stage: 'layers', loaded: number, total: number, bytes: number } | { stage: 'compose', round: number }) => void} [o.onProgress]
  * @returns {Promise<{ scene: import('../wasm/usd_wasm.js').UsdScene, meta: object, stats: object }>}
  */
 export async function composeStage({
@@ -44,11 +45,25 @@ export async function composeStage({
     const job = (async () => {
       const t0 = performance.now();
       const remaining = maxLayerBytes - heldBytes + (layerSizes.get(path) ?? 0);
-      const bytes = await throttle(() => fetchBytes(urlOf(path), remaining));
+      // Any fetch failure, HTTP or network: the root fails the load, any
+      // other layer is left out with a warning.
+      let bytes = null;
+      let failure = null;
+      try {
+        bytes = await throttle(() => fetchBytes(urlOf(path), remaining));
+      } catch (error) {
+        // HTTP errors carry a status; network errors are TypeErrors (as from fetch).
+        if (error?.status === undefined && !(error instanceof TypeError)) throw error;
+        failure = error;
+      }
       stats.fetchMs = Math.max(stats.fetchMs, performance.now() - t0);
       if (!bytes) {
+        if (path === root) {
+          const status = failure?.status ?? (failure ? undefined : 404);
+          throw new UsdLoadError('fetch', `could not fetch ${rootUrl}${status ? ` (HTTP ${status})` : ''}`, { url: rootUrl, status, cause: failure ?? undefined });
+        }
         stats.missing++;
-        stats.warnings.push(`layer not found: ${urlOf(path)}`);
+        stats.warnings.push({ code: 'layer-missing', message: `layer not found: ${failure?.message ?? urlOf(path)}`, path: urlOf(path) });
         loader.markUnavailable(path);
         progress();
         return;
@@ -64,7 +79,7 @@ export async function composeStage({
         deps = loader.addLayer(path, bytes);
       } catch (error) {
         // An unreadable layer is left out; composition carries on without it.
-        stats.warnings.push(`unreadable layer ${urlOf(path)}: ${error.message || error}`);
+        stats.warnings.push({ code: 'layer-unreadable', message: String(error.message || error), path: urlOf(path) });
         loader.markUnavailable(path);
         progress();
         return;
@@ -83,16 +98,16 @@ export async function composeStage({
   };
 
   await fetchLayer(root);
-  if (!loader.has(root)) throw new Error(`could not fetch ${rootUrl}`);
+  if (!loader.has(root)) throw new UsdLoadError('compose', `could not read ${rootUrl}`, { url: rootUrl });
 
   for (;;) {
     stats.rounds++;
-    onProgress({ stage: 'compose', loaded: stats.layers, total: started.size, bytes: stats.layerBytes });
+    onProgress({ stage: 'compose', round: stats.rounds });
     const t0 = performance.now();
     const missing = loader.compose(root);
     stats.composeMs += performance.now() - t0;
     if (!missing.length) break;
-    if (stats.rounds > 16) throw new Error(`composition still missing layers: ${missing.join(', ')}`);
+    if (stats.rounds > 16) throw new UsdLoadError('compose', `composition still missing layers: ${missing.join(', ')}`);
     // The list also names layers the failed attempt consumed; fetch them again.
     for (const path of missing) started.delete(path);
     await Promise.all(missing.map(fetchLayer));
@@ -104,7 +119,7 @@ export async function composeStage({
 }
 
 function resourceLimit(detail) {
-  return new Error(`resource limit exceeded: ${detail}`);
+  return new UsdLoadError('fetch', `resource limit exceeded: ${detail}`);
 }
 
 /** Runs at most `max` of the given tasks at once. */
@@ -130,12 +145,13 @@ export function limiter(max) {
 }
 
 /**
- * Fetches a body, giving up once it passes `maxBytes`; null on an HTTP error.
- * `fetchFn` is the global fetch or a stand-in with the same contract.
+ * Fetches a body, giving up once it passes `maxBytes`. An HTTP error throws a
+ * `fetch` UsdLoadError carrying the status. `fetchFn` is the global fetch or a
+ * stand-in with the same contract.
  */
 export async function fetchLimited(url, maxBytes, { headers, fetchFn = fetch } = {}) {
   const response = await fetchFn(url, { headers });
-  if (!response.ok) return null;
+  if (!response.ok) throw new UsdLoadError('fetch', `HTTP ${response.status} for ${url}`, { url, status: response.status });
   const tooBig = () => resourceLimit(`${url} is larger than ${maxBytes} bytes`);
   if (Number(response.headers.get('content-length')) > maxBytes) {
     await response.body?.cancel();
@@ -191,9 +207,10 @@ const PREVIEW_DATA_SIZE = 512;
 /**
  * The texture files to load and the size to decode each to, base colors first.
  * `preview`: base color up to `maxSize`, other maps up to 512 px, no normal
- * maps. `full`: every map, including normals, up to `maxSize`.
+ * maps. `full`: every map, including normals, up to `maxSize`. `none`: nothing.
  */
 export function textureJobs(meta, { textures = 'preview', maxSize = 1024 } = {}) {
+  if (textures === 'none') return [];
   const full = textures === 'full';
   const dataSize = full ? maxSize : Math.min(maxSize, PREVIEW_DATA_SIZE);
   const tiers = [

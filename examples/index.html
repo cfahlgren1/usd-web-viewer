@@ -27,7 +27,7 @@
 
       const status = document.getElementById('status');
       const input = document.getElementById('url');
-      const viewer = await createViewer(document.getElementById('viewer'));
+      const viewer = createViewer(document.getElementById('viewer'), { background: 0xf2f2f2 });
 
       async function load(url) {
         history.replaceState(null, '', `?url=${encodeURIComponent(url)}`);
@@ -40,7 +40,7 @@
           status.textContent =
             `${result.info.meshes} meshes, ${result.info.triangles.toLocaleString()} triangles, ${result.info.materials} materials\n` +
             `geometry in ${(performance.now() - t0).toFixed(0)} ms (layers ${s.layers}, ${(s.layerBytes / 1e6).toFixed(1)} MB, ${s.rounds} compose rounds, WASM ${(s.wasmMemoryBytes / 1e6).toFixed(0)} MB)`;
-          await result.textures;
+          await result.complete;
           status.textContent += `\ntextures in ${(performance.now() - t0).toFixed(0)} ms`;
         } catch (error) {
           status.textContent = String(error.message || error);

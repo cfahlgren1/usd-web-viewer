@@ -83,7 +83,7 @@ fn inspect(root: &str) -> Result<(), Box<dyn std::error::Error>> {
         );
     }
     for w in &scene.warnings {
-        println!("    warning: {w}");
+        println!("    warning [{}] {}{}", w.code, w.message, w.path.as_deref().map(|p| format!(" ({p})")).unwrap_or_default());
     }
     for (path, why) in &s.skipped {
         println!("    skipped ({why}) {path}");

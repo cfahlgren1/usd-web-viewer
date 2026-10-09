@@ -18,7 +18,8 @@ function proxiedFetch(url) {
   self.postMessage({ type: 'fetch', id, url });
   return new Promise((resolve) => proxied.set(id, resolve)).then(
     ({ ok, status, buffer, error }) => {
-      if (error) throw new Error(error);
+      // A network failure in the caller's fetch reads like one from fetch itself.
+      if (error) throw new TypeError(error);
       return new Response(ok ? buffer : null, { status: ok ? 200 : status || 500 });
     },
   );
@@ -30,7 +31,7 @@ self.onmessage = async ({ data }) => {
     proxied.delete(data.id);
     return;
   }
-  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', prefetchVariants = false, maxConcurrentFetches = 16, maxLayerBytes = 2 ** 30, headers, proxyFetch } = data;
+  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes = 2 ** 30, headers, proxyFetch } = data;
   // Every request, layer or texture, goes through here.
   const fetchFn = proxyFetch ? proxiedFetch : fetch;
   const fetchOptions = { headers, fetchFn };
@@ -52,7 +53,6 @@ self.onmessage = async ({ data }) => {
       UsdLoader,
       fetchBytes,
       rootUrl: url,
-      prefetchVariants,
       maxConcurrentFetches,
       maxLayerBytes,
       onProgress: progress,
@@ -91,7 +91,10 @@ self.onmessage = async ({ data }) => {
     );
     self.postMessage({ type: 'done' });
   } catch (error) {
-    self.postMessage({ type: 'error', message: String(error?.stack || error?.message || error) });
+    // Fetch and resource-limit errors keep their code, url and status; anything
+    // the WASM side throws is a composition failure.
+    const { code = 'compose', url: failedUrl, status } = error ?? {};
+    self.postMessage({ type: 'error', code, message: String(error?.message || error), url: failedUrl, status });
   }
 };
 
