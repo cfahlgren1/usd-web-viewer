@@ -4,7 +4,9 @@ use usd_wasm::{Composed, Loader, Scene};
 
 fn scene(usda: &str) -> Scene {
     let mut loader = Loader::new();
-    loader.add_layer("/h/root.usda", usda.as_bytes().to_vec()).expect("layer parses");
+    loader
+        .add_layer("/h/root.usda", usda.as_bytes().to_vec())
+        .expect("layer parses");
     match loader.compose("/h/root.usda").expect("composes") {
         Composed::Scene(scene) => scene,
         Composed::Missing(missing) => panic!("missing layers: {missing:?}"),
@@ -27,4 +29,42 @@ fn hole_faces_are_not_drawn() {
     let s = scene(&mesh(&format!("{TWO_QUADS}\n        int[] holeIndices = [1]")));
     assert_eq!(s.stats.triangles, 2);
     assert_eq!(s.geometries[0].indices.len(), 6);
+}
+
+/// Two quads folded 90 degrees along x = 1: one faces +Z, the other +X.
+const FOLD: &str = r#"
+        int[] faceVertexCounts = [4, 4]
+        int[] faceVertexIndices = [0, 1, 4, 3, 1, 2, 5, 4]
+        point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 0, -1), (0, 1, 0), (1, 1, 0), (1, 1, -1)]
+"#;
+
+/// The normal at each output vertex, rounded to whole numbers.
+fn vertex_normals(s: &Scene) -> Vec<[i32; 3]> {
+    s.geometries[0]
+        .normals
+        .chunks(3)
+        .map(|n| [n[0], n[1], n[2]].map(|v| v.round() as i32))
+        .collect()
+}
+
+#[test]
+fn polygonal_mesh_without_normals_is_faceted() {
+    let s = scene(&mesh(&format!(
+        "{FOLD}\n        uniform token subdivisionScheme = \"none\""
+    )));
+    let normals = vertex_normals(&s);
+    assert_eq!(normals.len(), 8, "the shared edge is split");
+    let indices = &s.geometries[0].indices;
+    for tri in indices.chunks(3).take(2) {
+        assert!(tri.iter().all(|&v| normals[v as usize] == [0, 0, 1]));
+    }
+    for tri in indices.chunks(3).skip(2) {
+        assert!(tri.iter().all(|&v| normals[v as usize] == [1, 0, 0]));
+    }
+}
+
+#[test]
+fn subdivision_mesh_without_normals_stays_smooth() {
+    let s = scene(&mesh(FOLD));
+    assert_eq!(vertex_normals(&s).len(), 6, "points are shared");
 }

@@ -353,12 +353,16 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
     let normals = normals.filter(|n| fits(n.interp, n.values.len(), points.len(), counts.len(), corners));
     let uvs = uvs.filter(|uv| fits(uv.interp, uv.values.len(), points.len(), counts.len(), corners));
 
+    // A polygonal mesh with no normals is drawn faceted; a subdivision surface
+    // (the schema fallback) gets smooth normals as its approximation.
+    let faceted = normals.is_none() && token_attr(prim, "subdivisionScheme").as_deref() == Some("none");
     // Per-point layout when every attribute is per point; otherwise one vertex
     // per face corner, which faceVarying and uniform data need.
-    let per_corner = [normals.as_ref().map(|n| n.interp), uvs.as_ref().map(|u| u.interp)]
-        .into_iter()
-        .flatten()
-        .any(|i| matches!(i, Interp::FaceVarying | Interp::Uniform));
+    let per_corner = faceted
+        || [normals.as_ref().map(|n| n.interp), uvs.as_ref().map(|u| u.interp)]
+            .into_iter()
+            .flatten()
+            .any(|i| matches!(i, Interp::FaceVarying | Interp::Uniform));
 
     let vertex_count = if per_corner { corners } else { points.len() };
     // Maps an output vertex to (point index, face index, corner index).
@@ -381,6 +385,7 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
     }
     let mut normals = match normals {
         Some(n) => expand3(&n, &point_of, &face_of, per_corner),
+        None if faceted => face_normals(&points, &counts, &face_indices, &face_of, left_handed),
         None => smooth_normals(&points, &counts, &face_indices, &point_of, left_handed),
     };
     let mut uvs = match uvs {
@@ -570,40 +575,70 @@ fn smooth_normals(
     let mut corner = 0usize;
     for &count in counts {
         let n = count.max(0) as usize;
-        if n >= 3 {
-            let face = &face_indices[corner..corner + n];
-            // Newell's method handles non-planar polygons.
-            let mut normal = [0f32; 3];
-            for i in 0..n {
-                let a = points[face[i] as usize];
-                let b = points[face[(i + 1) % n] as usize];
-                normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
-                normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
-                normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
-            }
-            if left_handed {
-                normal = [-normal[0], -normal[1], -normal[2]];
-            }
-            for &p in face {
-                let a = &mut acc[p as usize];
-                a[0] += normal[0];
-                a[1] += normal[1];
-                a[2] += normal[2];
-            }
+        let face = &face_indices[corner..corner + n];
+        let normal = newell(points, face, left_handed);
+        for &p in face {
+            let a = &mut acc[p as usize];
+            a[0] += normal[0];
+            a[1] += normal[1];
+            a[2] += normal[2];
         }
         corner += n;
     }
     let mut out = Vec::with_capacity(point_of.len() * 3);
     for &p in point_of {
-        let [x, y, z] = acc[p as usize];
-        let len = (x * x + y * y + z * z).sqrt();
-        if len > 0.0 {
-            out.extend_from_slice(&[x / len, y / len, z / len]);
-        } else {
-            out.extend_from_slice(&[0.0, 0.0, 1.0]);
-        }
+        out.extend_from_slice(&unit(acc[p as usize]));
     }
     out
+}
+
+/// One normal per face, repeated at each of its corners (per-corner layout).
+fn face_normals(
+    points: &[[f32; 3]],
+    counts: &[i32],
+    face_indices: &[i32],
+    face_of: &[u32],
+    left_handed: bool,
+) -> Vec<f32> {
+    let mut per_face = Vec::with_capacity(counts.len());
+    let mut corner = 0usize;
+    for &count in counts {
+        let n = count.max(0) as usize;
+        per_face.push(unit(newell(points, &face_indices[corner..corner + n], left_handed)));
+        corner += n;
+    }
+    let mut out = Vec::with_capacity(face_of.len() * 3);
+    for &f in face_of {
+        out.extend_from_slice(&per_face[f as usize]);
+    }
+    out
+}
+
+/// A polygon's area-weighted normal by Newell's method, which handles
+/// non-planar polygons; zero for degenerate faces.
+fn newell(points: &[[f32; 3]], face: &[i32], left_handed: bool) -> [f32; 3] {
+    let n = face.len();
+    let mut normal = [0f32; 3];
+    if n < 3 {
+        return normal;
+    }
+    for i in 0..n {
+        let a = points[face[i] as usize];
+        let b = points[face[(i + 1) % n] as usize];
+        normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    if left_handed { normal.map(|v| -v) } else { normal }
+}
+
+fn unit([x, y, z]: [f32; 3]) -> [f32; 3] {
+    let len = (x * x + y * y + z * z).sqrt();
+    if len > 0.0 {
+        [x / len, y / len, z / len]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
 }
 
 /// `materialBind` face subsets, by child name, keeping only valid face indices.
