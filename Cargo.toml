@@ -1,0 +1,21 @@
+[workspace]
+resolver = "3"
+members = ["crates/usd-wasm"]
+
+[workspace.dependencies]
+openusd = { git = "https://github.com/mxpv/openusd", rev = "2d53b64b5dba9005bb05faad46d839520cf05f12" }
+openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "2d53b64b5dba9005bb05faad46d839520cf05f12", features = ["geom", "shade"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Native profile for the CLI and profiling: fast code, keeps symbols.
+[profile.native]
+inherits = "release"
+opt-level = 3
+panic = "unwind"
+strip = false

@@ -1,0 +1,16 @@
+[package]
+name = "usd-wasm"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "OpenUSD composition and mesh extraction for the web, built on the openusd crate"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+openusd.workspace = true
+openusd-schemas.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.129"
