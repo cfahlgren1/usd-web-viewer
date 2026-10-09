@@ -7,12 +7,15 @@
     "build": "bash scripts/build-wasm.sh",
     "serve": "node scripts/serve.mjs",
     "test": "node --test 'packages/viewer/test/*.test.mjs'",
+    "check:types": "tsc --noEmit --strict --exactOptionalPropertyTypes --skipLibCheck --module nodenext --target es2022 --lib es2022,dom packages/viewer/test/types.ts",
     "licenses": "node scripts/third-party-licenses.mjs"
   },
   "devDependencies": {
+    "@types/three": "^0.186.0",
     "binaryen": "^132.0.0",
     "esbuild": "^0.28.2",
     "playwright": "1.64.0",
-    "three": "^0.186.1"
+    "three": "^0.186.1",
+    "typescript": "^7.0.2"
   }
 }

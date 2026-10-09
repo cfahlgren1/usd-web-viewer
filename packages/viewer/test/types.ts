@@ -1,5 +1,5 @@
 // Type-level checks of the public typings.
-// usage: tsc --noEmit --strict --exactOptionalPropertyTypes --skipLibCheck --module nodenext --target es2022 packages/viewer/test/types.ts
+// usage: npm run check:types
 import { UsdLoadError, loadUsd } from '../src/index.js';
 import type { UsdViewerElement } from '../src/element.js';
 
