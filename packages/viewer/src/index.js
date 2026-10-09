@@ -39,15 +39,23 @@ async function compile(url) {
 export async function loadUsd(url, options = {}) {
   const { maxTextureSize = 1024, textures: textureMode = 'preview', maxConcurrentFetches, maxLayerBytes } = options;
   const { onProgress, signal, headers } = options;
+  if (maxConcurrentFetches !== undefined && !(Number.isInteger(maxConcurrentFetches) && maxConcurrentFetches > 0)) {
+    throw new RangeError(`maxConcurrentFetches must be a positive integer, got ${maxConcurrentFetches}`);
+  }
   const aborted = () => new UsdLoadError('aborted', 'the load was aborted', { url, cause: signal?.reason });
   if (signal?.aborted) throw aborted();
   const absoluteUrl = new URL(url, location.href).href;
   const module = await compileWasm(options.wasmUrl);
   if (signal?.aborted) throw aborted();
-  // Inline `new Worker(new URL(...))` is the pattern bundlers recognise and bundle.
-  const worker = options.workerUrl
-    ? new Worker(options.workerUrl, { type: 'module' })
-    : new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  let worker;
+  try {
+    // Inline `new Worker(new URL(...))` is the pattern bundlers recognise and bundle.
+    worker = options.workerUrl
+      ? new Worker(options.workerUrl, { type: 'module' })
+      : new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  } catch (error) {
+    throw new UsdLoadError('worker', `could not start the worker: ${error.message}`, { url: options.workerUrl && String(options.workerUrl), cause: error });
+  }
   // Ends the caller's fetches (custom `fetch` requests) when the load stops.
   const requests = new AbortController();
   const requestSignal = signal ? AbortSignal.any([signal, requests.signal]) : requests.signal;

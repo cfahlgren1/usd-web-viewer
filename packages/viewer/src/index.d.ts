@@ -25,7 +25,7 @@ export interface LoadOptions {
   wasmUrl?: string | URL | undefined;
   /** Where the worker script is served from. Defaults to the copy next to the package. */
   workerUrl?: string | URL | undefined;
-  /** Requests in flight at once. Default 16 (textures: at most 4 fetched and decoded at once). */
+  /** Requests in flight at once, a positive integer (anything else throws a RangeError). Default 16 (textures: at most 4 fetched and decoded at once). */
   maxConcurrentFetches?: number | undefined;
   /** Total bytes of USD layers to fetch before failing with a `fetch` error. Default 1 GiB. */
   maxLayerBytes?: number | undefined;
@@ -81,6 +81,7 @@ export interface LoadResult {
 export type UsdLoadErrorCode = 'aborted' | 'fetch' | 'compose' | 'worker' | 'webgl';
 
 export class UsdLoadError extends Error {
+  constructor(code: UsdLoadErrorCode, message: string, details?: { url?: string | undefined; status?: number | undefined; cause?: unknown });
   readonly name: 'UsdLoadError';
   readonly code: UsdLoadErrorCode;
   /** The URL that failed, when there is one. */

@@ -6,9 +6,16 @@ import * as THREE from 'three';
 
 class FakeWorker {
   static last = null;
+  /** Thrown by the next construction, as a browser does for a cross-origin script. */
+  static failNext = null;
   terminated = false;
   received = [];
   constructor() {
+    if (FakeWorker.failNext) {
+      const error = FakeWorker.failNext;
+      FakeWorker.failNext = null;
+      throw error;
+    }
     FakeWorker.last = this;
   }
   postMessage(request) {
@@ -217,4 +224,15 @@ test('dispose aborts requests still running in the caller fetch', { timeout: 300
   assert.equal(signal.aborted, false);
   result.dispose();
   assert.equal(signal.aborted, true);
+});
+
+test('a worker that cannot be constructed fails with a worker UsdLoadError', { timeout: 3000 }, async () => {
+  FakeWorker.failNext = Object.assign(new Error('cross-origin worker script'), { name: 'SecurityError', code: 18 });
+  await assert.rejects(loadUsd('scene.usda', { workerUrl: 'https://cdn.other.test/worker.js' }), { name: 'UsdLoadError', code: 'worker' });
+});
+
+test('maxConcurrentFetches must be a finite positive integer', { timeout: 3000 }, async () => {
+  for (const value of [0, -1, 1.5, Infinity, NaN]) {
+    await assert.rejects(loadUsd('scene.usda', { maxConcurrentFetches: value }), RangeError, String(value));
+  }
 });

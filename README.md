@@ -69,7 +69,7 @@ scene.add(root);   // THREE.Group, Y-up, metres
 | `headers` | – | Sent with layer and texture requests to the root URL's origin only (see [Embedding elsewhere](#embedding-elsewhere)) |
 | `fetch` | – | Your own `fetch(url, { headers, signal })`, used for every request (proxied from the worker); `headers` is set only for the root URL's origin, `signal` aborts when the load stops |
 | `wasmUrl` / `workerUrl` | bundled | Serve the `.wasm` / worker script from your own CDN |
-| `maxConcurrentFetches` | `16` | Requests in flight at once (textures: at most 4 fetched and decoded at once) |
+| `maxConcurrentFetches` | `16` | Requests in flight at once, a positive integer (textures: at most 4 fetched and decoded at once) |
 | `maxLayerBytes` | 1 GiB | Total size of USD layers to fetch before failing with a `fetch` error |
 
 Errors are `UsdLoadError`s with a `code` (`aborted`, `fetch`, `compose`, `worker`, `webgl`), the failing `url` and, for a root layer that could not be fetched, the HTTP `status` (401 / 403 for a gated or private repo, 404 when missing). A missing sublayer, reference or payload is not an error: it is left out with a warning. `complete` rejects too if the load is aborted or disposed, or the worker dies after the geometry arrived.
@@ -147,7 +147,9 @@ npm install
 cargo install wasm-bindgen-cli --version 0.2.129   # once
 npm run build:wasm      # cargo -> wasm-bindgen -> wasm-opt -Os
 npm run serve           # http://127.0.0.1:8811/examples/index.html?url=<root .usd URL>
+npm test                                            # unit tests (Node, real WASM)
 node scripts/node-test.mjs                          # compose + extract in Node
+npx tsc --noEmit --strict --exactOptionalPropertyTypes --skipLibCheck --module nodenext --target es2022 packages/viewer/test/types.ts
 node scripts/api-test.mjs                           # progress, abort, headers, fetch, warnings, <usd-viewer>
 (cd examples/vite && npm install && node test.mjs)  # Vite production build loading a Hub URL
 node bench/run.mjs --configs usd-wasm,gltf --runs 3
