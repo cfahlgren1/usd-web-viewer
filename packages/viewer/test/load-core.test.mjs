@@ -108,9 +108,42 @@ test('fetchLimited stops reading a streamed body past maxBytes', async (t) => {
   await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
   t.after(() => srv.close());
   const base = `http://127.0.0.1:${srv.address().port}`;
-  assert.equal(new TextDecoder().decode(await fetchLimited(`${base}/small`, 5)), 'hello');
-  await assert.rejects(fetchLimited(`${base}/endless`, 256 * 1024), /resource limit exceeded/);
+  assert.equal(new TextDecoder().decode(await fetchLimited(`${base}/small`, cap(5))), 'hello');
+  await assert.rejects(fetchLimited(`${base}/endless`, cap(256 * 1024)), /over the cap/);
   assert.ok(sent < 4 * 1024 * 1024, `stopped early (${sent} bytes sent)`);
+});
+
+/** A byte budget for fetchLimited: charges each chunk and throws past `max`. */
+function cap(max) {
+  let used = 0;
+  return (bytes) => {
+    used += bytes;
+    if (used > max) throw new Error('over the cap');
+  };
+}
+
+test('parallel layers share one byte budget as their bodies stream in', async () => {
+  const CHUNK = 64 * 1024;
+  const BUDGET = 1024 * 1024;
+  let streamed = 0;
+  const endless = () =>
+    new Response(
+      new ReadableStream({
+        async pull(controller) {
+          await new Promise((resolve) => setTimeout(resolve));
+          streamed += CHUNK;
+          controller.enqueue(new Uint8Array(CHUNK).fill(32));
+        },
+      }),
+    );
+  const root = sublayers('./a.usda', './b.usda', './c.usda', './d.usda');
+  const fetchBytes = (url, budget) => fetchLimited(url, budget, { fetchFn: async (u) => (u.endsWith('root.usda') ? new Response(root) : endless()) });
+  await assert.rejects(
+    composeStage({ UsdLoader, fetchBytes, rootUrl: 'https://h/root.usda', maxLayerBytes: BUDGET, maxConcurrentFetches: 4 }),
+    /resource limit exceeded/,
+  );
+  // Each stream may have one chunk read ahead when the shared budget runs out.
+  assert.ok(streamed <= BUDGET + 5 * CHUNK, `${streamed} bytes streamed for a ${BUDGET}-byte budget`);
 });
 
 /** The URLs `fetch` would request for what composeStage asked for. */

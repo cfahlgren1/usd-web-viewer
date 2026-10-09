@@ -11,8 +11,10 @@ import { UsdLoadError } from './errors.js';
  *
  * @param {object} o
  * @param {typeof import('../wasm/usd_wasm.js').UsdLoader} o.UsdLoader
- * @param {(url: string, maxBytes: number) => Promise<Uint8Array | null>} o.fetchBytes  null or a
- *   `fetch` UsdLoadError when missing; may stop reading once a body passes `maxBytes`
+ * @param {(url: string, budget: (bytes: number) => void) => Promise<Uint8Array | null>} o.fetchBytes  null
+ *   or a `fetch` UsdLoadError when missing. Calling `budget` with each chunk's size as it
+ *   arrives throws once all layers together pass `maxLayerBytes`; a body never passed
+ *   through it is charged whole when it returns.
  * @param {string} o.rootUrl  absolute
  * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
  * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
@@ -36,22 +38,35 @@ export async function composeStage({
   const started = new Map();
   const progress = () => onProgress({ stage: 'layers', loaded: stats.layers + stats.missing, total: started.size, bytes: stats.layerBytes });
   const throttle = limiter(maxConcurrentFetches);
+  // One budget for every layer body, charged as its bytes arrive, so fetches
+  // in parallel cannot each count on the whole remainder.
+  let heldBytes = 0;
+  const charge = (bytes, path) => {
+    heldBytes += bytes;
+    if (heldBytes > maxLayerBytes) throw resourceLimit(`layers exceed maxLayerBytes (${maxLayerBytes} bytes) at ${path}`);
+  };
   // Re-fetched layers replace their earlier bytes, so count each path once.
   const layerSizes = new Map();
-  let heldBytes = 0;
 
   const fetchLayer = (path) => {
     if (loader.has(path) || started.has(path)) return started.get(path);
     const job = (async () => {
       const t0 = performance.now();
-      const remaining = maxLayerBytes - heldBytes + (layerSizes.get(path) ?? 0);
+      heldBytes -= layerSizes.get(path) ?? 0;
+      layerSizes.delete(path);
+      let charged = 0;
+      const budget = (bytes) => {
+        charged += bytes;
+        charge(bytes, path);
+      };
       // Any fetch failure, HTTP or network: the root fails the load, any
       // other layer is left out with a warning.
       let bytes = null;
       let failure = null;
       try {
-        bytes = await throttle(() => fetchBytes(urlOf(path), remaining));
+        bytes = await throttle(() => fetchBytes(urlOf(path), budget));
       } catch (error) {
+        heldBytes -= charged;
         // HTTP errors carry a status; network errors are TypeErrors (as from fetch).
         if (error?.status === undefined && !(error instanceof TypeError)) throw error;
         failure = error;
@@ -68,9 +83,8 @@ export async function composeStage({
         progress();
         return;
       }
-      heldBytes += bytes.byteLength - (layerSizes.get(path) ?? 0);
+      charge(bytes.byteLength - charged, path);
       layerSizes.set(path, bytes.byteLength);
-      if (heldBytes > maxLayerBytes) throw resourceLimit(`layers exceed maxLayerBytes (${maxLayerBytes} bytes) at ${path}`);
       stats.layers++;
       stats.layerBytes += bytes.byteLength;
       const t1 = performance.now();
@@ -145,29 +159,28 @@ export function limiter(max) {
 }
 
 /**
- * Fetches a body, giving up once it passes `maxBytes`. An HTTP error throws a
+ * Fetches a body, passing each chunk's size to `budget` as it arrives and
+ * giving up (cancelling the body) when `budget` throws. An HTTP error throws a
  * `fetch` UsdLoadError carrying the status. `fetchFn` is the global fetch or a
  * stand-in with the same contract.
  */
-export async function fetchLimited(url, maxBytes, { headers, fetchFn = fetch } = {}) {
-  const response = await fetchFn(url, { headers });
+export async function fetchLimited(url, budget, { fetchFn = fetch } = {}) {
+  const response = await fetchFn(url);
   if (!response.ok) throw new UsdLoadError('fetch', `HTTP ${response.status} for ${url}`, { url, status: response.status });
-  const tooBig = () => resourceLimit(`${url} is larger than ${maxBytes} bytes`);
-  if (Number(response.headers.get('content-length')) > maxBytes) {
-    await response.body?.cancel();
-    throw tooBig();
-  }
+  if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
   const chunks = [];
   let size = 0;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    size += value.byteLength;
-    if (size > maxBytes) {
+    try {
+      budget(value.byteLength);
+    } catch (error) {
       await reader.cancel();
-      throw tooBig();
+      throw error;
     }
+    size += value.byteLength;
     chunks.push(value);
   }
   const out = new Uint8Array(size);

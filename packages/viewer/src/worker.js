@@ -34,8 +34,7 @@ self.onmessage = async ({ data }) => {
   const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes = 2 ** 30, headers, proxyFetch } = data;
   // Every request, layer or texture, goes through here.
   const fetchFn = proxyFetch ? proxiedFetch : fetch;
-  const fetchOptions = { headers, fetchFn };
-  const fetchBytes = (target, maxBytes) => fetchLimited(target, maxBytes, fetchOptions);
+  const fetchBytes = (target, budget) => fetchLimited(target, budget, { fetchFn: (u) => fetchFn(u, { headers }) });
   // Images stay a Blob (the browser may keep it off the JS heap) until decoded.
   const fetchBlob = async (target) => {
     const response = await fetchFn(target, { headers });
