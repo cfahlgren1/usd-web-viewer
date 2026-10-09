@@ -70,7 +70,8 @@ export interface LoadStats {
 }
 
 export interface LoadInfo {
-  readonly upAxis: 'Y' | 'Z';
+  /** As authored, like Pixar's `UsdGeomGetStageUpAxis`: `Y` (default) or `Z`; anything else is drawn as `Y`. */
+  readonly upAxis: string;
   readonly metersPerUnit: number;
   readonly meshes: number;
   readonly geometries: number;
@@ -105,6 +106,7 @@ export class UsdLoadError extends Error {
   readonly status?: number | undefined;
 }
 
+/** Rejects with a UsdLoadError of code `worker` where there are no Web Workers (e.g. on a server). */
 export function loadUsd(url: string, options?: LoadOptions): Promise<LoadResult>;
 
 export interface ViewerOptions {

@@ -16,6 +16,7 @@ export interface UsdViewerEventMap extends Omit<HTMLElementEventMap, 'progress' 
  */
 export class UsdViewerElement extends HTMLElement {
   src: string;
+  /** Reads `preview` when the attribute is missing or not a TextureMode. */
   textures: TextureMode;
   maxTextureSize: number;
   /** Accessible description: the `aria-label` of the canvas (`role="img"`), `3D model` when absent. The element is `aria-busy` while loading; the focused canvas pans with the arrow keys and zooms with + / -. */

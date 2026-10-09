@@ -14,6 +14,7 @@ import { createViewer, UsdLoadError } from './index.js';
 
 const Base = globalThis.HTMLElement ?? class {};
 const ATTRIBUTES = { src: 'src', textures: 'textures', maxTextureSize: 'max-texture-size', alt: 'alt', touchAction: 'touch-action' };
+const textureMode = (value) => (['none', 'preview', 'full'].includes(value) ? value : 'preview');
 
 export class UsdViewerElement extends Base {
   static observedAttributes = Object.values(ATTRIBUTES);
@@ -88,7 +89,7 @@ export class UsdViewerElement extends Base {
     this.setAttribute('aria-busy', 'true');
     try {
       const result = await this.#viewer.load(src, {
-        textures: ['none', 'preview', 'full'].includes(this.getAttribute('textures')) ? this.getAttribute('textures') : 'preview',
+        textures: textureMode(this.getAttribute('textures')),
         maxTextureSize: Number(this.getAttribute('max-texture-size')) || 1024,
         signal: abort.signal,
         onProgress: (detail) => this.dispatchEvent(new CustomEvent('progress', { detail })),
@@ -112,7 +113,8 @@ for (const [property, attribute] of Object.entries(ATTRIBUTES)) {
   Object.defineProperty(UsdViewerElement.prototype, property, {
     get() {
       const value = this.getAttribute(attribute);
-      return property === 'maxTextureSize' ? Number(value) || 1024 : value ?? (property === 'textures' ? 'preview' : '');
+      if (property === 'maxTextureSize') return Number(value) || 1024;
+      return property === 'textures' ? textureMode(value) : value ?? '';
     },
     set(value) {
       if (value == null || value === '') this.removeAttribute(attribute);

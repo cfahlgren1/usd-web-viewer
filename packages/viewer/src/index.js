@@ -47,6 +47,7 @@ export async function loadUsd(url, options = {}) {
   }
   const aborted = () => new UsdLoadError('aborted', 'the load was aborted', { url, cause: signal?.reason });
   if (signal?.aborted) throw aborted();
+  if (typeof Worker === 'undefined') throw new UsdLoadError('worker', 'loading needs Web Workers: call loadUsd in a browser', { url });
   const absoluteUrl = new URL(url, location.href).href;
   const module = await compileWasm(options.wasmUrl);
   if (signal?.aborted) throw aborted();
