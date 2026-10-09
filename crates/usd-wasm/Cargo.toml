@@ -12,7 +12,8 @@ crate-type = ["cdylib", "rlib"]
 openusd.workspace = true
 openusd-schemas.workspace = true
 # Already linked by openusd for .usdz; used to read packaged files from memory.
-zip = { version = "8.2.0", default-features = false, features = ["deflate"] }
+# Decode only: openusd itself still enables `deflate`, which adds the zopfli encoder.
+zip = { version = "8.2.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "=0.2.129"
