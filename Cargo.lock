@@ -502,6 +502,7 @@ dependencies = [
  "openusd",
  "openusd-schemas",
  "wasm-bindgen",
+ "zip",
 ]
 
 [[package]]

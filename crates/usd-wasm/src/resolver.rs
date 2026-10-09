@@ -23,19 +23,33 @@ pub fn is_layer_path(path: &str) -> bool {
 }
 
 fn extension(path: &str) -> String {
-    let name = path.rsplit('/').next().unwrap_or(path);
+    let path = path.strip_suffix(']').unwrap_or(path);
+    let name = path.rsplit(['/', '[']).next().unwrap_or(path);
     match name.rfind('.') {
         Some(dot) => name[dot + 1..].to_ascii_lowercase(),
         None => String::new(),
     }
 }
 
+/// Splits a package-relative path `pkg.usdz[inner]` into its package and the
+/// path inside it. Nested packages are not supported.
+pub fn split_packaged(path: &str) -> Option<(&str, &str)> {
+    let inner = path.strip_suffix(']')?;
+    let open = inner.find('[')?;
+    Some((&inner[..open], &inner[open + 1..]))
+}
+
 /// Turns an authored asset path into a virtual path, anchored at the virtual
-/// path of the layer that authored it. Returns `None` for empty paths.
+/// path of the layer that authored it. Returns `None` for empty paths. Paths
+/// authored inside a USDZ package stay inside it (`/h/pkg.usdz[tex/a.png]`).
 pub fn anchor_path(asset_path: &str, anchor: Option<&str>) -> Option<String> {
     let path = asset_path.trim().replace('\\', "/");
     if path.is_empty() {
         return None;
+    }
+    if let Some((package, inner)) = split_packaged(&path) {
+        let package = anchor_path(package, anchor)?;
+        return Some(format!("{package}[{}]", &normalize(inner)[1..]));
     }
     if let Some(rest) = path.strip_prefix("https://").or_else(|| path.strip_prefix("http://")) {
         return Some(normalize(&format!("/{rest}")));
@@ -46,11 +60,29 @@ pub fn anchor_path(asset_path: &str, anchor: Option<&str>) -> Option<String> {
     if path.starts_with('/') {
         return Some(normalize(&path));
     }
+    if let Some(anchor) = anchor {
+        if let Some((package, inner)) = split_packaged(anchor) {
+            let dir = inner.rsplit_once('/').map_or("", |(dir, _)| dir);
+            return Some(format!("{package}[{}]", &normalize(&format!("{dir}/{path}"))[1..]));
+        }
+        if extension(anchor) == "usdz" {
+            return Some(format!("{anchor}[{}]", &normalize(&path)[1..]));
+        }
+    }
     let dir = match anchor {
         Some(anchor) => anchor.rsplit_once('/').map_or("", |(dir, _)| dir),
         None => "",
     };
     Some(normalize(&format!("{dir}/{path}")))
+}
+
+/// Reads one file out of a USDZ (zip) package held in memory.
+pub fn read_packaged(package: &[u8], inner: &str) -> Option<Vec<u8>> {
+    let mut archive = zip::ZipArchive::new(io::Cursor::new(package)).ok()?;
+    let mut entry = archive.by_name(inner).ok()?;
+    let mut out = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut out).ok()?;
+    Some(out)
 }
 
 /// Collapses `.`, `..` and repeated separators, and drops a query string.
@@ -102,14 +134,20 @@ impl ar::Resolver for MemoryResolver {
         if asset_path.is_empty() {
             return None;
         }
+        let key = split_packaged(asset_path).map_or(asset_path, |(package, _)| package);
         let present = {
             let files = lock(&self.files);
-            files.bytes.contains_key(asset_path) || (self.take && files.taken.iter().any(|t| t == asset_path))
+            files.bytes.contains_key(key) || (self.take && files.taken.iter().any(|t| t == key))
         };
+        // MaterialX documents are only ever referenced as layers, and no format
+        // here reads them: leave them unresolved so composition goes on without.
+        if extension(asset_path) == "mtlx" {
+            return None;
+        }
         if !is_layer_path(asset_path) || present {
             return Some(ResolvedPath::new(asset_path));
         }
-        self.missing.borrow_mut().insert(asset_path.to_owned());
+        self.missing.borrow_mut().insert(key.to_owned());
         None
     }
 
@@ -119,11 +157,20 @@ impl ar::Resolver for MemoryResolver {
 
     fn open_asset(&self, resolved_path: &ResolvedPath) -> io::Result<Box<dyn Asset>> {
         let key = resolved_path.to_string_lossy().into_owned();
+        if let Some((package, inner)) = split_packaged(&key) {
+            let files = lock(&self.files);
+            let bytes = files.bytes.get(package).and_then(|p| read_packaged(p, inner));
+            return match bytes {
+                Some(bytes) => Ok(Box::new(MemAsset(io::Cursor::new(bytes)))),
+                None => Err(io::Error::new(io::ErrorKind::NotFound, key.clone())),
+            };
+        }
         let first_root_read = self.keep.borrow().as_deref() == Some(key.as_str());
         if first_root_read {
             self.keep.replace(None);
         }
-        let take = self.take && !first_root_read;
+        // A package is read entry by entry, so it stays in the store.
+        let take = self.take && !first_root_read && extension(&key) != "usdz";
         let size = match lock(&self.files).bytes.get(&key) {
             Some(bytes) => bytes.len() as u64,
             None => return Err(io::Error::new(io::ErrorKind::NotFound, key)),
@@ -143,6 +190,36 @@ impl ar::Resolver for MemoryResolver {
 
     fn identity(&self) -> String {
         "usd-wasm-memory".to_owned()
+    }
+}
+
+/// An extracted package entry.
+struct MemAsset(io::Cursor<Vec<u8>>);
+
+impl Read for MemAsset {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.0.read(buf)
+    }
+}
+
+impl Seek for MemAsset {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        self.0.seek(pos)
+    }
+}
+
+impl Asset for MemAsset {
+    fn size(&self) -> io::Result<u64> {
+        Ok(self.0.get_ref().len() as u64)
+    }
+
+    fn read_all(&mut self) -> io::Result<Vec<u8>> {
+        if self.0.position() == 0 {
+            return Ok(std::mem::take(self.0.get_mut()));
+        }
+        let mut rest = Vec::new();
+        self.0.read_to_end(&mut rest)?;
+        Ok(rest)
     }
 }
 
@@ -236,5 +313,13 @@ mod tests {
             "/cdn.example/a/b.usd"
         );
         assert_eq!(anchor_path("SubUSDs\\textures\\t.jpg", Some("/h/r.usd")).unwrap(), "/h/SubUSDs/textures/t.jpg");
+        assert_eq!(anchor_path("tex/a.png", Some("/h/p.usdz[root.usdc]")).unwrap(), "/h/p.usdz[tex/a.png]");
+        assert_eq!(anchor_path("a.usdc", Some("/h/p.usdz")).unwrap(), "/h/p.usdz[a.usdc]");
+        assert_eq!(anchor_path("./p.usdz[x/y.usd]", Some("/h/r.usda")).unwrap(), "/h/p.usdz[x/y.usd]");
+        assert!(is_layer_path("/h/p.usdz[x/y.usdc]"));
+        assert_eq!(anchor_path("tex/a.png", Some("/h/p.usdz[root.usdc]")).unwrap(), "/h/p.usdz[tex/a.png]");
+        assert_eq!(anchor_path("a.usdc", Some("/h/p.usdz")).unwrap(), "/h/p.usdz[a.usdc]");
+        assert_eq!(anchor_path("./p.usdz[x/y.usd]", Some("/h/r.usda")).unwrap(), "/h/p.usdz[x/y.usd]");
+        assert!(is_layer_path("/h/p.usdz[x/y.usdc]"));
     }
 }

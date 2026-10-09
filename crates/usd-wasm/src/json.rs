@@ -104,11 +104,25 @@ fn texture(o: &mut String, key: &str, t: Option<&Texture>) {
     };
     let _ = write!(o, ",\"{key}\":{{\"path\":");
     string(o, &t.path);
+    for (key, wrap) in ["wrapS", "wrapT"].into_iter().zip(&t.wrap) {
+        if let Some(wrap) = wrap {
+            let _ = write!(o, ",\"{key}\":");
+            string(o, wrap);
+        }
+    }
     if let Some(uv) = &t.uv_set {
         o.push_str(",\"uvSet\":");
         string(o, uv);
     }
-    let _ = write!(o, ",\"scale\":[{},{}]}}", num(t.scale[0].into()), num(t.scale[1].into()));
+    let _ = write!(
+        o,
+        ",\"scale\":[{},{}],\"rotation\":{},\"translation\":[{},{}]}}",
+        num(t.scale[0].into()),
+        num(t.scale[1].into()),
+        num(t.rotation.into()),
+        num(t.translation[0].into()),
+        num(t.translation[1].into())
+    );
 }
 
 fn num(v: f64) -> String {

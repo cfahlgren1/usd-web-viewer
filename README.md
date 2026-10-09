@@ -1,19 +1,20 @@
 # usd-web-viewer
 
 An MIT-licensed OpenUSD viewer for the web. USD composition runs in pure Rust
-(the [`openusd`](https://github.com/mxpv/openusd) crate) compiled to a **523 KB
+(the [`openusd`](https://github.com/mxpv/openusd) crate) compiled to a **527 KB
 (brotli) WASM** module inside a Web Worker; rendering is three.js. It needs no
 `SharedArrayBuffer` and no COOP/COEP headers, so it works on an ordinary page
 and straight from Hugging Face Hub `resolve` URLs.
 
-| | usd-wasm (this repo) | Needle USD viewer | GLB baseline |
+| | ours | Needle USD viewer | GLB baseline |
 |---|---|---|---|
-| WASM (brotli) | **523 KB** | 6.0 MB | – |
+| WASM (brotli) | **527 KB** | 6.0 MB | – |
 | Peak renderer RSS, 6 SimReady assets | **167–418 MB** | 1,118–4,941 MB | 117–213 MB |
 | WASM heap | **2–88 MB** | 696–724 MB | – |
 | Time to geometry (local) | 116–392 ms | – | 85–104 ms |
 | Fully loaded incl. textures (local) | **147–552 ms** | 489–11,846 ms | 85–104 ms |
 | Renders all 6 test assets | ✅ 6/6 | 5/6 (railing blank) | ✅ 6/6 |
+| Matches Pixar OpenUSD (composed meshes, bboxes, bindings, preview inputs) | 6/6, and 186/187 of a 187-package Hub sample | – | – |
 
 Full tables and screenshots: [`bench/results/README.md`](bench/results/README.md).
 All runs: headless Chromium, SwiftShader, localhost, median of 3 cold runs.
@@ -38,7 +39,8 @@ All runs: headless Chromium, SwiftShader, localhost, median of 3 cold runs.
    corner and then **welded** back (3–4× fewer vertices). Instances of one
    prototype share a single geometry.
 4. **Materials** — `UsdPreviewSurface` (diffuse/roughness/metallic/opacity/
-   emissive, `UsdUVTexture` file, `UsdTransform2d` scale, primvar reader).
+   emissive, `UsdUVTexture` file and wrap modes, `UsdTransform2d`
+   scale/rotation/translation, diffuse from a `displayColor` primvar reader).
    MDL-only materials are read by parameter name for `OmniPBR` and glTF
    `pbr.mdl` (no MDL code is loaded); anything else falls back to neutral grey
    so geometry always shows.
@@ -47,6 +49,9 @@ All runs: headless Chromium, SwiftShader, localhost, median of 3 cold runs.
    base-color textures then stream in, decoded in the worker with
    `createImageBitmap` straight to ≤1024 px. The worker is terminated
    afterwards, which releases all WASM memory.
+
+USDZ packages load too: layers and textures are read out of the zip in
+memory (`pkg.usdz[inner]` paths).
 
 ## Usage
 
@@ -91,6 +96,44 @@ node bench/run.mjs --configs usd-wasm --files laptop,robotiq,ivpole --hub   # fr
 node bench/report.mjs                        # -> bench/results/README.md
 ```
 
+## Conformance
+
+Details, per-package results and screenshots: [`conformance/results/README.md`](conformance/results/README.md).
+
+- **Pixar oracle.** `conformance/oracle.py` (Pixar `usd-core`) and
+  `conformance/extract.mjs` (ours: the WASM build in Node) dump the same JSON for a root
+  layer: renderable meshes (instance proxies, default/render purpose,
+  visibility), triangle and point counts, world-space bounding boxes, the
+  materials bound to their faces (subsets included), UsdPreviewSurface inputs
+  and texture paths. `conformance/compare.mjs` diffs them with tolerances.
+- **Six benchmark assets: 6/6 match.**
+- **Hub sample: 186/187 match** (150 random `nvidia/simready-assets`
+  packages plus every package in LGElectronics, Robotiq-Official,
+  standardbots thor/core and agibot-assets, and 30 imagineio packages; 6 more
+  were skipped for having over 80 MB of layers). The one mismatch is
+  `imagineio .../266/cookware_5.usd`: four lid meshes are offset by at most
+  1.2e-5 stage units in Z, a floating-point difference in the transform
+  (likely quaternion `orient` handling), not a visible error.
+- **usd-wg/assets test scenes** (Apache-2.0): texture coordinates,
+  references/overrides, payloads and nested variants, USDZ with packaged
+  textures, and `UsdTransform2d` render correctly. **Gaps found:** normal maps
+  are off by default and ignore `scale`/`bias`; roughness/metallic/occlusion
+  textures, texture alpha and `opacityThreshold` cutouts, `sourceColorSpace`,
+  HDR/EXR textures, MaterialX materials (grey fallback), UsdSkel skinning
+  (bind pose), animation (default time only) and subdivision (control cage)
+  are not supported.
+
+```sh
+# needs a Python with usd-core: python -m venv .venv && .venv/bin/pip install usd-core
+export ORACLE_PYTHON=.venv/bin/python
+node conformance/run.mjs --bench                      # the six assets
+node conformance/fetch-packages.mjs --out ../simready-conformance-data   # sample + download layers (untrusted data, never executed)
+node conformance/run.mjs --packages ../simready-conformance-data/packages.json
+git clone --depth 1 https://github.com/usd-wg/assets ../usd-wg-assets/repo
+USDWG_DIR=../usd-wg-assets/repo npm run serve & node conformance/usdwg.mjs
+node conformance/report.mjs                           # -> conformance/results/README.md
+```
+
 ## Size optimizations
 
 Release profile `opt-level = "z"`, `lto`, `codegen-units = 1`,
@@ -104,8 +147,10 @@ hand).
   has a deactivated untextured visual (`/thor/<link>/visuals/<link>`,
   `active = false`) next to the active textured one. A traversal with
   `PrimPredicate::ALL` descends below inactive prims and counts their 7 child
-  meshes (44); Pixar does not populate children of inactive prims (37). With
-  the default predicate plus instance proxies, openusd also reports 37. Of
+  meshes (44); Pixar never populates children of inactive prims, so even its
+  all-prims predicate with instance proxies gives 37 (checked with the
+  oracle). With the default predicate plus instance proxies, openusd also
+  reports 37. Of
   those, 7 are collision meshes with `purpose = guide`, so 30 are drawn —
   612,452 triangles, identical to the GLB baseline.
 - Triangle counts match the usd-core GLB baseline exactly on all six assets.

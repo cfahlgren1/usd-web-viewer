@@ -48,7 +48,14 @@ impl Loader {
     pub fn add_layer(&mut self, path: &str, bytes: Vec<u8>) -> openusd::Result<Vec<Dependency>> {
         resolver::lock(&self.files).bytes.insert(path.to_owned(), bytes);
         let layer = sdf::Layer::open_with(self.resolver(false, None), path)?;
-        Ok(deps::layer_dependencies(layer.data(), path))
+        let real_path = layer.resolved_path().unwrap_or(path).to_owned();
+        let mut deps = deps::layer_dependencies(layer.data(), &real_path);
+        // Files inside a package we hold need no fetching.
+        let files = resolver::lock(&self.files);
+        deps.retain(|d| resolver::split_packaged(&d.path).is_none_or(|(package, _)| !files.bytes.contains_key(package)));
+        // Arcs to formats nothing here reads (MaterialX) are not worth fetching.
+        deps.retain(|d| !d.arc || resolver::is_layer_path(&d.path));
+        Ok(deps)
     }
 
     /// Records a layer the host failed to fetch, so `compose` stops asking.
@@ -83,6 +90,13 @@ impl Loader {
             return Ok(Composed::Missing(missing));
         }
         Ok(Composed::Scene(extract::extract(&stage)?))
+    }
+
+    /// A file inside a stored USDZ package (`/h/pkg.usdz[tex.png]`), e.g. a texture.
+    pub fn packaged_file(&self, path: &str) -> Option<Vec<u8>> {
+        let (package, inner) = resolver::split_packaged(path)?;
+        let files = resolver::lock(&self.files);
+        resolver::read_packaged(files.bytes.get(package)?, inner)
     }
 
     /// Drops every stored layer.

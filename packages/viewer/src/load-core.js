@@ -29,7 +29,7 @@ export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVar
   const protocols = new Map([[new URL(rootUrl).host, new URL(rootUrl).protocol]]);
   const root = urlToPath(rootUrl);
   const loader = new UsdLoader();
-  const stats = { layers: 0, layerBytes: 0, missing: 0, rounds: 0, fetchMs: 0, parseMs: 0, composeMs: 0 };
+  const stats = { layers: 0, layerBytes: 0, missing: 0, rounds: 0, fetchMs: 0, parseMs: 0, composeMs: 0, warnings: [] };
   const started = new Map();
 
   const fetchLayer = (path) => {
@@ -46,8 +46,17 @@ export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVar
       stats.layers++;
       stats.layerBytes += bytes.byteLength;
       const t1 = performance.now();
-      const deps = loader.addLayer(path, bytes);
-      stats.parseMs += performance.now() - t1;
+      let deps;
+      try {
+        deps = loader.addLayer(path, bytes);
+      } catch (error) {
+        // An unreadable layer is left out; composition carries on without it.
+        stats.warnings.push(`${path}: ${error.message || error}`);
+        loader.markUnavailable(path);
+        return;
+      } finally {
+        stats.parseMs += performance.now() - t1;
+      }
       onProgress('layer', { path, bytes: bytes.byteLength });
       await Promise.all(
         deps
@@ -88,6 +97,17 @@ export function takeGeometries(scene, meta) {
     uvs: g.hasUvs ? scene.uvs(i) : null,
     indices: g.vertices < 65536 ? scene.indices16(i) : scene.indices(i),
   }));
+}
+
+/** Textures stored inside a USDZ package, by path: they cannot be fetched by URL. */
+export function takePackagedTextures(scene, meta) {
+  const out = new Map();
+  for (const path of texturePaths(meta, { normalMaps: true })) {
+    if (!path.includes('[')) continue;
+    const bytes = scene.packagedFile(path);
+    if (bytes) out.set(path, bytes);
+  }
+  return out;
 }
 
 /** Distinct texture files the materials sample, base color first. */

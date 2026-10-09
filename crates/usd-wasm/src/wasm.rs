@@ -67,9 +67,19 @@ impl UsdLoader {
     /// Hands over the extracted scene and drops every stored layer.
     #[wasm_bindgen(js_name = takeScene)]
     pub fn take_scene(&mut self) -> Result<UsdScene, JsError> {
-        self.inner.clear();
         let scene = self.scene.take().ok_or_else(|| JsError::new("compose has not produced a scene"))?;
-        Ok(UsdScene { scene })
+        // Textures inside a USDZ cannot be fetched by URL: pull them out
+        // before the package bytes are dropped.
+        let mut packaged = std::collections::HashMap::new();
+        for m in &scene.materials {
+            for t in [&m.color_map, &m.normal_map].into_iter().flatten() {
+                if let Some(bytes) = self.inner.packaged_file(&t.path) {
+                    packaged.insert(t.path.clone(), bytes);
+                }
+            }
+        }
+        self.inner.clear();
+        Ok(UsdScene { scene, packaged })
     }
 }
 
@@ -83,6 +93,7 @@ impl Default for UsdLoader {
 #[wasm_bindgen]
 pub struct UsdScene {
     scene: Scene,
+    packaged: std::collections::HashMap<String, Vec<u8>>,
 }
 
 #[wasm_bindgen]
@@ -106,6 +117,12 @@ impl UsdScene {
 
     pub fn indices(&mut self, geometry: usize) -> Vec<u32> {
         std::mem::take(&mut self.scene.geometries[geometry].indices)
+    }
+
+    /// A texture that lives inside a USDZ package, if `path` names one.
+    #[wasm_bindgen(js_name = packagedFile)]
+    pub fn packaged_file(&mut self, path: &str) -> Option<Vec<u8>> {
+        self.packaged.remove(path)
     }
 
     /// Indices as 16-bit, for geometries with fewer than 65536 vertices.

@@ -196,7 +196,16 @@ fn bound_material(
 ) -> openusd::Result<u32> {
     let binding = MaterialBindingAPI::from_prim_unchecked(prim.clone()).compute_bound_material("preview")?;
     if let Some(mat) = binding {
-        return cache.get(stage, &mat, out);
+        let index = cache.get(stage, &mat, out)?;
+        // Per-mesh colors read through a primvar reader: use the first value
+        // (vertex colors are not supported yet).
+        if let Some(name) = out[index as usize].color_primvar.clone() {
+            let value = prim.attribute(format!("primvars:{name}").as_str()).get::<Value>()?;
+            if let Some(color) = value.as_ref().and_then(first_color) {
+                return Ok(cache.with_primvar_color(index, color, out));
+            }
+        }
+        return Ok(index);
     }
     let color = match prim.attribute("primvars:displayColor").get::<Value>()? {
         Some(value) => first_color(&value),

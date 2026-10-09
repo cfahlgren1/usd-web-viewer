@@ -141,11 +141,23 @@ function buildScene(meta, arrays, normalMaps) {
     }
   };
   const configure = (base, ref, colorSpace) => {
-    const sx = ref.scale?.[0] ?? 1;
-    const sy = ref.scale?.[1] ?? 1;
-    const texture = sx === 1 && sy === 1 && base.colorSpace === colorSpace ? base : base.clone();
+    const [sx, sy] = ref.scale ?? [1, 1];
+    const [tx, ty] = ref.translation ?? [0, 0];
+    const angle = ((ref.rotation ?? 0) * Math.PI) / 180;
+    const identity = sx === 1 && sy === 1 && tx === 0 && ty === 0 && angle === 0;
+    const texture = identity && !ref.wrapS && !ref.wrapT && base.colorSpace === colorSpace ? base : base.clone();
     texture.colorSpace = colorSpace;
-    texture.repeat.set(sx, sy);
+    // `black` has no three.js equivalent (no border color); clamp is closest.
+    const wrap = (token) => ({ mirror: THREE.MirroredRepeatWrapping, clamp: THREE.ClampToEdgeWrapping, black: THREE.ClampToEdgeWrapping })[token] ?? THREE.RepeatWrapping;
+    texture.wrapS = wrap(ref.wrapS);
+    texture.wrapT = wrap(ref.wrapT);
+    if (!identity) {
+      // UsdTransform2d: st' = rotate(st * scale) + translation (counterclockwise degrees).
+      const c = Math.cos(angle);
+      const s = Math.sin(angle);
+      texture.matrixAutoUpdate = false;
+      texture.matrix.set(c * sx, -s * sy, tx, s * sx, c * sy, ty, 0, 0, 1);
+    }
     texture.needsUpdate = true;
     return texture;
   };

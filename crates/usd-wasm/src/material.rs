@@ -23,6 +23,9 @@ pub struct Material {
     pub emissive: [f32; 3],
     pub color_map: Option<Texture>,
     pub normal_map: Option<Texture>,
+    /// The diffuse color comes from this primvar of the bound mesh
+    /// (`UsdPrimvarReader_float3`, usually `displayColor`).
+    pub color_primvar: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -31,8 +34,13 @@ pub struct Texture {
     pub path: String,
     /// `primvars:<name>` the texture is sampled with, when it says.
     pub uv_set: Option<String>,
-    /// UV transform from `UsdTransform2d` / MDL texture scale, when authored.
+    /// UV transform from `UsdTransform2d` / MDL texture scale, when authored:
+    /// `st' = rotate(st * scale) + translation`, rotation in degrees.
     pub scale: [f32; 2],
+    pub rotation: f32,
+    pub translation: [f32; 2],
+    /// `UsdUVTexture` `wrapS` / `wrapT` tokens, when authored.
+    pub wrap: [Option<String>; 2],
 }
 
 impl Material {
@@ -47,6 +55,7 @@ impl Material {
             emissive: [0.0; 3],
             color_map: None,
             normal_map: None,
+            color_primvar: None,
         }
     }
 }
@@ -56,6 +65,7 @@ impl Material {
 pub struct Cache {
     by_path: HashMap<String, u32>,
     by_color: HashMap<[u32; 3], u32>,
+    by_primvar_color: HashMap<(u32, [u32; 3]), u32>,
 }
 
 impl Cache {
@@ -68,6 +78,18 @@ impl Cache {
         out.push(material);
         self.by_path.insert(path.as_str().to_owned(), index);
         Ok(index)
+    }
+
+    /// `material` with its diffuse color taken from a mesh primvar value.
+    pub fn with_primvar_color(&mut self, material: u32, color: [f32; 3], out: &mut Vec<Material>) -> u32 {
+        let key = (material, color.map(f32::to_bits));
+        *self.by_primvar_color.entry(key).or_insert_with(|| {
+            let mut m = out[material as usize].clone();
+            m.color = color;
+            m.color_primvar = None;
+            out.push(m);
+            out.len() as u32 - 1
+        })
     }
 
     /// A material for unbound geometry: its `displayColor`, else neutral grey.
@@ -171,6 +193,12 @@ fn read_preview_surface(stage: &Stage, shader: &sdf::Path, path: String) -> open
     let mut m = Material::neutral(path, "preview", [0.18, 0.18, 0.18]);
     match follow(stage, &input(shader, "diffuseColor")?, 0)? {
         Source::Value(v) => m.color = color(&v).unwrap_or(m.color),
+        Source::Output(tex) if shader_id(stage, &tex)?.is_some_and(|id| id.starts_with("UsdPrimvarReader")) => {
+            m.color = [1.0; 3];
+            if let Source::Value(v) = follow(stage, &input(&tex, "varname")?, 0)? {
+                m.color_primvar = string(&v);
+            }
+        }
         Source::Output(tex) => {
             m.color = [1.0; 3];
             m.color_map = uv_texture(stage, &tex)?;
@@ -210,13 +238,27 @@ fn uv_texture(stage: &Stage, shader: &sdf::Path) -> openusd::Result<Option<Textu
         path,
         uv_set: None,
         scale: [1.0, 1.0],
+        rotation: 0.0,
+        translation: [0.0, 0.0],
+        wrap: [None, None],
     };
+    for (i, name) in ["wrapS", "wrapT"].into_iter().enumerate() {
+        if let Source::Value(v) = follow(stage, &input(shader, name)?, 0)? {
+            texture.wrap[i] = string(&v);
+        }
+    }
     if let Source::Output(reader) = follow(stage, &input(shader, "st")?, 0)? {
         // A UsdTransform2d between texture and reader carries the tiling.
         let mut reader = reader;
         if shader_id(stage, &reader)?.as_deref() == Some("UsdTransform2d") {
             if let Source::Value(v) = follow(stage, &input(&reader, "scale")?, 0)? {
                 texture.scale = vec2(&v).unwrap_or([1.0, 1.0]);
+            }
+            if let Source::Value(v) = follow(stage, &input(&reader, "rotation")?, 0)? {
+                texture.rotation = float(&v).unwrap_or(0.0);
+            }
+            if let Source::Value(v) = follow(stage, &input(&reader, "translation")?, 0)? {
+                texture.translation = vec2(&v).unwrap_or([0.0, 0.0]);
             }
             match follow(stage, &input(&reader, "in")?, 0)? {
                 Source::Output(next) => reader = next,
@@ -261,6 +303,9 @@ fn read_omnipbr(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Res
             path: file,
             uv_set: None,
             scale,
+            rotation: 0.0,
+            translation: [0.0, 0.0],
+            wrap: [None, None],
         });
         // OmniPBR multiplies the texture by diffuse_tint, not the constant.
         m.color = value("diffuse_tint")?.as_ref().and_then(color).unwrap_or([1.0; 3]);
@@ -270,6 +315,9 @@ fn read_omnipbr(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Res
             path: file,
             uv_set: None,
             scale,
+            rotation: 0.0,
+            translation: [0.0, 0.0],
+            wrap: [None, None],
         });
     }
     if value("enable_emission")?.as_ref().and_then(boolean) == Some(true) {
@@ -330,6 +378,9 @@ fn gltf_texture(stage: &Stage, shader: &sdf::Path, name: &str) -> openusd::Resul
         path,
         uv_set: None,
         scale: scale.unwrap_or([1.0, 1.0]),
+        rotation: 0.0,
+        translation: [0.0, 0.0],
+        wrap: [None, None],
     }))
 }
 

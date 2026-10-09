@@ -2,7 +2,7 @@
 // base-color textures as downscaled ImageBitmaps. One worker per load: the
 // page terminates it when done, which releases all WASM memory at once.
 import init, { UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, pathToUrl, takeGeometries, texturePaths } from './load-core.js';
+import { composeStage, pathToUrl, takeGeometries, takePackagedTextures, texturePaths } from './load-core.js';
 
 self.onmessage = async (event) => {
   const { url, wasmModule, maxTextureSize = 1024, normalMaps = false, prefetchVariants = false } = event.data;
@@ -13,6 +13,7 @@ self.onmessage = async (event) => {
 
     const { scene, meta, stats, protocols } = await composeStage({ UsdLoader, fetchBytes, rootUrl: url, prefetchVariants });
     const geometries = takeGeometries(scene, meta);
+    const packaged = takePackagedTextures(scene, meta);
     scene.free();
     stats.initMs = tInit - t0;
     stats.totalMs = performance.now() - t0;
@@ -25,7 +26,8 @@ self.onmessage = async (event) => {
     await Promise.all(
       texturePaths(meta, { normalMaps }).map(async (path) => {
         try {
-          const bitmap = await loadTexture(pathToUrl(path, protocols), maxTextureSize);
+          const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await fetchBlob(pathToUrl(path, protocols));
+          const bitmap = await decodeTexture(blob, maxTextureSize);
           self.postMessage({ type: 'texture', path, bitmap }, [bitmap]);
         } catch (error) {
           self.postMessage({ type: 'texture', path, error: String(error?.message || error) });
@@ -44,11 +46,14 @@ async function fetchBytes(url) {
   return new Uint8Array(await response.arrayBuffer());
 }
 
-/** Decodes an image straight to at most `maxSize` px on its long side. */
-async function loadTexture(url, maxSize) {
+async function fetchBlob(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-  const blob = await response.blob();
+  return response.blob();
+}
+
+/** Decodes an image straight to at most `maxSize` px on its long side. */
+async function decodeTexture(blob, maxSize) {
   const head = new Uint8Array(await blob.slice(0, 65536).arrayBuffer());
   const size = imageSize(head);
   // USD texture coordinates put (0,0) at the bottom-left, three.js's default.
