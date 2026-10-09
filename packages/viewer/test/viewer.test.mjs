@@ -178,6 +178,28 @@ test('a worker that dies of running out of memory fails as a scene too large to 
   await assert.rejects(loading, { name: 'UsdLoadError', code: 'compose', message: /^scene too large to load/ });
 });
 
+test('progress carries an overall fraction that only grows and ends at 1', async () => {
+  const seen = [];
+  const loading = loadUsd('scene.usda', { onProgress: (p) => seen.push(p.fraction) });
+  await tick();
+  const worker = FakeWorker.last;
+  for (const progress of [
+    { stage: 'layers', loaded: 1, total: 1, bytes: 10 },
+    { stage: 'layers', loaded: 1, total: 4, bytes: 10 },
+    { stage: 'layers', loaded: 4, total: 4, bytes: 40 },
+    { stage: 'compose', round: 1 },
+    { stage: 'geometry', loaded: 1, total: 2 },
+    { stage: 'geometry', loaded: 2, total: 2 },
+    { stage: 'textures', loaded: 0, total: 2, bytes: 0 },
+    { stage: 'textures', loaded: 2, total: 2, bytes: 9 },
+  ]) {
+    worker.send({ type: 'progress', progress });
+  }
+  sceneMessages(IDENTITY).forEach((m) => worker.send(m));
+  await loading;
+  assert.deepEqual(seen.map((f) => Math.round(f * 1000) / 1000), [0.2, 0.2, 0.32, 0.45, 0.65, 0.8, 0.8, 1]);
+});
+
 test('complete reports texture counts and failures become warnings', async () => {
   const { complete, worker, info } = await load();
   worker.send({ type: 'texture', path: 'https://example.test/t.png', bitmap: fakeBitmap() });

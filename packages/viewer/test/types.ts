@@ -11,13 +11,21 @@ const result = await loadUsd('https://example.test/root.usda', {
   fetch: (url, init) => fetch(url, init),
   maxConcurrentFetches: 4,
   maxLayers: 64,
+  maxTriangles: 1e6,
   maxTextureBytes: 64 * 2 ** 20,
   allowedOrigins: ['https://cdn.example.test'],
 });
 const upAxis: string = result.info.upAxis;
 
+await loadUsd('https://example.test/root.usda', { onProgress: (p) => void (p.fraction + (p.stage === 'compose' ? p.round : p.loaded)) });
+
 declare const element: UsdViewerElement;
 const textures: 'none' | 'preview' | 'full' = element.textures;
+const loading: 'lazy' | 'eager' = element.loading;
+const thumbnail: Promise<Blob> = element.toBlob({ width: 128, height: 128 });
+element.addEventListener('context-lost', (event: Event) => void event);
+void loading;
+void thumbnail;
 void code;
 void upAxis;
 void textures;

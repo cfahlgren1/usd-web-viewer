@@ -4,12 +4,20 @@ import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 /** `preview` (default): base color up to `maxTextureSize`, roughness / metallic / occlusion / opacity / emissive maps up to 512 px, no normal maps. `full`: every map, normals included, up to `maxTextureSize`. `none`: no textures. */
 export type TextureMode = 'none' | 'preview' | 'full';
 
-export type LoadProgress =
+export type LoadProgress = (
   | { readonly stage: 'layers'; readonly loaded: number; /** Grows while layer dependencies are discovered. */ readonly total: number; readonly bytes: number }
   | { readonly stage: 'compose'; readonly round: number }
   /** Meshes streaming out of the worker; the load resolves once `loaded === total`. */
   | { readonly stage: 'geometry'; readonly loaded: number; readonly total: number }
-  | { readonly stage: 'textures'; readonly loaded: number; readonly total: number; readonly bytes: number };
+  | { readonly stage: 'textures'; readonly loaded: number; readonly total: number; readonly bytes: number }
+) & {
+  /**
+   * The whole load, 0 to 1, for a progress bar; it never decreases. Each stage spans a share: `layers` 0–0.4 (`loaded / (total + 1)`,
+   * as more layers may yet be found), `compose` 0.45, `geometry` 0.5–0.8 and `textures` 0.8–1 (`loaded / total`). It reaches 1 when the
+   * last texture settles, or with the `textures` stage when there are none.
+   */
+  readonly fraction: number;
+};
 
 export interface LoadOptions {
   /** Default `preview`. */

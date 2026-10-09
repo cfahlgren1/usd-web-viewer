@@ -10,6 +10,17 @@ export { UsdLoadError };
 // Lets the viewer show meshes as they stream in, before the load resolves.
 const SHOW = Symbol('show');
 
+// The share of the overall `fraction` each stage spans (see LoadProgress).
+const STAGES = { layers: [0, 0.4], compose: [0.4, 0.5], geometry: [0.5, 0.8], textures: [0.8, 1] };
+
+/** Where `progress` puts the load overall, before taking the maximum so far. */
+function stageFraction(progress) {
+  const [start, end] = STAGES[progress.stage];
+  // More layers may yet be found; a compose round is halfway into its stage.
+  const done = progress.stage === 'layers' ? progress.loaded / (progress.total + 1) : progress.stage === 'compose' ? 0.5 : progress.total ? progress.loaded / progress.total : 1;
+  return start + (end - start) * done;
+}
+
 let wasmModule = null;
 
 /** Compiles the WASM module once per page; workers instantiate it without refetching. */
@@ -72,6 +83,7 @@ export async function loadUsd(url, options = {}) {
   // A rejection nobody awaits (e.g. after dispose) must not surface as unhandled.
   complete.catch(() => {});
   const counts = { textures: 0, failed: 0 };
+  let fraction = 0;
   let built = null;
   let delivered = false;
   let stopped = false;
@@ -123,7 +135,8 @@ export async function loadUsd(url, options = {}) {
         bodies.delete(data.id);
         break;
       case 'progress':
-        onProgress?.(data.progress);
+        fraction = Math.max(fraction, stageFraction(data.progress));
+        onProgress?.({ ...data.progress, fraction });
         break;
       case 'meta':
         if (signal?.aborted) return abort();

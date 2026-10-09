@@ -34,6 +34,8 @@ test('progress reports layers, compose and textures', async () => {
   assert.deepEqual(stages, ['layers', 'compose', 'geometry', 'textures']);
   const last = progress.at(-1);
   assert.equal(last.loaded, last.total);
+  assert.equal(last.fraction, 1);
+  assert.ok(progress.every((p, i) => i === 0 || p.fraction >= progress[i - 1].fraction), 'fraction never decreases');
   assert.ok(progress.find((p) => p.stage === 'layers').bytes > 1e6);
 });
 
