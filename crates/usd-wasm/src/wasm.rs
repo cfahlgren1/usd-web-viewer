@@ -1,8 +1,29 @@
 //! The JavaScript surface, used from a Web Worker.
 
+use std::sync::Mutex;
+
 use wasm_bindgen::prelude::*;
 
 use crate::{Composed, Loader, Scene, resolver};
+
+/// The message of the last panic. With `panic = "abort"` a panic traps as a
+/// bare `unreachable`; the page reads this to say why.
+static LAST_PANIC: Mutex<Option<String>> = Mutex::new(None);
+
+#[wasm_bindgen(start)]
+fn start() {
+    std::panic::set_hook(Box::new(|info| {
+        if let Ok(mut last) = LAST_PANIC.lock() {
+            *last = Some(info.to_string());
+        }
+    }));
+}
+
+/// Takes the message of the last panic, if any.
+#[wasm_bindgen(js_name = lastPanic)]
+pub fn last_panic() -> Option<String> {
+    LAST_PANIC.lock().ok()?.take()
+}
 
 /// The error with its causes: "failed to decode field ..." alone does not say
 /// that reading it ran out of memory.

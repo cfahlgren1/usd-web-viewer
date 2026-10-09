@@ -243,6 +243,16 @@ test('a missing root layer fails with a fetch error carrying the HTTP status', a
   assert.ok(error.url.endsWith('/data/nope/missing.usda'));
 });
 
+test('layers nested too deeply fail with a compose error that says so', async () => {
+  const error = await page.evaluate(async () => {
+    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const usda = '#usda 1.0\n' + 'def Xform "A" {\n'.repeat(100000) + '}\n'.repeat(100000);
+    return loadUsd('/deep.usda', { fetch: async () => new Response(usda) }).then(() => null, (e) => ({ code: e.code, message: e.message }));
+  });
+  assert.equal(error?.code, 'compose');
+  assert.match(error.message, /^stack overflow: the layers nest too deeply to read/);
+});
+
 test('a missing sublayer is a warning, through fetch and a custom fetch alike', async () => {
   const out = await page.evaluate(async (root) => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');

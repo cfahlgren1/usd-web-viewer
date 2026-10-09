@@ -289,7 +289,7 @@ test('a stage with nothing to draw says so, after naming what it could not draw'
   assert.deepEqual(await read(QUAD), []);
 });
 
-test('running out of WASM memory fails as a scene too large to load', () => {
+test('running out of WASM memory fails as a scene too large to load; a panic gives its message', () => {
   const GiB = 2 ** 30;
   const oom = new Error('failed to decode field "default" at /W/body.normals: failed to read vec: out of memory');
   assert.match(loadFailure(oom, 1 * GiB).message, /^scene too large to load: ran out of memory.*body\.normals/);
@@ -297,6 +297,8 @@ test('running out of WASM memory fails as a scene too large to load', () => {
   // An allocation that aborts traps; near the 4 GiB ceiling that is memory, not a bug.
   assert.match(loadFailure(new WebAssembly.RuntimeError('unreachable'), 3.9 * GiB).message, /^scene too large to load/);
   assert.deepEqual(loadFailure(new WebAssembly.RuntimeError('unreachable'), 0.1 * GiB), { code: 'compose', message: 'unreachable', url: undefined, status: undefined });
+  const panic = 'panicked at crates/usd-wasm/src/extract.rs:1:1:\nindex out of bounds';
+  assert.equal(loadFailure(new WebAssembly.RuntimeError('unreachable'), 0.1 * GiB, () => panic).message, `unreachable: ${panic}`);
   const fetchError = loadFailure(new UsdLoadError('fetch', 'HTTP 404 for https://h/a.usd', { url: 'https://h/a.usd', status: 404 }), 4 * GiB);
   assert.deepEqual(fetchError, { code: 'fetch', message: 'HTTP 404 for https://h/a.usd', url: 'https://h/a.usd', status: 404 });
 });

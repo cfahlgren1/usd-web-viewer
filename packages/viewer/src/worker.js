@@ -1,7 +1,7 @@
 // Loads, composes and extracts a USD stage off the main thread, then streams
 // textures as downscaled ImageBitmaps. One worker per load: the page
 // terminates it when done, disposed or aborted, which releases all WASM memory.
-import init, { UsdLoader } from '../wasm/usd_wasm.js';
+import init, { lastPanic, UsdLoader } from '../wasm/usd_wasm.js';
 import { hubPackageLayers } from './hub-prefetch.js';
 import { composeStage, fetchLimited, imageInfo, limiter, loadFailure, readGeometries, sameOrigin, takePackagedTextures, textureJobs } from './load-core.js';
 
@@ -132,7 +132,7 @@ self.onmessage = async ({ data }) => {
     );
     self.postMessage({ type: 'done' });
   } catch (error) {
-    self.postMessage({ type: 'error', ...loadFailure(error, wasmMemory?.buffer.byteLength ?? 0) });
+    self.postMessage({ type: 'error', ...loadFailure(error, wasmMemory?.buffer.byteLength ?? 0, lastPanic) });
   }
 };
 

@@ -132,6 +132,8 @@ export async function composeStage({
       try {
         deps = loader.addLayer(path, bytes);
       } catch (error) {
+        // After a trap the module is unusable: the load fails.
+        if (isTrap(error)) throw error;
         // An unreadable layer is left out; composition carries on without it.
         stats.warnings.push({ code: 'layer-unreadable', message: String(error.message || error), path: urlOf(path) });
         loader.markUnavailable(path);
@@ -179,15 +181,39 @@ export async function composeStage({
  * keep their code, url and status; anything the WASM side throws is a
  * composition failure. Running out of WASM memory (4 GiB at most) reads as a
  * scene too large to load: an allocation that fails while reading a layer
- * reports "out of memory", one that aborts traps as `unreachable`.
+ * reports "out of memory", one that aborts traps as `unreachable`. A Rust
+ * panic, which also traps as `unreachable`, gives its message, read with
+ * `lastPanic` (the module's export). Overflowing the stack, the WASM one (an
+ * out-of-bounds access) or the engine's, means layers nested too deeply to read.
  */
-export function loadFailure(error, wasmMemoryBytes) {
+export function loadFailure(error, wasmMemoryBytes, lastPanic) {
   const { code = 'compose', url, status } = error ?? {};
   const message = String(error?.message || error);
-  const outOfMemory = /out of memory|memory allocation/i.test(message) || (error instanceof WebAssembly.RuntimeError && wasmMemoryBytes > 3 * 2 ** 30);
-  if (code !== 'compose' || !outOfMemory) return { code, message, url, status };
-  const gib = (wasmMemoryBytes / 2 ** 30).toFixed(1);
-  return { code, message: `scene too large to load: ran out of memory (${gib} GiB of WebAssembly memory in use): ${message}`, url, status };
+  const failure = (detail) => ({ code, message: detail, url, status });
+  if (code !== 'compose') return failure(message);
+  if (/out of memory|memory allocation/i.test(message) || (error instanceof WebAssembly.RuntimeError && wasmMemoryBytes > 3 * 2 ** 30)) {
+    const gib = (wasmMemoryBytes / 2 ** 30).toFixed(1);
+    return failure(`scene too large to load: ran out of memory (${gib} GiB of WebAssembly memory in use): ${message}`);
+  }
+  if (!isTrap(error)) return failure(message);
+  const panic = readPanic(lastPanic);
+  if (panic) return failure(`${message}: ${panic}`);
+  if (/out of bounds|call stack|recursion/i.test(message)) return failure(`stack overflow: the layers nest too deeply to read (${message})`);
+  return failure(message);
+}
+
+/** Reading the panic calls into the trapped module, which can trap again (an exhausted stack does). */
+function readPanic(lastPanic) {
+  try {
+    return lastPanic?.();
+  } catch {
+    return undefined;
+  }
+}
+
+/** A WebAssembly trap or an exhausted engine call stack: the module is no longer usable. */
+function isTrap(error) {
+  return error instanceof WebAssembly.RuntimeError || error instanceof RangeError || error?.name === 'InternalError';
 }
 
 function resourceLimit(detail) {
