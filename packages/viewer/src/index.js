@@ -55,7 +55,7 @@ async function compile(url) {
  * @returns {Promise<import('./index.js').LoadResult>}
  */
 export async function loadUsd(url, options = {}) {
-  const { maxTextureSize = 1024, textures: textureMode = 'preview', maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxInstances, maxTriangles, allowedOrigins } = options;
+  const { maxTextureSize, textures, maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxInstances, maxTriangles, allowedOrigins } = options;
   const { onProgress, signal, headers } = options;
   if (maxConcurrentFetches !== undefined && !(Number.isInteger(maxConcurrentFetches) && maxConcurrentFetches > 0)) {
     throw new RangeError(`maxConcurrentFetches must be a positive integer, got ${maxConcurrentFetches}`);
@@ -191,7 +191,7 @@ export async function loadUsd(url, options = {}) {
     if (OUT_OF_MEMORY.test(message)) fail(new UsdLoadError('compose', `scene too large to load: ran out of memory: ${message}`, { url: absoluteUrl }));
     else fail(new UsdLoadError('worker', message, { url: absoluteUrl }));
   };
-  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxInstances, maxTriangles, allowedOrigins, headers, proxyFetch: !!options.fetch });
+  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures, maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxInstances, maxTriangles, allowedOrigins, headers, proxyFetch: !!options.fetch });
 
   /** Runs one worker request through the caller's `fetch`; the body follows chunk by chunk. */
   async function proxyFetch({ id, url: target }) {

@@ -25,10 +25,9 @@ const ATTRIBUTES = {
   poster: 'poster',
   reveal: 'reveal',
 };
-const textureMode = (value) => (['none', 'preview', 'full'].includes(value) ? value : 'preview');
 // Property values of attributes that are missing or not one of their values.
 const READ = {
-  textures: textureMode,
+  textures: (value) => (['none', 'preview', 'full'].includes(value) ? value : 'preview'),
   maxTextureSize: (value) => Number(value) || 1024,
   loading: (value) => (value === 'eager' ? 'eager' : 'lazy'),
   reveal: (value) => (value === 'interaction' ? 'interaction' : 'auto'),
@@ -190,8 +189,8 @@ export class UsdViewerElement extends Base {
     this.#abort?.abort();
     const abort = (this.#abort = new AbortController());
     const loading = this.#viewer.load(this.getAttribute('src'), {
-      textures: textureMode(this.getAttribute('textures')),
-      maxTextureSize: Number(this.getAttribute('max-texture-size')) || 1024,
+      textures: this.textures,
+      maxTextureSize: this.maxTextureSize,
       signal: abort.signal,
       onProgress: (detail) => {
         if (detail.stage === 'geometry' && detail.loaded === 1) this.#fadePoster(abort);

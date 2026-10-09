@@ -534,7 +534,7 @@ export function readGeometries(scene, meta, onGeometry, { maxTriangles = 20e6 } 
  * `maxBytes`. One that cannot be read maps to its error, so it fails as that
  * texture rather than the whole load.
  */
-export function takePackagedTextures(scene, meta, { textures = 'preview', maxBytes = Infinity } = {}) {
+export function takePackagedTextures(scene, meta, { textures, maxBytes = Infinity } = {}) {
   const out = new Map();
   let left = maxBytes;
   for (const { path } of textureJobs(meta, { textures })) {
@@ -558,7 +558,7 @@ const PREVIEW_DATA_SIZE = 512;
  * `preview`: base color up to `maxSize`, other maps up to 512 px, no normal
  * maps. `full`: every map, including normals, up to `maxSize`. `none`: nothing.
  */
-export function textureJobs(meta, { textures = 'preview', maxSize = 1024 } = {}) {
+export function textureJobs(meta, { textures, maxSize }) {
   if (textures === 'none') return [];
   const full = textures === 'full';
   const dataSize = full ? maxSize : Math.min(maxSize, PREVIEW_DATA_SIZE);
