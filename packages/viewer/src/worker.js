@@ -2,7 +2,7 @@
 // textures as downscaled ImageBitmaps. One worker per load: the page
 // terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, limiter, sameOrigin, takeGeometries, takePackagedTextures, textureJobs } from './load-core.js';
+import { composeStage, fetchLimited, imageInfo, limiter, sameOrigin, takeGeometries, takePackagedTextures, textureJobs } from './load-core.js';
 
 // Textures in flight at once (fetch and decode): decoding a large image
 // briefly holds it at full size, so wide parallelism spikes memory.
@@ -105,8 +105,8 @@ self.onmessage = async ({ data }) => {
           try {
             const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await fetchBlob(path);
             bytes += blob.size;
-            const bitmap = await decodeTexture(blob, size);
-            self.postMessage({ type: 'texture', path, bitmap }, [bitmap]);
+            const { bitmap, color } = await decodeTexture(blob, size);
+            self.postMessage({ type: 'texture', path, bitmap, color }, [bitmap]);
           } catch (error) {
             self.postMessage({ type: 'texture', path, error: String(error?.message || error) });
           }
@@ -123,10 +123,18 @@ self.onmessage = async ({ data }) => {
   }
 };
 
-/** Decodes an image straight to at most `maxSize` px on its long side. */
+/**
+ * Decodes an image straight to at most `maxSize` px on its long side, and
+ * tells whether it holds color (what `sourceColorSpace = "auto"` decodes as
+ * sRGB); formats whose header is not read here count as color.
+ */
 async function decodeTexture(blob, maxSize) {
   const head = new Uint8Array(await blob.slice(0, 65536).arrayBuffer());
-  const size = imageSize(head);
+  const info = imageInfo(head);
+  return { bitmap: await decodeBitmap(blob, info, maxSize), color: info?.color ?? true };
+}
+
+async function decodeBitmap(blob, size, maxSize) {
   // USD texture coordinates put (0,0) at the bottom-left, three.js's default.
   const options = { imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none' };
   if (size) {
@@ -148,24 +156,4 @@ async function decodeTexture(blob, maxSize) {
   });
   full.close();
   return small;
-}
-
-/** Width and height from a PNG or JPEG header, without decoding. */
-function imageSize(b) {
-  if (b.length > 24 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
-    const v = new DataView(b.buffer, b.byteOffset);
-    return { width: v.getUint32(16), height: v.getUint32(20) };
-  }
-  if (b[0] === 0xff && b[1] === 0xd8) {
-    let i = 2;
-    while (i + 9 < b.length) {
-      if (b[i] !== 0xff) return null;
-      const marker = b[i + 1];
-      const length = (b[i + 2] << 8) | b[i + 3];
-      const isFrame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
-      if (isFrame) return { height: (b[i + 5] << 8) | b[i + 6], width: (b[i + 7] << 8) | b[i + 8] };
-      i += 2 + length;
-    }
-  }
-  return null;
 }

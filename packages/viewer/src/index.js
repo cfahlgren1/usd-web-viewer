@@ -120,7 +120,7 @@ export async function loadUsd(url, options = {}) {
         break;
       case 'texture':
         if (data.bitmap) {
-          built.applyTexture(data.path, data.bitmap);
+          built.applyTexture(data.path, data.bitmap, data.color);
           counts.textures++;
         } else {
           built.textureFailed(data.path);
@@ -241,13 +241,13 @@ function buildScene(meta, arrays) {
 
   const allMaterials = () => [...materials, ...variants.values()];
   const textures = new Map();
-  const applyTexture = (path, bitmap) => {
+  const applyTexture = (path, bitmap, isColor) => {
     const base = new THREE.Texture(bitmap);
     base.flipY = false;
     base.anisotropy = 4;
     textures.set(path, base);
     const textureFor = (ref, colorSpace, uvChannel) => configureTexture(base, ref, colorSpace, uvChannel);
-    for (const material of allMaterials()) attachTexture(material, path, textureFor);
+    for (const material of allMaterials()) attachTexture(material, path, isColor, textureFor);
   };
   const textureFailed = (path) => allMaterials().forEach((material) => applyFallback(material, path));
 

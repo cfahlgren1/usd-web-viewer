@@ -6,10 +6,10 @@
 // map's shader chunk is rewritten to the authored channel, scale and bias.
 import * as THREE from 'three';
 
-// input -> three.js map, whether it carries color, and the shader chunk line to rewrite.
+// input -> three.js map and the shader chunk line to rewrite.
 const SLOTS = {
-  diffuseColor: { map: 'map', color: true, chunk: 'map_fragment', from: 'diffuseColor *= sampledDiffuseColor;', to: (e) => `diffuseColor.rgb *= ${e('sampledDiffuseColor', 3)};` },
-  emissiveColor: { map: 'emissiveMap', color: true, chunk: 'emissivemap_fragment', from: 'totalEmissiveRadiance *= emissiveColor.rgb;', to: (e) => `totalEmissiveRadiance *= ${e('emissiveColor', 3)};` },
+  diffuseColor: { map: 'map', chunk: 'map_fragment', from: 'diffuseColor *= sampledDiffuseColor;', to: (e) => `diffuseColor.rgb *= ${e('sampledDiffuseColor', 3)};` },
+  emissiveColor: { map: 'emissiveMap', chunk: 'emissivemap_fragment', from: 'totalEmissiveRadiance *= emissiveColor.rgb;', to: (e) => `totalEmissiveRadiance *= ${e('emissiveColor', 3)};` },
   roughness: { map: 'roughnessMap', chunk: 'roughnessmap_fragment', from: 'texelRoughness.g', to: (e) => e('texelRoughness', 1) },
   metallic: { map: 'metalnessMap', chunk: 'metalnessmap_fragment', from: 'texelMetalness.b', to: (e) => e('texelMetalness', 1) },
   occlusion: { map: 'aoMap', chunk: 'aomap_fragment', from: 'texture2D( aoMap, vAoMapUv ).r', to: (e) => e('texture2D( aoMap, vAoMapUv )', 1) },
@@ -84,15 +84,16 @@ function remap(base, size, ref) {
 
 /**
  * Attaches a decoded image to every input of `material` that samples `path`.
- * `textureFor(ref, colorSpace)` returns a configured three.js texture.
+ * `isColor` says whether the image holds color (see `imageInfo`).
+ * `textureFor(ref, colorSpace, uvChannel)` returns a configured three.js texture.
  */
-export function attachTexture(material, path, textureFor) {
+export function attachTexture(material, path, isColor, textureFor) {
   const usd = material.userData.usd;
   let changed = false;
   for (const [input, ref] of Object.entries(usd.maps)) {
     const slot = SLOTS[input];
     if (ref.path !== path || !slot) continue;
-    const texture = textureFor(ref, colorSpace(ref, slot), usd.uvChannels[ref.uvSet] ?? 0);
+    const texture = textureFor(ref, colorSpace(ref, isColor), usd.uvChannels[ref.uvSet] ?? 0);
     material[slot.map] = texture;
     material.userData.patches[input] = { channel: ref.channel, scale: ref.scale, bias: ref.bias };
     // The texture now carries the value: the constant factor becomes neutral.
@@ -120,11 +121,11 @@ export function applyFallback(material, path) {
   }
 }
 
-/** `sourceColorSpace`: explicit `raw`/`sRGB` wins; `auto` decodes color inputs as sRGB and data as linear. */
-function colorSpace(ref, slot) {
+/** `sourceColorSpace`: explicit `raw`/`sRGB` wins; `auto` follows the image, so every input sampling it agrees. */
+function colorSpace(ref, isColor) {
   if (ref.colorSpace === 'raw') return THREE.NoColorSpace;
   if (ref.colorSpace === 'sRGB') return THREE.SRGBColorSpace;
-  return slot.color ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+  return isColor ? THREE.SRGBColorSpace : THREE.NoColorSpace;
 }
 
 /** A texture for `ref` sharing the decoded image of `base`: color space, wrap, UV set and UsdTransform2d. */

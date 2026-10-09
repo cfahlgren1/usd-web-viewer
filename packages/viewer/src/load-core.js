@@ -192,6 +192,32 @@ export async function fetchLimited(url, budget, { fetchFn = fetch } = {}) {
   return out;
 }
 
+/**
+ * Size of a PNG or JPEG from its header, without decoding, and whether it is
+ * color: 8-bit RGB(A) or palette, rather than greyscale or 16-bit data (the
+ * images `sourceColorSpace = "auto"` decodes as sRGB). Null for other formats.
+ */
+export function imageInfo(b) {
+  if (b.length > 25 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) {
+    const v = new DataView(b.buffer, b.byteOffset);
+    const [bitDepth, colorType] = [b[24], b[25]];
+    const color = colorType === 3 || (bitDepth === 8 && (colorType === 2 || colorType === 6));
+    return { width: v.getUint32(16), height: v.getUint32(20), color };
+  }
+  if (b[0] === 0xff && b[1] === 0xd8) {
+    let i = 2;
+    while (i + 9 < b.length) {
+      if (b[i] !== 0xff) return null;
+      const marker = b[i + 1];
+      const length = (b[i + 2] << 8) | b[i + 3];
+      const isFrame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+      if (isFrame) return { height: (b[i + 5] << 8) | b[i + 6], width: (b[i + 7] << 8) | b[i + 8], color: b[i + 4] === 8 && b[i + 9] >= 3 };
+      i += 2 + length;
+    }
+  }
+  return null;
+}
+
 /** Whether `url` has the origin of `root`: only those requests carry the caller's headers. */
 export function sameOrigin(url, root) {
   const origin = new URL(url).origin;
