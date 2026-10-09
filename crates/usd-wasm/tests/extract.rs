@@ -173,3 +173,15 @@ fn geometry_bounds_cover_emitted_positions() {
     let s = scene(&mesh(FOLD));
     assert_eq!(s.geometries[0].bounds, [[0.0, 0.0, -1.0], [1.0, 1.0, 0.0]]);
 }
+
+fn drawn(usda: &str) -> Vec<String> {
+    scene(usda).instances.into_iter().map(|i| i.path).collect()
+}
+
+#[test]
+fn point_instancer_prototypes_are_never_drawn_by_themselves() {
+    // Every instance masked, no instances at all, and a prototype no instance uses.
+    assert!(drawn(include_str!("../../../conformance/fixtures/instancer_masked.usda")).is_empty());
+    assert!(drawn(include_str!("../../../conformance/fixtures/instancer_empty.usda")).is_empty());
+    assert_eq!(drawn(include_str!("../../../conformance/fixtures/instancer_unused.usda")), ["/I/A[0]"]);
+}

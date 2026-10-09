@@ -280,6 +280,15 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
 /// transform, leaving out `invisibleIds` and `inactiveIds`.
 fn add_placements(prim: &usd::Prim, world: Matrix4d, out: &mut Vec<Prototype>) -> openusd::Result<()> {
     let targets = prim.relationship("prototypes").targets()?;
+    // Every prototype is registered, placed or not: it is drawn only where placed.
+    for root in &targets {
+        if !out.iter().any(|p| &p.root == root) {
+            out.push(Prototype {
+                root: root.clone(),
+                placements: Vec::new(),
+            });
+        }
+    }
     let Some(proto_indices) = ints(prim.attribute("protoIndices").get::<Value>()?) else {
         return Ok(());
     };
@@ -327,12 +336,8 @@ fn add_placements(prim: &usd::Prim, world: Matrix4d, out: &mut Vec<Prototype>) -
             * Matrix4d::from_quat(orientation)
             * Matrix4d::translation(position.map(f64::from))
             * world;
-        match out.iter_mut().find(|p| &p.root == root) {
-            Some(prototype) => prototype.placements.push((i, placement)),
-            None => out.push(Prototype {
-                root: root.clone(),
-                placements: vec![(i, placement)],
-            }),
+        if let Some(prototype) = out.iter_mut().find(|p| &p.root == root) {
+            prototype.placements.push((i, placement));
         }
     }
     Ok(())
