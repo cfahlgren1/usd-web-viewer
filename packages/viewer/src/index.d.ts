@@ -33,6 +33,11 @@ export interface LoadOptions {
   maxLayerBytes?: number | undefined;
 }
 
+/**
+ * - `prim-unsupported`: visible geometry other than meshes (`BasisCurves`, `Points`, implicit shapes not yet drawn, `Volume`, Gaussian splats, ...) left out.
+ * - `nothing-drawable`: no visible mesh had anything to draw.
+ * - `texture-failed`: an image could not be read; its inputs show their own (authored or default) values.
+ */
 export type WarningCode = 'layer-missing' | 'layer-unreadable' | 'prim-unsupported' | 'nothing-drawable' | 'material-fallback' | 'texture-failed' | 'composition';
 
 export interface LoadWarning {
@@ -80,6 +85,7 @@ export interface LoadResult {
   dispose(): void;
 }
 
+/** A `compose` error whose message starts with `scene too large to load` ran out of WebAssembly memory (4 GiB at most). */
 export type UsdLoadErrorCode = 'aborted' | 'fetch' | 'compose' | 'worker' | 'webgl';
 
 export class UsdLoadError extends Error {
