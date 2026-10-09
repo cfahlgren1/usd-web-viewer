@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       # The toolchain rust-toolchain.toml pins.
-      - run: rustup target add wasm32-unknown-unknown && rustup component add clippy
+      - run: rustup target add wasm32-unknown-unknown && rustup component add clippy rustfmt
       - uses: taiki-e/install-action@v2
         with:
           tool: wasm-bindgen-cli@0.2.129
@@ -20,6 +20,9 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      - run: npm run lint
+      - run: npm run format:check
+      - run: cargo fmt --check
       - run: npm run build:wasm
       - run: npm test
       - run: npm run check:types
