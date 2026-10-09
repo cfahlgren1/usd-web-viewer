@@ -7,7 +7,7 @@ fn compose(layer: String) -> Scene {
     let mut loader = Loader::new();
     loader.add_layer("/h/root.usda", layer.into_bytes()).unwrap();
     match loader.compose("/h/root.usda").unwrap() {
-        Composed::Scene(scene) => scene,
+        Composed::Scene(scene) => scene.read_all().expect("reads geometry"),
         Composed::Missing(_) => panic!("missing layers"),
     }
 }

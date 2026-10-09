@@ -65,7 +65,7 @@ scene.add(root);   // THREE.Group, Y-up, metres
 | `textures` | `'preview'` | `'none'`; `'preview'`: base color up to `maxTextureSize`, roughness / metallic / occlusion (and opacity / emissive) maps up to 512 px, no normal maps; `'full'`: every map, normals included, up to `maxTextureSize`. See [preview vs full](bench/results/README.md#texture-modes-preview-vs-full) |
 | `maxTextureSize` | `1024` | Long-side cap; textures are decoded straight to this size in the worker |
 | `signal` | – | `AbortSignal`: cancels fetches, terminates the worker, rejects with a `UsdLoadError` of code `aborted` |
-| `onProgress` | – | `{ stage: 'layers', loaded, total, bytes }`, `{ stage: 'compose', round }`, `{ stage: 'textures', loaded, total, bytes }` |
+| `onProgress` | – | `{ stage: 'layers', loaded, total, bytes }`, `{ stage: 'compose', round }`, `{ stage: 'geometry', loaded, total }`, `{ stage: 'textures', loaded, total, bytes }` |
 | `headers` | – | Sent with layer and texture requests to the root URL's origin only (see [Embedding elsewhere](#embedding-elsewhere)) |
 | `fetch` | – | Your own `fetch(url, { headers, signal })`, used for every request (proxied from the worker); `headers` is set only for the root URL's origin, `signal` aborts when the load stops |
 | `wasmUrl` / `workerUrl` | bundled | Serve the `.wasm` / worker script from your own CDN |

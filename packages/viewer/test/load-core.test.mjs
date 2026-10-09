@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { initSync, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, takePackagedTextures } from '../src/load-core.js';
+import { composeStage, fetchLimited, readGeometries, takePackagedTextures } from '../src/load-core.js';
 
 initSync({ module: readFileSync(new URL('../wasm/usd_wasm_bg.wasm', import.meta.url)) });
 
@@ -76,8 +76,10 @@ test('a package entry that lies about its size is read without trusting the head
     'https://h/p.usdz': storedZip([{ name: 'm.usda', data: Buffer.from(`#usda 1.0\n(defaultPrim = "M")\n${QUAD}`), declaredSize: 0xfffffff0 }]),
   });
   const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+  let triangles = 0;
+  readGeometries(scene, meta, (i, g) => (triangles += g ? g.groups.reduce((n, [, count]) => n + count / 3, 0) : 0));
   scene.free();
-  assert.equal(meta.stats.triangles, 2);
+  assert.equal(triangles, 2);
 });
 
 const manyLayers = (n) => {

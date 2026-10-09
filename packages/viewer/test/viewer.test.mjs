@@ -40,30 +40,34 @@ const { loadUsd } = await import('../src/index.js');
 
 const TEXTURE = { path: 'https://example.test/t.png', channel: 'rgb', scale: [1, 1, 1, 1], bias: [0, 0, 0, 0], uvScale: [1, 1], uvRotation: 0, uvTranslation: [0, 0] };
 
-/** One triangle drawn once with `matrix`, using a material with a color map. */
-function sceneMessage(matrix) {
-  return {
-    type: 'scene',
-    stats: { warnings: [] },
-    meta: {
-      upAxis: 'Y',
-      warnings: [],
-      metersPerUnit: 1,
-      stats: { triangles: 1 },
-      geometries: [{ groups: [[0, 3]], bounds: [0, 0, 0, 1, 1, 0], uvSets: [], hasColors: false }],
-      instances: [{ path: '/M', geometry: 0, materials: [0], doubleSided: false, matrix }],
-      materials: [{ path: '/Mat', kind: 'preview', color: [1, 1, 1], emissive: [0, 0, 0], roughness: 0.5, metallic: 0, opacity: 1, opacityThreshold: 0, maps: { diffuseColor: TEXTURE } }],
+/** The worker's messages for one triangle drawn once with `matrix`, using a material with a color map. */
+function sceneMessages(matrix) {
+  return [
+    {
+      type: 'meta',
+      meta: {
+        upAxis: 'Y',
+        metersPerUnit: 1,
+        warnings: [],
+        geometryCount: 1,
+        instances: [{ path: '/M', geometry: 0, material: 0, subsets: {}, doubleSided: false, matrix }],
+        materials: [{ path: '/Mat', kind: 'preview', color: [1, 1, 1], emissive: [0, 0, 0], roughness: 0.5, metallic: 0, opacity: 1, opacityThreshold: 0, maps: { diffuseColor: TEXTURE } }],
+      },
     },
-    geometries: [
-      {
+    {
+      type: 'geometry',
+      index: 0,
+      meta: { groups: [[0, 3]], bounds: [0, 0, 0, 1, 1, 0], uvSets: [], hasColors: false },
+      arrays: {
         positions: new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]),
         normals: new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]),
         uvs: [],
         colors: null,
         indices: new Uint16Array([0, 1, 2]),
       },
-    ],
-  };
+    },
+    { type: 'scene', stats: { warnings: [] } },
+  ];
 }
 
 const IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
@@ -73,7 +77,7 @@ async function load(matrix = IDENTITY) {
   const loading = loadUsd('scene.usda', { onProgress: (p) => p.stage === 'textures' && textures++ });
   await new Promise((resolve) => setTimeout(resolve));
   const worker = FakeWorker.last;
-  worker.send(sceneMessage(matrix));
+  sceneMessages(matrix).forEach((m) => worker.send(m));
   const result = await loading;
   return { ...result, worker, textureCount: () => textures };
 }
@@ -128,7 +132,7 @@ test('abort before geometry rejects with an aborted UsdLoadError and stops the w
   await assert.rejects(loading, { name: 'UsdLoadError', code: 'aborted' });
   assert.equal(worker.terminated, true);
   // A scene that was already on its way is dropped.
-  worker.send(sceneMessage(IDENTITY));
+  sceneMessages(IDENTITY).forEach((m) => worker.send(m));
 });
 
 test('abort after geometry stops textures but leaves the model to its owner', async () => {
@@ -136,7 +140,7 @@ test('abort after geometry stops textures but leaves the model to its owner', as
   const loading = loadUsd('scene.usda', { signal: controller.signal });
   await new Promise((resolve) => setTimeout(resolve));
   const worker = FakeWorker.last;
-  worker.send(sceneMessage(IDENTITY));
+  sceneMessages(IDENTITY).forEach((m) => worker.send(m));
   const { root, complete } = await loading;
   controller.abort();
   assert.equal(worker.terminated, true);
@@ -217,7 +221,7 @@ test('dispose aborts requests still running in the caller fetch', { timeout: 300
   const loading = loadUsd('https://example.test/scene.usda', { fetch: (url, init) => ((signal = init.signal), new Promise(() => {})) });
   await tick();
   const worker = FakeWorker.last;
-  worker.send(sceneMessage(IDENTITY));
+  sceneMessages(IDENTITY).forEach((m) => worker.send(m));
   const result = await loading;
   worker.send({ type: 'fetch', id: 1, url: 'https://example.test/t.png' });
   await tick();
@@ -239,23 +243,20 @@ test('maxConcurrentFetches must be a finite positive integer', { timeout: 3000 }
 
 test('a material shared by meshes with different UV sets reads the named set on each', async () => {
   const emissive = { ...TEXTURE, uvSet: 'custom' };
-  const message = sceneMessage(IDENTITY);
-  const quad = message.geometries[0];
+  const [meta, geometry, done] = sceneMessages(IDENTITY);
   const uv = () => new Float32Array(6);
-  message.meta.materials[0].maps = { emissiveColor: emissive };
-  message.meta.geometries = [
-    { groups: [[0, 3]], bounds: [0, 0, 0, 1, 1, 0], uvSets: ['st', 'custom'], hasColors: false },
-    { groups: [[0, 3]], bounds: [0, 0, 0, 1, 1, 0], uvSets: ['custom'], hasColors: false },
+  meta.meta.materials[0].maps = { emissiveColor: emissive };
+  meta.meta.geometryCount = 2;
+  meta.meta.instances = [
+    { path: '/WithSt', geometry: 0, material: 0, subsets: {}, doubleSided: false, matrix: IDENTITY },
+    { path: '/OnlyCustom', geometry: 1, material: 0, subsets: {}, doubleSided: false, matrix: IDENTITY },
   ];
-  message.geometries = [{ ...quad, uvs: [uv(), uv()] }, { ...quad, uvs: [uv()] }];
-  message.meta.instances = [
-    { path: '/WithSt', geometry: 0, materials: [0], doubleSided: false, matrix: IDENTITY },
-    { path: '/OnlyCustom', geometry: 1, materials: [0], doubleSided: false, matrix: IDENTITY },
-  ];
+  const geometryWithSt = { ...geometry, meta: { ...geometry.meta, uvSets: ['st', 'custom'] }, arrays: { ...geometry.arrays, uvs: [uv(), uv()] } };
+  const geometryOnlyCustom = { ...geometry, index: 1, meta: { ...geometry.meta, uvSets: ['custom'] }, arrays: { ...geometry.arrays, uvs: [uv()] } };
   const loading = loadUsd('scene.usda');
   await tick();
   const worker = FakeWorker.last;
-  worker.send(message);
+  [meta, geometryWithSt, geometryOnlyCustom, done].forEach((m) => worker.send(m));
   const { root } = await loading;
   worker.send({ type: 'texture', path: TEXTURE.path, bitmap: fakeBitmap() });
   const [withSt, onlyCustom] = root.children;
@@ -272,4 +273,18 @@ test('geometry arrays are released once three.js has uploaded them', async () =>
   assert.ok(attributes.every((attribute) => attribute.array === null));
   // Framing still works from the precomputed bounds.
   assert.ok(!new THREE.Box3().setFromObject(root).isEmpty());
+});
+
+test('geometry streams in; the load resolves once every geometry has arrived', async () => {
+  const loading = loadUsd('scene.usda');
+  await new Promise((resolve) => setTimeout(resolve));
+  const worker = FakeWorker.last;
+  const [meta, geometry, done] = sceneMessages(IDENTITY);
+  worker.send(meta);
+  worker.send(geometry);
+  const early = await Promise.race([loading.then(() => 'resolved'), new Promise((resolve) => setTimeout(() => resolve('pending'), 20))]);
+  assert.equal(early, 'pending');
+  worker.send(done);
+  const { info, root } = await loading;
+  assert.deepEqual([info.meshes, info.geometries, info.triangles, root.children.length], [1, 1, 1, 1]);
 });

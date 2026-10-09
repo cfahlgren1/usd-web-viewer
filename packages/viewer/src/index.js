@@ -7,6 +7,9 @@ import { applyFallback, attachTexture, configureTexture, createMaterial, variant
 
 export { UsdLoadError };
 
+// Lets the viewer show meshes as they stream in, before the load resolves.
+const SHOW = Symbol('show');
+
 let wasmModule = null;
 
 /** Compiles the WASM module once per page; workers instantiate it without refetching. */
@@ -110,11 +113,17 @@ export async function loadUsd(url, options = {}) {
       case 'progress':
         onProgress?.(data.progress);
         break;
-      case 'scene':
+      case 'meta':
         if (signal?.aborted) return abort();
-        built = buildScene(data.meta, data.geometries);
+        built = buildScene(data.meta);
+        options[SHOW]?.(built.root);
+        break;
+      case 'geometry':
+        built.addGeometry(data.index, data.meta, data.arrays);
+        break;
+      case 'scene':
         built.info.stats = data.stats;
-        built.info.warnings.push(...data.meta.warnings, ...data.stats.warnings);
+        built.info.warnings.push(...data.stats.warnings);
         delivered = true;
         resolveScene(built);
         break;
@@ -183,7 +192,17 @@ export async function loadUsd(url, options = {}) {
   };
 }
 
-function buildScene(meta, arrays) {
+function buildScene(meta) {
+  const info = {
+    upAxis: meta.upAxis,
+    metersPerUnit: meta.metersPerUnit,
+    meshes: 0,
+    geometries: 0,
+    triangles: 0,
+    materials: meta.materials.length,
+    materialKinds: countBy(meta.materials, (m) => m.kind),
+    warnings: [...meta.warnings],
+  };
   const root = new THREE.Group();
   root.name = 'usd';
   // three.js is Y-up in meters.
@@ -200,33 +219,42 @@ function buildScene(meta, arrays) {
     return variants.get(key);
   };
 
-  // A plain loop, not a closure: closures here would keep `arrays` (and so
-  // every CPU-side copy) alive as long as the scene.
+  // Geometries stream in one at a time; each brings in the meshes that draw it.
   const geometries = [];
-  for (let i = 0; i < meta.geometries.length; i++) geometries.push(createGeometry(meta.geometries[i], arrays[i]));
+  const instancesOf = Map.groupBy(meta.instances, (inst) => inst.geometry);
+  const addGeometry = (index, g, a) => {
+    if (!g) return;
+    const geometry = createGeometry(g, a);
+    geometries.push(geometry);
+    info.geometries++;
 
-  for (const inst of meta.instances) {
-    const g = meta.geometries[inst.geometry];
-    const mats = inst.materials.map((m) => {
-      const usd = materials[m].userData.usd;
-      // Route each named UV set to its attribute on this geometry; meshes that
-      // lay their UV sets out differently get their own copy of the material.
-      const uvChannels = {};
-      for (const ref of Object.values(usd.maps)) {
-        const k = g.uvSets.indexOf(ref.uvSet);
-        if (k > 0) uvChannels[ref.uvSet] = k;
-      }
-      return materialFor(m, inst.doubleSided, g.hasColors && !!usd.colorPrimvar, uvChannels);
-    });
-    const mesh = new THREE.Mesh(geometries[inst.geometry], mats.length > 1 ? mats : mats[0]);
-    mesh.name = inst.path;
-    // USD stores row-vector matrices row-major: the same numbers column-major for three.js.
-    // Set whole rather than decomposed, which would lose shear.
-    mesh.matrix.fromArray(inst.matrix);
-    mesh.matrixAutoUpdate = false;
-    mesh.matrixWorldNeedsUpdate = true;
-    root.add(mesh);
-  }
+    const triangles = g.groups.reduce((n, [, count]) => n + count / 3, 0);
+    for (const inst of instancesOf.get(index) ?? []) {
+      // A group takes its GeomSubset's material, else the mesh's.
+      const mats = g.groups.map(([, , subset]) => {
+        const m = inst.subsets[subset] ?? inst.material;
+        const usd = materials[m].userData.usd;
+        // Route each named UV set to its attribute on this geometry; meshes that
+        // lay their UV sets out differently get their own copy of the material.
+        const uvChannels = {};
+        for (const ref of Object.values(usd.maps)) {
+          const k = g.uvSets.indexOf(ref.uvSet);
+          if (k > 0) uvChannels[ref.uvSet] = k;
+        }
+        return materialFor(m, inst.doubleSided, g.hasColors && !!usd.colorPrimvar, uvChannels);
+      });
+      const mesh = new THREE.Mesh(geometry, mats.length > 1 ? mats : mats[0]);
+      mesh.name = inst.path;
+      // USD stores row-vector matrices row-major: the same numbers column-major for three.js.
+      // Set whole rather than decomposed, which would lose shear.
+      mesh.matrix.fromArray(inst.matrix);
+      mesh.matrixAutoUpdate = false;
+      mesh.matrixWorldNeedsUpdate = true;
+      root.add(mesh);
+      info.meshes++;
+      info.triangles += triangles;
+    }
+  };
 
   const allMaterials = () => [...materials, ...variants.values()];
   const textures = new Map();
@@ -252,17 +280,7 @@ function buildScene(meta, arrays) {
     }
   };
 
-  const info = {
-    upAxis: meta.upAxis,
-    metersPerUnit: meta.metersPerUnit,
-    meshes: meta.instances.length,
-    geometries: meta.geometries.length,
-    triangles: meta.stats.triangles,
-    materials: meta.materials.length,
-    materialKinds: countBy(meta.materials, (m) => m.kind),
-    warnings: [],
-  };
-  return { root, info, applyTexture, textureFailed, dispose };
+  return { root, info, addGeometry, applyTexture, textureFailed, dispose };
 }
 
 function createGeometry(g, a) {
@@ -387,24 +405,40 @@ export function createViewer(target, options = {}) {
       pending?.abort();
       const controller = (pending = new AbortController());
       const signal = loadOptions.signal ? AbortSignal.any([loadOptions.signal, controller.signal]) : controller.signal;
+      // Meshes show as they stream in: the new stage replaces the old one as
+      // soon as its first mesh arrives, framed then and again when complete.
+      let streaming = null;
+      const show = (root) => {
+        if (controller.signal.aborted) return;
+        clear();
+        streaming = root;
+        scene.add(root);
+      };
       const onProgress = (progress) => {
+        if (progress.stage === 'geometry' && streaming) {
+          if (progress.loaded === 1) frame(camera, controls, streaming);
+          requestRender();
+        }
         if (progress.stage === 'textures') requestRender();
         loadOptions.onProgress?.(progress);
       };
       try {
-        const result = await loadUsd(url, { ...loadOptions, signal, onProgress });
+        const result = await loadUsd(url, { ...loadOptions, signal, onProgress, [SHOW]: show });
         // Superseded (or the viewer disposed) as geometry arrived: drop it.
         if (controller.signal.aborted || disposed) {
           result.dispose();
           throw new UsdLoadError('aborted', 'superseded by a newer load', { url });
         }
-        clear();
         current = result;
-        scene.add(result.root);
+        if (!streaming) scene.add(result.root);
         frame(camera, controls, result.root);
         requestRender();
         result.complete.then(requestRender, () => {});
         return result;
+      } catch (error) {
+        if (streaming && streaming !== current?.root) scene.remove(streaming);
+        requestRender();
+        throw error;
       } finally {
         if (pending === controller) pending = null;
       }

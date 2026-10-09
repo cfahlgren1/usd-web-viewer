@@ -11,12 +11,16 @@ use openusd_schemas::shade::MaterialBindingAPI;
 
 use crate::material::{self, Material};
 
-/// Everything a renderer needs from a stage, with no references back into it.
+/// Everything a renderer needs from a stage. [`plan`] fills in all but the
+/// triangle data, which [`Scene::read_geometry`] reads one mesh at a time from
+/// `sources`; [`extract`] reads it all up front into `geometries`.
 #[derive(Default)]
 pub struct Scene {
     pub up_axis: String,
     pub meters_per_unit: f64,
-    /// Triangle data, shared by every instance that draws it.
+    /// What to read for each geometry; holding the prims keeps the stage alive.
+    pub sources: Vec<Source>,
+    /// Triangle data, shared by every instance that draws it (after [`extract`]).
     pub geometries: Vec<Geometry>,
     pub instances: Vec<Instance>,
     pub materials: Vec<Material>,
@@ -44,6 +48,14 @@ pub struct Stats {
     pub triangles: usize,
     /// Meshes left out, with why: `invisible`, `purpose` or `empty`.
     pub skipped: Vec<(String, &'static str)>,
+}
+
+/// A mesh prim to read, with what its bound materials need from it.
+pub struct Source {
+    pub prim: usd::Prim,
+    /// The primvar per-vertex colors come from, when a bound material shows them.
+    pub color_primvar: Option<String>,
+    pub uv_sets: Vec<String>,
 }
 
 pub struct Geometry {
@@ -78,7 +90,11 @@ pub struct Instance {
     /// Local-to-world, row-major with row vectors (USD); the same 16 numbers
     /// are a column-major matrix for three.js.
     pub matrix: [f64; 16],
-    /// One material index per geometry group.
+    /// The mesh's own material, and the materials its `GeomSubset`s bind (by
+    /// subset name): a geometry group takes its subset's, else the mesh's.
+    pub material: u32,
+    pub subsets: Vec<(String, u32)>,
+    /// One material index per geometry group (after [`extract`]).
     pub materials: Vec<u32>,
     pub double_sided: bool,
 }
@@ -101,7 +117,60 @@ struct Prototype {
     placements: Vec<(usize, Matrix4d)>,
 }
 
+/// Extracts everything, triangle data included.
 pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
+    plan(stage)?.read_all()
+}
+
+impl Instance {
+    /// The material a geometry group is drawn with.
+    pub fn material_for(&self, group: &Group) -> u32 {
+        let subset = group.subset.as_ref().and_then(|name| self.subsets.iter().find(|(n, _)| n == name));
+        subset.map_or(self.material, |&(_, m)| m)
+    }
+}
+
+impl Scene {
+    /// Reads every geometry into `geometries`, dropping instances of meshes
+    /// with nothing drawable and filling in per-group materials and triangle
+    /// counts. Releases the sources (and with them the stage).
+    pub fn read_all(mut self) -> openusd::Result<Scene> {
+        let mut index = vec![None; self.sources.len()];
+        for (i, slot) in index.iter_mut().enumerate() {
+            if let Some(geometry) = self.read_geometry(i)? {
+                *slot = Some(self.geometries.len() as u32);
+                self.geometries.push(geometry);
+            }
+        }
+        let instances = std::mem::take(&mut self.instances);
+        for mut instance in instances {
+            let Some(geometry) = index[instance.geometry as usize] else {
+                self.stats.meshes -= 1;
+                self.stats.skipped_empty += 1;
+                self.stats.skipped.push((instance.path, "empty"));
+                continue;
+            };
+            let g = &self.geometries[geometry as usize];
+            instance.geometry = geometry;
+            instance.materials = g.groups.iter().map(|group| instance.material_for(group)).collect();
+            self.stats.triangles += g.indices.len() / 3;
+            self.instances.push(instance);
+        }
+        self.sources.clear();
+        Ok(self)
+    }
+
+    /// Reads the triangle data of `sources[index]`; `None` when the mesh has
+    /// nothing drawable.
+    pub fn read_geometry(&self, index: usize) -> openusd::Result<Option<Geometry>> {
+        let source = &self.sources[index];
+        read_mesh(&source.prim, source.color_primvar.as_deref(), &source.uv_sets)
+    }
+}
+
+/// Composes what a renderer needs except triangle data: materials, instances
+/// with their transforms and materials, and the mesh sources to read.
+pub fn plan(stage: &Stage) -> openusd::Result<Scene> {
     let mut scene = Scene {
         up_axis: token_metadata(stage, "upAxis").unwrap_or_else(|| "Y".to_owned()),
         meters_per_unit: match stage.stage_metadata("metersPerUnit")? {
@@ -200,30 +269,12 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
         uv_sets.sort();
         uv_sets.dedup();
         let key = format!("{}|{}|{}", source.path().as_str(), color_primvar.as_deref().unwrap_or(""), uv_sets.join(","));
-        let geometry = match geometry_by_source.get(&key) {
-            Some(&index) => Some(index),
-            None => match read_mesh(&source, color_primvar.as_deref(), &uv_sets)? {
-                Some(geometry) => {
-                    let index = scene.geometries.len() as u32;
-                    scene.geometries.push(geometry);
-                    geometry_by_source.insert(key, index);
-                    Some(index)
-                }
-                None => None,
-            },
-        };
-        let Some(geometry) = geometry else {
-            scene.stats.skipped_empty += 1;
-            scene.stats.skipped.push((path.as_str().to_owned(), "empty"));
-            continue;
-        };
-
-        let groups = &scene.geometries[geometry as usize].groups;
-        let mut instance_materials = Vec::with_capacity(groups.len());
-        for group in groups {
-            let subset = group.subset.as_ref().and_then(|name| subset_materials.get(name));
-            instance_materials.push(subset.copied().unwrap_or(mesh_material));
-        }
+        let geometry = *geometry_by_source.entry(key).or_insert_with(|| {
+            scene.sources.push(Source { prim: source, color_primvar, uv_sets });
+            scene.sources.len() as u32 - 1
+        });
+        let mut subsets: Vec<(String, u32)> = subset_materials.into_iter().collect();
+        subsets.sort();
 
         let placed = match own.prototype {
             None => vec![(
@@ -244,15 +295,15 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
             }
         };
         let double_sided = matches!(prim.attribute("doubleSided").get::<bool>(), Ok(Some(true)));
-        let triangles = scene.geometries[geometry as usize].indices.len() / 3;
         for (path, matrix) in placed {
             scene.stats.meshes += 1;
-            scene.stats.triangles += triangles;
             scene.instances.push(Instance {
                 path,
                 geometry,
                 matrix: matrix.0,
-                materials: instance_materials.clone(),
+                material: mesh_material,
+                subsets: subsets.clone(),
+                materials: Vec::new(),
                 double_sided,
             });
         }

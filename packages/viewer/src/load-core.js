@@ -224,15 +224,29 @@ export function sameOrigin(url, root) {
   return origin !== 'null' && origin === new URL(root).origin;
 }
 
-/** Moves every geometry's arrays out of WASM into JS typed arrays. */
-export function takeGeometries(scene, meta) {
-  return meta.geometries.map((g, i) => ({
-    positions: scene.positions(i),
-    normals: scene.normals(i),
-    uvs: g.uvSets.map((_, k) => scene.uvs(i, k)),
-    colors: g.hasColors ? scene.colors(i) : null,
-    indices: g.vertices < 65536 ? scene.indices16(i) : scene.indices(i),
-  }));
+/**
+ * Reads each geometry out of WASM in turn, so only one mesh's arrays are in
+ * WASM memory at a time, and calls `onGeometry(index, meta, arrays)` with
+ * JS-owned typed arrays (`meta` and `arrays` are null for a mesh with nothing
+ * drawable). Releases the stage afterwards.
+ */
+export function readGeometries(scene, meta, onGeometry) {
+  for (let i = 0; i < meta.geometryCount; i++) {
+    const json = scene.read(i);
+    if (!json) {
+      onGeometry(i, null, null);
+      continue;
+    }
+    const g = JSON.parse(json);
+    onGeometry(i, g, {
+      positions: scene.positions(),
+      normals: scene.normals(),
+      uvs: g.uvSets.map((_, k) => scene.uvs(k)),
+      colors: g.hasColors ? scene.colors() : null,
+      indices: g.vertices < 65536 ? scene.indices16() : scene.indices(),
+    });
+  }
+  scene.finish();
 }
 
 /**

@@ -72,7 +72,7 @@ impl UsdLoader {
         // to read only the images the texture mode loads, each once.
         let packages = self.inner.take_texture_packages(&scene);
         self.inner.clear();
-        Ok(UsdScene { scene, packages })
+        Ok(UsdScene { scene, current: None, packages })
     }
 }
 
@@ -82,39 +82,61 @@ impl Default for UsdLoader {
     }
 }
 
-/// An extracted scene. Array getters move the data out, so each is read once.
+/// A composed scene whose meshes are read one at a time: `read(i)` makes
+/// geometry `i` current, and the array getters move its data out (each once).
+/// Only the current mesh's arrays live in WASM memory at any time.
 #[wasm_bindgen]
 pub struct UsdScene {
     scene: Scene,
+    current: Option<crate::extract::Geometry>,
     packages: std::collections::HashMap<String, Vec<u8>>,
 }
 
 #[wasm_bindgen]
 impl UsdScene {
-    /// Everything but the bulk arrays, as JSON.
+    /// Everything but the triangle data, as JSON.
     pub fn meta(&self) -> String {
         crate::json::scene_meta(&self.scene)
     }
 
-    pub fn positions(&mut self, geometry: usize) -> Vec<f32> {
-        std::mem::take(&mut self.scene.geometries[geometry].positions)
+    /// Reads geometry `index` and returns its metadata as JSON, or `None` when
+    /// the mesh has nothing drawable.
+    pub fn read(&mut self, index: usize) -> Result<Option<String>, JsError> {
+        self.current = self.scene.read_geometry(index).map_err(js_error)?;
+        Ok(self.current.as_ref().map(crate::json::geometry_meta))
     }
 
-    pub fn normals(&mut self, geometry: usize) -> Vec<f32> {
-        std::mem::take(&mut self.scene.geometries[geometry].normals)
+    /// Releases the stage once every geometry has been read.
+    pub fn finish(&mut self) {
+        self.current = None;
+        self.scene.sources.clear();
+    }
+
+    pub fn positions(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.geometry().positions)
+    }
+
+    pub fn normals(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.geometry().normals)
     }
 
     /// UV set `set` (in the order of the geometry's `uvSets`).
-    pub fn uvs(&mut self, geometry: usize, set: usize) -> Vec<f32> {
-        std::mem::take(&mut self.scene.geometries[geometry].uvs[set].1)
+    pub fn uvs(&mut self, set: usize) -> Vec<f32> {
+        std::mem::take(&mut self.geometry().uvs[set].1)
     }
 
-    pub fn colors(&mut self, geometry: usize) -> Vec<f32> {
-        std::mem::take(&mut self.scene.geometries[geometry].colors)
+    pub fn colors(&mut self) -> Vec<f32> {
+        std::mem::take(&mut self.geometry().colors)
     }
 
-    pub fn indices(&mut self, geometry: usize) -> Vec<u32> {
-        std::mem::take(&mut self.scene.geometries[geometry].indices)
+    pub fn indices(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.geometry().indices)
+    }
+
+    /// Indices as 16-bit, for geometries with fewer than 65536 vertices.
+    pub fn indices16(&mut self) -> Vec<u16> {
+        let indices = std::mem::take(&mut self.geometry().indices);
+        indices.into_iter().map(|i| i as u16).collect()
     }
 
     /// A texture that lives inside a USDZ package, if `path` names one there.
@@ -133,9 +155,7 @@ impl UsdScene {
         }
     }
 
-    /// Indices as 16-bit, for geometries with fewer than 65536 vertices.
-    pub fn indices16(&mut self, geometry: usize) -> Vec<u16> {
-        let indices = std::mem::take(&mut self.scene.geometries[geometry].indices);
-        indices.into_iter().map(|i| i as u16).collect()
+    fn geometry(&mut self) -> &mut crate::extract::Geometry {
+        self.current.as_mut().expect("read a geometry first")
     }
 }
