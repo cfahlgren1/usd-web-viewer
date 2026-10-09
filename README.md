@@ -16,79 +16,43 @@ Drop-in element (works as is in Vite and other bundlers; see [`examples/vite`](e
 
 ```html
 <script type="module">import 'usd-web-viewer/element';</script>
-<style>usd-viewer:not(:defined) { display: block; min-height: 200px }</style>
 
 <usd-viewer
   src="https://huggingface.co/datasets/Robotiq-Official/simready-assets/resolve/main/Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda"
   alt="Robotiq 2F-85 gripper"></usd-viewer>
 ```
 
-| Attribute (property) | | Event | |
-|---|---|---|---|
-| `src` | root layer URL; changing it reloads, empty clears | `progress` | `detail`: `LoadProgress` |
-| `textures` | `none`, `preview` (default) or `full` | `load` | `detail`: `LoadInfo`; the full result is `el.result` |
-| `max-texture-size` (`maxTextureSize`) | long-side cap, default 1024 | `error` | an `ErrorEvent`; `.error` is a `UsdLoadError` |
-| `alt` | accessible description (`role="img"`, `aria-label`) | | |
-| `touch-action` (`touchAction`) | applied to the canvas, default `pan-y` so the page scrolls on touch screens | | |
-
-The element sizes itself to its box, is transparent (style its background), aborts an in-flight load when `src` changes, survives being moved in the DOM, and frees the renderer, GPU context and WASM worker when removed. `el.viewer` exposes the underlying viewer. Importing it on a server (no DOM) is safe.
+Attributes: `src`, `textures`, `max-texture-size`, `alt`. Events: `progress`, `load`, `error`.
 
 Or drive it from JavaScript:
 
 ```js
 import { createViewer } from 'usd-web-viewer';
-import { hubUrl } from 'usd-web-viewer/hub';
 
-const viewer = createViewer(document.getElementById('app')); // throws UsdLoadError('webgl') without WebGL
-const { info, complete } = await viewer.load(
-  hubUrl('Robotiq-Official/simready-assets', 'Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda', { revision: '<commit sha>' }),
-  { onProgress: (p) => console.log(p.stage, p) },
-);
-console.log(info.meshes, info.triangles, info.warnings); // geometry is on screen now
-console.log(await complete);                             // { textures, failed } once textures streamed in
+const viewer = createViewer(document.getElementById('app'));
+const { info, complete } = await viewer.load(url);
+console.log(info.meshes, info.triangles); // geometry is on screen now
+await complete;                           // textures streamed in
 ```
-
-A newer `viewer.load()` aborts the one in flight (its promise rejects with code `aborted`); `viewer.frame(object?)` re-frames the camera, `viewer.clear()` removes the stage and `viewer.dispose()` frees everything. `createViewer(target, { background })` sets an opaque background; the canvas is transparent by default.
 
 Bring your own three.js scene instead:
 
 ```js
 import { loadUsd } from 'usd-web-viewer';
 
-const { root, info, complete, dispose } = await loadUsd(url, { textures: 'none' });
+const { root, dispose } = await loadUsd(url);
 scene.add(root);   // THREE.Group, Y-up, metres
-// later: dispose() frees geometries, materials and textures and stops streaming
 ```
 
-| Option (`load` / `loadUsd`) | Default | |
+| Option | Default | |
 |---|---|---|
-| `textures` | `'preview'` | `'none'`; `'preview'`: base color up to `maxTextureSize`, roughness / metallic / occlusion (and opacity / emissive) maps up to 512 px, no normal maps; `'full'`: every map, normals included, up to `maxTextureSize`. See [preview vs full](bench/results/README.md#texture-modes-preview-vs-full) |
-| `maxTextureSize` | `1024` | Long-side cap; textures are decoded straight to this size in the worker |
-| `signal` | – | `AbortSignal`: cancels fetches, terminates the worker, rejects with a `UsdLoadError` of code `aborted` |
-| `onProgress` | – | `{ stage: 'layers', loaded, total, bytes }`, `{ stage: 'compose', round }`, `{ stage: 'geometry', loaded, total }`, `{ stage: 'textures', loaded, total, bytes }` |
-| `headers` | – | Sent with layer and texture requests to the root URL's origin only (see [Embedding elsewhere](#embedding-elsewhere)) |
-| `fetch` | – | Your own `fetch(url, { headers, signal })`, used for every request (proxied from the worker); `headers` is set only for the root URL's origin, `signal` aborts when the load stops |
-| `wasmUrl` / `workerUrl` | bundled | Serve the `.wasm` / worker script from your own CDN |
-| `maxConcurrentFetches` | `16` | Requests in flight at once, a positive integer (textures: at most 4 fetched and decoded at once) |
-| `maxLayerBytes` | 1 GiB | Total size of USD layers to fetch before failing with a `fetch` error |
+| `textures` | `'preview'` | `'none'`, `'preview'` (no normal maps, data maps at 512 px) or `'full'`. See [preview vs full](bench/results/README.md#texture-modes-preview-vs-full) |
+| `maxTextureSize` | `1024` | Long-side cap for textures |
+| `signal` | – | `AbortSignal` to cancel the load |
+| `onProgress` | – | Called per stage: `layers`, `compose`, `geometry`, `textures` |
+| `headers` / `fetch` | – | Auth for gated or private files outside huggingface.co |
 
-Errors are `UsdLoadError`s with a `code` (`aborted`, `fetch`, `compose`, `worker`, `webgl`), the failing `url` and, for a root layer that could not be fetched, the HTTP `status` (401 / 403 for a gated or private repo, 404 when missing). A missing sublayer, reference or payload is not an error: it is left out with a warning. `complete` rejects too if the load is aborted or disposed, or the worker dies after the geometry arrived.
-
-The compiled WASM module is shared by every load in the page. Serve `usd_wasm_bg.wasm` with `Content-Type: application/wasm` (for streaming compilation) and, when the file name carries a content hash (bundlers add one), `Cache-Control: public, max-age=31536000, immutable`; otherwise `Cache-Control: no-cache` with an `ETag`, so repeat visits revalidate instead of downloading it again. Compiling takes about 8 ms in Chromium (lazy tier-up), so fetching the root layer in parallel with it was measured and not worth the extra code.
-
-Meshes stream out of the worker one at a time, so only one mesh's arrays are in WASM memory at once: `createViewer` shows them as they arrive (the Standard Bots arm's first mesh appears in about half the time), while `load()` / `loadUsd()` still resolve once every mesh is in, with `onProgress` reporting `{ stage: 'geometry', loaded, total }` on the way.
-
-Geometry is kept on the GPU only: once three.js has uploaded a mesh, its CPU-side arrays are released (bounds are precomputed, so framing and culling never need them). The trade-off: a lost WebGL context cannot be restored without reloading, and CPU raycasting against the meshes is not available.
-
-`info.warnings` lists `{ code, message, path? }` for what could not be shown faithfully: `layer-missing`, `layer-unreadable`, `prim-unsupported` (e.g. `BasisCurves`, implicit `Sphere` / `Cube`), `material-fallback` (MDL other than OmniPBR/glTF, MaterialX), `texture-failed` and `composition`. It grows until `complete` settles. TypeScript declarations ship with the package.
-
-### On the Hub
-
-Hub `resolve` URLs work as they are, with no token: on huggingface.co the page's own cookies authorize gated and private repos the user can see. `hubUrl(repo, path, { revision, repoType })` from `usd-web-viewer/hub` builds them; pass a commit sha as `revision` rather than `main` so every layer of a multi-layer stage comes from the same commit.
-
-### Embedding elsewhere
-
-On another origin there are no Hub cookies: pass `headers: { Authorization: 'Bearer <token>' }` for gated or private repos, or your own `fetch` (e.g. one that goes through your backend). Headers go only to requests on the root URL's origin, so a token is never sent to another host a layer happens to reference; your `fetch` receives every URL and can decide for itself.
+Errors are `UsdLoadError`s with a `code`; anything that could not be shown faithfully is listed in `info.warnings`. Every option, error code and warning is typed in [`index.d.ts`](packages/viewer/src/index.d.ts).
 
 ## Compared with other browser USD viewers
 
@@ -156,13 +120,11 @@ npm run build:wasm      # cargo -> wasm-bindgen -> wasm-opt -Os
 npm run serve           # http://127.0.0.1:8811/examples/index.html?url=<root .usd URL>
 npm test                                            # unit tests (Node, real WASM)
 node scripts/node-test.mjs                          # compose + extract in Node
-npx tsc --noEmit --strict --exactOptionalPropertyTypes --skipLibCheck --module nodenext --target es2022 packages/viewer/test/types.ts
 node scripts/api-test.mjs                           # progress, abort, headers, fetch, warnings, <usd-viewer>
 (cd examples/vite && npm install && node test.mjs)  # Vite production build loading a Hub URL
 node bench/run.mjs --configs usd-wasm,gltf --runs 3
 node conformance/run.mjs --bench
 node conformance/run.mjs --usdwg                   # usd-wg/assets material scenes vs Pixar
-node conformance/browser-checks.mjs                # rendered fixtures (e.g. UV set routing)
 ```
 
 </details>
