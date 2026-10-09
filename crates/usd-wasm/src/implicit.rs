@@ -198,7 +198,6 @@ impl Mesh {
         }
         Some(Geometry {
             source: prim.path().as_str().to_owned(),
-            points: self.positions.len(),
             positions: self.positions.into_iter().flatten().collect(),
             normals: self.normals.into_iter().flatten().collect(),
             uvs: Vec::new(),

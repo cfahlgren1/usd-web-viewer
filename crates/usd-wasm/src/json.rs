@@ -12,12 +12,6 @@ pub fn scene_meta(scene: &Scene) -> String {
     o.push_str("\"upAxis\":");
     string(&mut o, &scene.up_axis);
     let _ = write!(o, ",\"metersPerUnit\":{}", num(scene.meters_per_unit));
-    let s = &scene.stats;
-    let _ = write!(
-        o,
-        ",\"stats\":{{\"prims\":{},\"meshes\":{},\"triangles\":{},\"skippedInvisible\":{},\"skippedPurpose\":{},\"skippedEmpty\":{}}}",
-        s.prims, s.meshes, s.triangles, s.skipped_invisible, s.skipped_purpose, s.skipped_empty
-    );
 
     o.push_str(",\"warnings\":[");
     for (i, w) in scene.warnings.iter().enumerate() {
@@ -107,10 +101,9 @@ pub fn geometry_meta(g: &Geometry) -> String {
     let [[x0, y0, z0], [x1, y1, z1]] = g.bounds.map(|p| p.map(|v| num(v.into())));
     let _ = write!(
         o,
-        "{{\"vertices\":{},\"maxIndex\":{},\"points\":{},\"hasColors\":{},\"bounds\":[{x0},{y0},{z0},{x1},{y1},{z1}],\"uvSets\":[",
+        "{{\"vertices\":{},\"maxIndex\":{},\"hasColors\":{},\"bounds\":[{x0},{y0},{z0},{x1},{y1},{z1}],\"uvSets\":[",
         g.positions.len() / 3,
         g.indices.iter().max().copied().unwrap_or(0),
-        g.points,
         !g.colors.is_empty()
     );
     for (j, (name, _)) in g.uvs.iter().enumerate() {

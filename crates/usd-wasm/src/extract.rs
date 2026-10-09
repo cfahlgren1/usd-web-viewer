@@ -63,8 +63,6 @@ pub struct Source {
 
 pub struct Geometry {
     pub source: String,
-    /// Authored point count (before per-corner splitting).
-    pub points: usize,
     pub positions: Vec<f32>,
     pub normals: Vec<f32>,
     /// UV sets by primvar name: the default set first, then the ones bound
@@ -878,7 +876,6 @@ fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) 
 
     Ok(Some(Geometry {
         source: prim.path().as_str().to_owned(),
-        points: points.len(),
         positions,
         normals,
         uvs,
