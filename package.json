@@ -7,6 +7,7 @@
     "build": "bash scripts/build-wasm.sh",
     "serve": "node scripts/serve.mjs",
     "test": "node --test 'packages/viewer/test/*.test.mjs'",
+    "test:browser": "node scripts/api-test.mjs",
     "check:types": "tsc --noEmit --strict --exactOptionalPropertyTypes --skipLibCheck --module nodenext --target es2022 --lib es2022,dom packages/viewer/test/types.ts",
     "licenses": "node scripts/third-party-licenses.mjs"
   },

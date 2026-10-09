@@ -78,7 +78,8 @@ Matches Pixar's OpenUSD on every package in [nvidia/simready-assets](https://hug
 ## Develop
 
     npm install && npm run build:wasm   # needs Rust (wasm32-unknown-unknown) and wasm-bindgen-cli 0.2.129
-    npm test && cargo test
+    npm test && cargo test              # fixture snapshots: cargo insta review
+    npm run test:browser                # Playwright: element, real worker and fetch
     npm run serve                       # examples on :8811
 
 Security model: [SECURITY.md](SECURITY.md). MIT licensed.

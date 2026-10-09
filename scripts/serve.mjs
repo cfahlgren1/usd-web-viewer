@@ -1,4 +1,4 @@
-// Static server for the examples and the browser API tests (scripts/api-test.mjs).
+// Static server for the examples and the browser tests (scripts/api-test.mjs starts its own).
 // - Serves the repo, local SimReady data under /data/ (USD_DATA) and a usd-wg/assets checkout under /usdwg/ (USDWG_DIR).
 // - No COOP/COEP, like a normal page on the Hub.
 // - Code (JS/WASM) is brotli-compressed when accepted, as a CDN would serve it.
