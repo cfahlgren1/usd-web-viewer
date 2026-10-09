@@ -361,10 +361,13 @@ export function createViewer(target, options = {}) {
 
   const scene = new THREE.Scene();
   scene.background = options.background == null ? null : new THREE.Color(options.background);
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  const environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-  scene.environment = environment;
-  pmrem.dispose();
+  // Rendered on the GPU, so rendered again after a lost context.
+  const makeEnvironment = () => {
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
+  };
+  makeEnvironment();
   scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.6));
   const sun = new THREE.DirectionalLight(0xffffff, 1.2);
   sun.position.set(3, 5, 4);
@@ -416,6 +419,8 @@ export function createViewer(target, options = {}) {
   let current = null;
   // The load in flight; a newer load or dispose aborts it.
   let pending = null;
+  // The latest load's arguments, to load again after a lost context.
+  let last = null;
   const clear = () => {
     if (!current) return;
     scene.remove(current.root);
@@ -423,6 +428,25 @@ export function createViewer(target, options = {}) {
     current = null;
     requestRender();
   };
+  // Geometry lives only on the GPU (its arrays are released once uploaded),
+  // so a lost context loses the stage: it is loaded again once restored.
+  const contextLost = (event) => {
+    event.preventDefault();
+    pending?.abort();
+    clear();
+    options.onContextLost?.();
+  };
+  const contextRestored = () => {
+    scene.environment.dispose();
+    makeEnvironment();
+    const reload = last && viewer.load(...last);
+    reload?.catch(() => {});
+    options.onContextRestored?.(reload);
+    requestRender();
+  };
+  canvas.addEventListener('webglcontextlost', contextLost);
+  canvas.addEventListener('webglcontextrestored', contextRestored);
+
   const viewer = {
     renderer,
     scene,
@@ -432,6 +456,7 @@ export function createViewer(target, options = {}) {
     /** Loads a stage, replacing the current one once its geometry shows. A newer load aborts this one. */
     async load(url, loadOptions = {}) {
       if (disposed) throw new UsdLoadError('aborted', 'the viewer was disposed', { url });
+      last = [url, loadOptions];
       pending?.abort();
       const controller = (pending = new AbortController());
       const { signal: callerSignal } = loadOptions;
@@ -476,7 +501,10 @@ export function createViewer(target, options = {}) {
       }
     },
     /** Removes and frees the current stage. */
-    clear,
+    clear() {
+      last = null;
+      clear();
+    },
     /** Points the camera at `object`, by default the current stage. */
     frame(object = current?.root) {
       if (object) frame(camera, controls, object);
@@ -491,8 +519,10 @@ export function createViewer(target, options = {}) {
       current = null;
       observer.disconnect();
       canvas.removeEventListener('keydown', zoomKey);
+      canvas.removeEventListener('webglcontextlost', contextLost);
+      canvas.removeEventListener('webglcontextrestored', contextRestored);
       controls.dispose();
-      environment.dispose();
+      scene.environment.dispose();
       renderer.dispose();
       renderer.forceContextLoss();
       if (ownsCanvas) canvas.remove();

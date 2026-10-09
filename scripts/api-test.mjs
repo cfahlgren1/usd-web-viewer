@@ -492,6 +492,40 @@ test('<usd-viewer reveal="interaction">: loads only once its button is activated
   assert.equal(await page.evaluate(() => document.getElementById('r').shadowRoot.activeElement?.tagName), 'CANVAS');
 });
 
+test('<usd-viewer> context loss: context-lost, the poster, then the model loads again on restore', async () => {
+  await emptyElementPage();
+  await addViewer('c', { src: LAPTOP, poster: '/conformance/fixtures/quadrants.png', textures: 'none' });
+  await waitFor('c', 'load');
+  await page.evaluate(() => (window.lose = document.getElementById('c').viewer.renderer.getContext().getExtension('WEBGL_lose_context')).loseContext());
+  await waitFor('c', 'context-lost');
+  const lost = await page.evaluate(() => {
+    const el = document.getElementById('c');
+    return { result: el.result, faded: el.shadowRoot.querySelector('img').classList.contains('hidden'), meshes: el.viewer.scene.getObjectByName('usd') ? 1 : 0 };
+  });
+  assert.deepEqual(lost, { result: null, faded: false, meshes: 0 });
+  await page.evaluate(() => window.lose.restoreContext());
+  await page.waitForFunction(() => window.seen.c.filter((t) => t === 'load').length === 2, null, { timeout: 60000 });
+  const restored = await page.evaluate(() => {
+    const el = document.getElementById('c');
+    return { triangles: el.result.info.triangles, shown: el.viewer.scene.children.includes(el.result.root) };
+  });
+  assert.deepEqual(restored, { triangles: 134228, shown: true });
+});
+
+test('<usd-viewer> lazy elements scrolled far away release their viewer and load again on return', async () => {
+  await emptyElementPage();
+  await addViewer('top', { src: LAPTOP, textures: 'none' });
+  await waitFor('top', 'load');
+  await addViewer('bottom', { src: LAPTOP, textures: 'none' }, '600vh');
+  await page.evaluate(() => document.getElementById('bottom').scrollIntoView());
+  await waitFor('bottom', 'load');
+  await page.waitForFunction(() => !document.getElementById('top').viewer, null, { timeout: 10000 });
+  assert.equal(await page.evaluate(() => document.getElementById('top').shadowRoot.querySelectorAll('canvas').length), 0);
+  await page.evaluate(() => document.getElementById('top').scrollIntoView());
+  await page.waitForFunction(() => window.seen.top.filter((t) => t === 'load').length === 2, null, { timeout: 60000 });
+  await page.waitForFunction(() => !document.getElementById('bottom').viewer, null, { timeout: 10000 });
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try {

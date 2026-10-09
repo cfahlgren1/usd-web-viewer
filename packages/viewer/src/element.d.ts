@@ -8,6 +8,8 @@ export interface UsdViewerEventMap extends Omit<HTMLElementEventMap, 'progress' 
   progress: CustomEvent<LoadProgress>;
   load: CustomEvent<LoadInfo>;
   error: UsdViewerErrorEvent;
+  /** The WebGL context was lost: the poster shows, `result` is null, and once the context is restored the model loads again (another `load`). */
+  'context-lost': Event;
 }
 
 /**
@@ -25,7 +27,7 @@ export class UsdViewerElement extends HTMLElement {
   alt: string;
   /** Applied to the canvas. Default `pan-y`, so the page scrolls on touch screens. */
   touchAction: string;
-  /** `lazy` (default): the viewer (worker, WASM, WebGL context) starts once the element is within half a viewport of the screen. `eager`: right away. */
+  /** `lazy` (default): the viewer (worker, WASM, WebGL context) starts once the element is within half a viewport of the screen, and is released (and loads again on return) once it is two viewports away. `eager`: starts right away and stays. */
   loading: 'lazy' | 'eager';
   /** An image shown until the model's first geometry is drawn, then cross-faded out; shown again while there is no viewer. */
   poster: string;

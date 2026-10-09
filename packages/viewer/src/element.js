@@ -7,7 +7,8 @@
 // max-texture-size (maxTextureSize), alt, touch-action (touchAction),
 // loading (`lazy` | `eager`), poster, reveal (`auto` | `interaction`).
 // Events: progress (detail: LoadProgress), load (detail: LoadInfo; the full
-// result is `el.result`), error (an ErrorEvent whose `.error` is a UsdLoadError).
+// result is `el.result`), error (an ErrorEvent whose `.error` is a UsdLoadError),
+// context-lost (the model then loads again once the context is restored).
 //
 // Safe to import where there is no DOM (server rendering): the element is
 // only defined in a browser.
@@ -32,8 +33,11 @@ const READ = {
   loading: (value) => (value === 'eager' ? 'eager' : 'lazy'),
   reveal: (value) => (value === 'interaction' ? 'interaction' : 'auto'),
 };
-// A lazy element starts once it is this close to the viewport.
+// A lazy element starts once it is this close to the viewport, and releases
+// its viewer (and WebGL context) once this far, so a long page of them keeps
+// only those around the screen live.
 const NEAR = '50%';
+const FAR = '200%';
 
 const STYLE = `
 :host{display:block;position:relative;width:100%;height:100%;min-height:200px}
@@ -48,6 +52,7 @@ span{display:inline-block;padding:.5em 1em;border-radius:2em;background:#000a;co
 export class UsdViewerElement extends Base {
   static observedAttributes = Object.values(ATTRIBUTES);
   static #nearObserver = null;
+  static #farObserver = null;
 
   #viewer = null;
   #result = null;
@@ -70,8 +75,10 @@ export class UsdViewerElement extends Base {
 
   connectedCallback() {
     if (!this.#parts) this.#render();
-    UsdViewerElement.#nearObserver ??= new IntersectionObserver((entries) => entries.forEach((e) => e.isIntersecting && e.target.#approach()), { rootMargin: NEAR });
+    UsdViewerElement.#nearObserver ??= new IntersectionObserver((entries) => entries.forEach((e) => e.isIntersecting && e.target.#setNear(true)), { rootMargin: NEAR });
+    UsdViewerElement.#farObserver ??= new IntersectionObserver((entries) => entries.forEach((e) => e.isIntersecting || e.target.#setNear(false)), { rootMargin: FAR });
     UsdViewerElement.#nearObserver.observe(this);
+    UsdViewerElement.#farObserver.observe(this);
     this.#update();
   }
 
@@ -80,6 +87,7 @@ export class UsdViewerElement extends Base {
     queueMicrotask(() => {
       if (this.isConnected) return;
       UsdViewerElement.#nearObserver.unobserve(this);
+      UsdViewerElement.#farObserver.unobserve(this);
       this.#near = false;
       this.#broken = false;
       this.#update();
@@ -107,8 +115,8 @@ export class UsdViewerElement extends Base {
     this.#decorate();
   }
 
-  #approach() {
-    this.#near = true;
+  #setNear(near) {
+    this.#near = near;
     this.#update();
   }
 
@@ -123,7 +131,14 @@ export class UsdViewerElement extends Base {
 
   #start() {
     try {
-      this.#viewer = createViewer(this.#parts.viewer);
+      this.#viewer = createViewer(this.#parts.viewer, {
+        onContextLost: () => {
+          this.#result = null;
+          this.#showPoster(true);
+          this.dispatchEvent(new Event('context-lost'));
+        },
+        onContextRestored: (reload) => reload && this.#track(reload, this.#abort),
+      });
     } catch (error) {
       this.#broken = true;
       this.#fail(error instanceof UsdLoadError ? error : new UsdLoadError('webgl', String(error?.message || error), { cause: error }));
@@ -166,32 +181,40 @@ export class UsdViewerElement extends Base {
     this.#parts.poster.classList.toggle('hidden', !shown);
   }
 
-  async #load() {
-    const src = this.getAttribute('src');
+  #load() {
     this.#abort?.abort();
     const abort = (this.#abort = new AbortController());
+    const loading = this.#viewer.load(this.getAttribute('src'), {
+      textures: textureMode(this.getAttribute('textures')),
+      maxTextureSize: Number(this.getAttribute('max-texture-size')) || 1024,
+      signal: abort.signal,
+      onProgress: (detail) => {
+        if (detail.stage === 'geometry' && detail.loaded === 1) this.#fadePoster(abort);
+        this.dispatchEvent(new CustomEvent('progress', { detail }));
+      },
+    });
+    this.#track(loading, abort);
+  }
+
+  /** Follows a load of the viewer's (the element's own, or one after a restored context). */
+  async #track(loading, abort) {
     this.setAttribute('aria-busy', 'true');
     this.#showPoster(true);
-    // Fades the poster out once the first geometry has been drawn.
-    const reveal = () => requestAnimationFrame(() => abort.signal.aborted || this.#showPoster(false));
     try {
-      const result = await this.#viewer.load(src, {
-        textures: textureMode(this.getAttribute('textures')),
-        maxTextureSize: Number(this.getAttribute('max-texture-size')) || 1024,
-        signal: abort.signal,
-        onProgress: (detail) => {
-          if (detail.stage === 'geometry' && detail.loaded === 1) reveal();
-          this.dispatchEvent(new CustomEvent('progress', { detail }));
-        },
-      });
+      const result = await loading;
       this.#result = result;
       this.removeAttribute('aria-busy');
-      reveal();
+      this.#fadePoster(abort);
       this.dispatchEvent(new CustomEvent('load', { detail: result.info }));
     } catch (error) {
       if (this.#abort === abort) this.removeAttribute('aria-busy');
       if (error?.code !== 'aborted') this.#fail(error);
     }
+  }
+
+  /** Fades the poster out after the next frame, which draws the geometry. */
+  #fadePoster(abort) {
+    requestAnimationFrame(() => abort.signal.aborted || this.#showPoster(false));
   }
 
   #fail(error) {
