@@ -23,9 +23,10 @@ pub fn scene_meta(scene: &Scene) -> String {
         if i > 0 {
             o.push(',');
         }
+        let [[x0, y0, z0], [x1, y1, z1]] = g.bounds.map(|p| p.map(|v| num(v.into())));
         let _ = write!(
             o,
-            "{{\"vertices\":{},\"points\":{},\"hasUvs\":{},\"groups\":[",
+            "{{\"vertices\":{},\"points\":{},\"hasUvs\":{},\"bounds\":[{x0},{y0},{z0},{x1},{y1},{z1}],\"groups\":[",
             g.positions.len() / 3,
             g.points,
             !g.uvs.is_empty()

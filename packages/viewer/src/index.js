@@ -119,6 +119,9 @@ function buildScene(meta, arrays, normalMaps) {
     geometry.setAttribute('normal', new THREE.BufferAttribute(a.normals, 3));
     if (a.uvs) geometry.setAttribute('uv', new THREE.BufferAttribute(a.uvs, 2));
     geometry.setIndex(new THREE.BufferAttribute(a.indices, 1));
+    // Bounds come from the worker, so framing and culling never rescan positions.
+    geometry.boundingBox = new THREE.Box3().setFromArray(g.bounds);
+    geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
     if (g.groups.length > 1) g.groups.forEach(([start, count], j) => geometry.addGroup(start, count, j));
     return geometry;
   });

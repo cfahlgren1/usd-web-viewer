@@ -37,7 +37,7 @@ function sceneMessage(matrix) {
       upAxis: 'Y',
       metersPerUnit: 1,
       stats: { triangles: 1 },
-      geometries: [{ groups: [[0, 3]] }],
+      geometries: [{ groups: [[0, 3]], bounds: [0, 0, 0, 1, 1, 0] }],
       instances: [{ path: '/M', geometry: 0, materials: [0], doubleSided: false, matrix }],
       materials: [{ path: '/Mat', kind: 'preview', color: [1, 1, 1], emissive: [0, 0, 0], roughness: 0.5, metallic: 0, opacity: 1, colorMap: { path: 'https://example.test/t.png' } }],
     },
@@ -95,4 +95,12 @@ test('a texture arriving after dispose is closed, not applied', async () => {
   assert.equal(bitmap.closed, true);
   assert.equal(root.children[0].material.map, null);
   assert.equal(textureCount(), 0);
+});
+
+test('geometry bounds come from the worker, so framing does not rescan positions', async () => {
+  const { root } = await load();
+  const { geometry } = root.children[0];
+  assert.deepEqual(geometry.boundingBox, new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 1, 0)));
+  assert.deepEqual(geometry.boundingSphere.center, new THREE.Vector3(0.5, 0.5, 0));
+  assert.ok(geometry.boundingSphere.radius >= Math.SQRT1_2);
 });

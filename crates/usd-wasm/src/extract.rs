@@ -46,6 +46,8 @@ pub struct Geometry {
     pub indices: Vec<u32>,
     /// Index ranges, one per material subset; a single range without subsets.
     pub groups: Vec<Group>,
+    /// Local bounding box of `positions`: min, then max.
+    pub bounds: [[f32; 3]; 2],
 }
 
 pub struct Group {
@@ -563,6 +565,13 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
     if indices.is_empty() {
         return Ok(None);
     }
+    let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
+    for p in positions.chunks_exact(3) {
+        for k in 0..3 {
+            min[k] = min[k].min(p[k]);
+            max[k] = max[k].max(p[k]);
+        }
+    }
 
     Ok(Some(Geometry {
         source: prim.path().as_str().to_owned(),
@@ -572,6 +581,7 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
         uvs,
         indices,
         groups,
+        bounds: [min, max],
     }))
 }
 

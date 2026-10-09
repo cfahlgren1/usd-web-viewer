@@ -166,3 +166,9 @@ def Xform "W"
     assert_eq!(s.stats.meshes, 3);
     assert_eq!(s.stats.triangles, 6);
 }
+
+#[test]
+fn geometry_bounds_cover_emitted_positions() {
+    let s = scene(&mesh(FOLD));
+    assert_eq!(s.geometries[0].bounds, [[0.0, 0.0, -1.0], [1.0, 1.0, 0.0]]);
+}
