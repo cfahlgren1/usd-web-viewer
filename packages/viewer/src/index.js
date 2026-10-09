@@ -110,15 +110,16 @@ function buildScene(meta, arrays, normalMaps) {
     return geometry;
   });
 
-  const matrix = new THREE.Matrix4();
   for (const inst of meta.instances) {
     const geometry = geometries[inst.geometry];
     const mats = inst.materials.map((m) => materialFor(m, inst.doubleSided));
     const mesh = new THREE.Mesh(geometry, mats.length > 1 ? mats : mats[0]);
     mesh.name = inst.path;
     // USD stores row-vector matrices row-major: the same numbers column-major for three.js.
-    matrix.fromArray(inst.matrix);
-    matrix.decompose(mesh.position, mesh.quaternion, mesh.scale);
+    // Set whole rather than decomposed, which would lose shear.
+    mesh.matrix.fromArray(inst.matrix);
+    mesh.matrixAutoUpdate = false;
+    mesh.matrixWorldNeedsUpdate = true;
     root.add(mesh);
   }
 
