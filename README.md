@@ -2,7 +2,7 @@
 
 # usd-web-viewer
 
-**OpenUSD in the browser.** Real USD composition in 604 KiB of WebAssembly, rendered with three.js.
+**[OpenUSD](https://openusd.org) in the browser.** Real USD composition in 604 KiB of WebAssembly, built on the pure-Rust [openusd](https://github.com/mxpv/openusd) crate and rendered with three.js.
 
 <a href="https://huggingface.co/spaces/cfahlgren1/usd-viewer"><img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/open-in-hf-spaces-md.svg" alt="Open in Spaces"></a>
 <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT">
@@ -82,4 +82,4 @@ Matches Pixar's OpenUSD on every package in [nvidia/simready-assets](https://hug
     npm run test:browser                # Playwright: element, real worker and fetch
     npm run serve                       # examples on :8811
 
-Security model: [SECURITY.md](SECURITY.md). MIT licensed.
+Built on [openusd](https://github.com/mxpv/openusd) (MIT, Maksym Pavlenko) and [three.js](https://github.com/mrdoob/three.js) (MIT). Security model: [SECURITY.md](SECURITY.md). MIT licensed.
