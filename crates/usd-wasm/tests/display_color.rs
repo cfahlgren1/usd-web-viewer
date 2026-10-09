@@ -46,7 +46,7 @@ const RGB: [f32; 9] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
 
 #[test]
 fn a_subset_material_reading_display_color_gets_per_vertex_colors() {
-    let s = compose(include_str!("../../../conformance/fixtures/subset_colors.usda").to_owned());
+    let s = compose(include_str!("../../../fixtures/subset_colors.usda").to_owned());
     assert_eq!(s.geometries[0].colors, RGB);
     let names: Vec<_> = s.instances[0].materials.iter().map(|&m| &s.materials[m as usize]).map(|m| (m.path.as_str(), m.color_primvar.as_deref())).collect();
     assert_eq!(names, [("/Mat", Some("displayColor"))]);
@@ -54,6 +54,6 @@ fn a_subset_material_reading_display_color_gets_per_vertex_colors() {
 
 #[test]
 fn a_primvar_reader_varname_names_the_color_primvar() {
-    let s = compose(include_str!("../../../conformance/fixtures/primvar_colors.usda").to_owned());
+    let s = compose(include_str!("../../../fixtures/primvar_colors.usda").to_owned());
     assert_eq!(s.geometries[0].colors, RGB);
 }

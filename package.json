@@ -5,11 +5,9 @@
   "scripts": {
     "build:wasm": "bash scripts/build-wasm.sh",
     "build": "bash scripts/build-wasm.sh",
-    "serve": "node bench/server.mjs",
+    "serve": "node scripts/serve.mjs",
     "test": "node --test 'packages/viewer/test/*.test.mjs'",
-    "test:node": "node scripts/node-test.mjs",
-    "licenses": "node scripts/third-party-licenses.mjs",
-    "bench": "node bench/run.mjs"
+    "licenses": "node scripts/third-party-licenses.mjs"
   },
   "devDependencies": {
     "binaryen": "^132.0.0",

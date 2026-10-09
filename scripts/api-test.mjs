@@ -1,5 +1,5 @@
 // Browser checks for the public API: progress, abort, headers, custom fetch,
-// warnings and the <usd-viewer> element. Needs the server (node bench/server.mjs).
+// warnings and the <usd-viewer> element. Needs the server (node scripts/serve.mjs).
 // usage: BASE_URL=http://127.0.0.1:8811 node scripts/api-test.mjs [--hub]
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
@@ -77,8 +77,8 @@ test('headers reach layer and texture requests', async () => {
 test('headers stay on the root origin: a cross-origin texture gets none', async () => {
   // The root (served through a route) authors its texture on another origin of the same server.
   const root = `${BASE}/__fixture/cross-origin.usda`;
-  const texture = `http://localhost:${new URL(BASE).port}/conformance/fixtures/quadrants.png`;
-  const usda = (await (await fetch(`${BASE}/conformance/fixtures/uv_set.usda`)).text()).replace('@quadrants.png@', `@${texture}@`);
+  const texture = `http://localhost:${new URL(BASE).port}/fixtures/quadrants.png`;
+  const usda = (await (await fetch(`${BASE}/fixtures/uv_set.usda`)).text()).replace('@quadrants.png@', `@${texture}@`);
   await page.context().route(root, (route) => route.fulfill({ body: usda, contentType: 'text/plain' }));
   await fetch(`${BASE}/__stats/reset`);
   const counts = await page.evaluate(async ([url, origin]) => {
@@ -95,8 +95,8 @@ test('headers stay on the root origin: a cross-origin texture gets none', async 
 
 test('a texture outside allowedOrigins is never requested, through fetch or a custom fetch', async () => {
   const root = `${BASE}/__fixture/other-origin.usda`;
-  const texture = `http://localhost:${new URL(BASE).port}/conformance/fixtures/quadrants.png`;
-  const usda = (await (await fetch(`${BASE}/conformance/fixtures/uv_set.usda`)).text()).replace('@quadrants.png@', `@${texture}@`);
+  const texture = `http://localhost:${new URL(BASE).port}/fixtures/quadrants.png`;
+  const usda = (await (await fetch(`${BASE}/fixtures/uv_set.usda`)).text()).replace('@quadrants.png@', `@${texture}@`);
   await page.context().route(root, (route) => route.fulfill({ body: usda, contentType: 'text/plain' }));
   await fetch(`${BASE}/__stats/reset`);
   const out = await page.evaluate(async (url) => {
@@ -237,7 +237,7 @@ test('textures past maxTextureBytes, over 16384 px a side or of unchecked format
     const outcomes = [];
     for (const [options, png] of [[{ maxTextureBytes: 100 }, null], [{}, huge], [{}, gif]]) {
       const fetchFn = (u, init) => (png && u.endsWith('.png') ? Promise.resolve(new Response(png)) : fetch(u, init));
-      const result = await loadUsd('/conformance/fixtures/uv_set.usda', { ...options, fetch: fetchFn });
+      const result = await loadUsd('/fixtures/uv_set.usda', { ...options, fetch: fetchFn });
       outcomes.push({ counts: await result.complete, messages: result.info.warnings.filter((w) => w.code === 'texture-failed').map((w) => w.message) });
       result.dispose();
     }
@@ -324,7 +324,7 @@ test('a missing sublayer is a warning, through fetch and a custom fetch alike', 
     plain.dispose();
     custom.dispose();
     return [plain.info.warnings.map((w) => w.code), custom.info.warnings.map((w) => w.code)];
-  }, '/conformance/fixtures/missing_sublayer.usda');
+  }, '/fixtures/missing_sublayer.usda');
   assert.deepEqual(out[0], out[1], 'same warnings either way');
   assert.ok(out[0].includes('layer-missing'), JSON.stringify(out));
 });
@@ -466,15 +466,15 @@ test('<usd-viewer> lazy: nothing is created until it nears the viewport; eager s
 
 test('<usd-viewer> poster: shown until the first geometry is drawn, then faded out', async () => {
   await emptyElementPage();
-  await addViewer('p', { src: LAPTOP, poster: '/conformance/fixtures/quadrants.png', alt: 'laptop', textures: 'none' });
+  await addViewer('p', { src: LAPTOP, poster: '/fixtures/quadrants.png', alt: 'laptop', textures: 'none' });
   const poster = () => page.evaluate(() => {
     const img = document.getElementById('p').shadowRoot.querySelector('img');
     return { hidden: img.hidden, faded: img.classList.contains('hidden'), alt: img.alt, src: img.getAttribute('src') };
   });
-  assert.deepEqual(await poster(), { hidden: false, faded: false, alt: 'laptop', src: '/conformance/fixtures/quadrants.png' });
+  assert.deepEqual(await poster(), { hidden: false, faded: false, alt: 'laptop', src: '/fixtures/quadrants.png' });
   await waitFor('p', 'load');
   await page.waitForTimeout(100);
-  assert.deepEqual(await poster(), { hidden: false, faded: true, alt: '', src: '/conformance/fixtures/quadrants.png' });
+  assert.deepEqual(await poster(), { hidden: false, faded: true, alt: '', src: '/fixtures/quadrants.png' });
 });
 
 test('<usd-viewer reveal="interaction">: loads only once its button is activated, from the keyboard too', async () => {
@@ -496,7 +496,7 @@ test('<usd-viewer reveal="interaction">: loads only once its button is activated
 
 test('<usd-viewer> context loss: context-lost, the poster, then the model loads again on restore', async () => {
   await emptyElementPage();
-  await addViewer('c', { src: LAPTOP, poster: '/conformance/fixtures/quadrants.png', textures: 'none' });
+  await addViewer('c', { src: LAPTOP, poster: '/fixtures/quadrants.png', textures: 'none' });
   await waitFor('c', 'load');
   await page.evaluate(() => (window.lose = document.getElementById('c').viewer.renderer.getContext().getExtension('WEBGL_lose_context')).loseContext());
   await waitFor('c', 'context-lost');

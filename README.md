@@ -4,7 +4,7 @@ View OpenUSD files in the browser. Real USD composition (sublayers, references, 
 
 | LG laptop | Robotiq gripper | Standard Bots arm | NVIDIA IV pole | NVIDIA chair | imagine.io railing |
 |:-:|:-:|:-:|:-:|:-:|:-:|
-| <img src="bench/results/screenshots/laptop__usd-wasm__swiftshader.png" width="140"> | <img src="bench/results/screenshots/robotiq__usd-wasm__swiftshader.png" width="140"> | <img src="bench/results/screenshots/thor__usd-wasm__swiftshader.png" width="140"> | <img src="bench/results/screenshots/ivpole__usd-wasm__swiftshader.png" width="140"> | <img src="bench/results/screenshots/chair__usd-wasm__swiftshader.png" width="140"> | <img src="bench/results/screenshots/railing__usd-wasm__swiftshader.png" width="140"> |
+| <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/laptop.png" width="140"> | <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/robotiq.png" width="140"> | <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/thor.png" width="140"> | <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/ivpole.png" width="140"> | <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/chair.png" width="140"> | <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/railing.png" width="140"> |
 
 ## Quick start
 
@@ -47,7 +47,7 @@ scene.add(root);   // THREE.Group, Y-up, metres
 
 | Option | Default | |
 |---|---|---|
-| `textures` | `'preview'` | `'none'`, `'preview'` (no normal maps, data maps at 512 px) or `'full'`. See [preview vs full](bench/results/README.md#texture-modes-preview-vs-full) |
+| `textures` | `'preview'` | `'none'`, `'preview'` (no normal maps, data maps at 512 px) or `'full'`. |
 | `maxTextureSize` | `1024` | Long-side cap for textures |
 | `signal` | – | `AbortSignal` to cancel the load |
 | `onProgress` | – | Called per stage: `layers`, `compose`, `geometry`, `textures` |
@@ -72,9 +72,9 @@ Fourteen public files from the Hub in one run: eight single-file assets (36 to 3
 
 | usd-web-viewer | Needle | openusd-wasm | tinyusdz | three.js | cinevva | GLB (offline) |
 |:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| <img src="bench/results/crossbench/panda__usd-wasm.png" width="96"> | <img src="bench/results/crossbench/panda__needle.png" width="96"> | <img src="bench/results/crossbench/panda__openusd-wasm.png" width="96"> | <img src="bench/results/crossbench/panda__tinyusdz.png" width="96"> | <img src="bench/results/crossbench/panda__three.png" width="96"> | <img src="bench/results/crossbench/panda__cinevva.png" width="96"> | <img src="bench/results/crossbench/panda__gltf.png" width="96"> |
+| <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/panda__usd-wasm.png" width="96"> | <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/panda__needle.png" width="96"> | <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/panda__openusd-wasm.png" width="96"> | <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/panda__tinyusdz.png" width="96"> | <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/panda__three.png" width="96"> | <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/panda__cinevva.png" width="96"> | <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/panda__gltf.png" width="96"> |
 
-¹ geometric mean of library ÷ ours over the files both render correctly; below 1× is better than ours. three.js wins on small untextured single files: it parses on the main thread with no worker or WASM start-up. A GLB converted offline loads in about a third of our time. ² wraps Pixar OpenUSD; source repository not public. Headless Chromium, software rendering, localhost, median of 3 cold runs, default `textures: 'preview'`. Full tables, renders and file licenses: [`bench/results/crossbench.md`](bench/results/crossbench.md).
+¹ geometric mean of library ÷ ours over the files both render correctly; below 1× is better than ours. three.js wins on small untextured single files: it parses on the main thread with no worker or WASM start-up. A GLB converted offline loads in about a third of our time. ² wraps Pixar OpenUSD; source repository not public. Headless Chromium, software rendering, localhost, median of 3 cold runs, default `textures: 'preview'`. Full tables, renders and file licenses live in the private benchmark repo, [`cfahlgren1/usd-web-viewer-bench`](https://github.com/cfahlgren1/usd-web-viewer-bench).
 
 ## Matches Pixar OpenUSD
 
@@ -88,7 +88,7 @@ A Pixar `usd-core` oracle and our WASM build dump the same JSON per package (mes
 | Edge-case fixtures (instancers, colors, UV sets, missing files, implicit shapes) | **11/11** |
 | Random Hub sample (nvidia, LG, Robotiq, Standard Bots, agibot, imagine.io) | **186/187** |
 
-The one miss is a 1.2e-5 unit offset on four lid meshes. Details: [`conformance/results`](conformance/results/README.md).
+The one miss is a 1.2e-5 unit offset on four lid meshes. The comparison harness lives in [`cfahlgren1/usd-web-viewer-bench`](https://github.com/cfahlgren1/usd-web-viewer-bench).
 
 ## How it works
 
@@ -121,7 +121,7 @@ Browsers: Chrome / Edge 111+, Safari 16.4+, Firefox 115+.
 | Visibility, purpose, `GeomSubset` materials | Lights, cameras (fixed studio lighting) |
 | `Cube`, `Sphere`, `Cylinder`, `Cone`, `Capsule`, `Plane` | Curves, points, volumes, Gaussian splats (listed in `info.warnings`) |
 
-<details><summary>Build, test and benchmark</summary>
+<details><summary>Build and test</summary>
 
 ```sh
 npm install
@@ -129,13 +129,12 @@ cargo install wasm-bindgen-cli --version 0.2.129   # once
 npm run build:wasm      # cargo -> wasm-bindgen -> wasm-opt -Os
 npm run serve           # http://127.0.0.1:8811/examples/index.html?url=<root .usd URL>
 npm test                                            # unit tests (Node, real WASM)
-node scripts/node-test.mjs                          # compose + extract in Node
-node scripts/api-test.mjs                           # progress, abort, headers, fetch, warnings, <usd-viewer>
+cargo test
+node scripts/api-test.mjs                           # browser API tests; needs npm run serve
 (cd examples/vite && npm install && node test.mjs)  # Vite production build loading a Hub URL
-node bench/run.mjs --configs usd-wasm,gltf --runs 3
-node conformance/run.mjs --bench
-node conformance/run.mjs --usdwg                   # usd-wg/assets material scenes vs Pixar
 ```
+
+Benchmarks, the Pixar comparison and the Space demo live in [`cfahlgren1/usd-web-viewer-bench`](https://github.com/cfahlgren1/usd-web-viewer-bench).
 
 </details>
 

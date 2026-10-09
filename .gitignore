@@ -3,7 +3,3 @@ node_modules
 /packages/viewer/wasm/
 /dist/
 .DS_Store
-bench/results/raw/
-bench/crossbench/raw/
-bench/crossbench/results.json
-examples/space/dist/

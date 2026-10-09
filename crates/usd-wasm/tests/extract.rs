@@ -181,9 +181,9 @@ fn drawn(usda: &str) -> Vec<String> {
 #[test]
 fn point_instancer_prototypes_are_never_drawn_by_themselves() {
     // Every instance masked, no instances at all, and a prototype no instance uses.
-    assert!(drawn(include_str!("../../../conformance/fixtures/instancer_masked.usda")).is_empty());
-    assert!(drawn(include_str!("../../../conformance/fixtures/instancer_empty.usda")).is_empty());
-    assert_eq!(drawn(include_str!("../../../conformance/fixtures/instancer_unused.usda")), ["/I/A[0]"]);
+    assert!(drawn(include_str!("../../../fixtures/instancer_masked.usda")).is_empty());
+    assert!(drawn(include_str!("../../../fixtures/instancer_empty.usda")).is_empty());
+    assert_eq!(drawn(include_str!("../../../fixtures/instancer_unused.usda")), ["/I/A[0]"]);
 }
 
 fn warnings(usda: &str) -> Vec<(String, String)> {

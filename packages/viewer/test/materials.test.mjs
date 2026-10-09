@@ -61,7 +61,7 @@ function jpegHeader(components) {
 
 test('8-bit RGB(A) images are color (sRGB under auto); single-channel and 16-bit images are data', () => {
   const color = (bytes) => imageInfo(bytes)?.color;
-  assert.deepEqual(imageInfo(new Uint8Array(readFileSync(new URL('../../../conformance/fixtures/quadrants.png', import.meta.url)))), { width: 2, height: 2, color: true });
+  assert.deepEqual(imageInfo(new Uint8Array(readFileSync(new URL('../../../fixtures/quadrants.png', import.meta.url)))), { width: 2, height: 2, color: true });
   assert.equal(color(pngHeader(8, 6)), true, 'RGBA');
   assert.equal(color(pngHeader(8, 3)), true, 'palette');
   assert.equal(color(pngHeader(8, 0)), false, 'grey');
