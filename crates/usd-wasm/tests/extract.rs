@@ -5,7 +5,6 @@ mod common;
 use common::scene;
 use usd_wasm::Scene;
 
-
 /// Two quads side by side in the XY plane.
 const TWO_QUADS: &str = r#"
         int[] faceVertexCounts = [4, 4]

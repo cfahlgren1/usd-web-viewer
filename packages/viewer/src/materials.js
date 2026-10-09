@@ -36,7 +36,7 @@ export function createMaterial(m) {
     material.depthWrite = false;
   }
   material.name = m.path;
-  material.userData.usd = { kind: m.kind, maps: m.maps, colorPrimvar: m.colorPrimvar, uvChannels: Object.create(null), color: m.color };
+  material.userData.usd = { maps: m.maps, colorPrimvar: m.colorPrimvar, uvChannels: Object.create(null), color: m.color };
   // Until its base color texture streams in, a textured surface shows mid grey
   // (18%, the usual neutral) rather than the stark white texture multiplier.
   if (m.maps.diffuseColor) material.color.setRGB(0.18, 0.18, 0.18, THREE.LinearSRGBColorSpace);

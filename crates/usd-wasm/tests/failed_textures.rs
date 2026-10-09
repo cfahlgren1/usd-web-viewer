@@ -6,7 +6,6 @@ mod common;
 use common::scene;
 use usd_wasm::Scene;
 
-
 const MESH: &str = r#"#usda 1.0
 def Mesh "Quad" (prepend apiSchemas = ["MaterialBindingAPI"])
 {

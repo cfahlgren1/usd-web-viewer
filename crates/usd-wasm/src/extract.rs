@@ -594,7 +594,6 @@ fn shown_material(
     }
 }
 
-
 pub(crate) fn token_attr(prim: &usd::Prim, name: &str) -> Option<String> {
     prim.attribute(name).get::<Value>().ok().flatten().as_ref().and_then(material::string)
 }

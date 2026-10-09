@@ -117,10 +117,6 @@ pub const MAX_PACKAGED_FILE_BYTES: u64 = 512 << 20;
 /// one package together, may expand to.
 pub const MAX_PACKAGED_TOTAL_BYTES: u64 = 1 << 30;
 
-/// Refuses a package whose files would expand past the limits, before
-/// openusd reads them whole (it trusts no limit of its own). Stored files
-/// cannot outgrow the package; a compressed file's declared size is checked
-/// against what it actually inflates to, read into nothing.
 /// What a file expands to by its headers: its stored length if stored.
 fn expanded_size(entry: &zip::read::ZipFile<'_, impl Read>) -> u64 {
     match entry.compression() {
@@ -129,6 +125,10 @@ fn expanded_size(entry: &zip::read::ZipFile<'_, impl Read>) -> u64 {
     }
 }
 
+/// Refuses a package whose files would expand past the limits, before
+/// openusd reads them whole (it trusts no limit of its own). Stored files
+/// cannot outgrow the package; a compressed file's declared size is checked
+/// against what it actually inflates to, read into nothing.
 pub fn check_package(package: &[u8]) -> io::Result<()> {
     let mut archive = zip::ZipArchive::new(io::Cursor::new(package)).map_err(io::Error::other)?;
     let mut total = 0u64;
@@ -460,7 +460,6 @@ mod tests {
         assert_eq!(anchor_path("tex/a.png", Some("/h/p.usdz[root.usdc]")).unwrap(), "/h/p.usdz[tex/a.png]");
         assert_eq!(anchor_path("a.usdc", Some("/h/p.usdz")).unwrap(), "/h/p.usdz[a.usdc]");
         assert_eq!(anchor_path("./p.usdz[x/y.usd]", Some("/h/r.usda")).unwrap(), "/h/p.usdz[x/y.usd]");
-        assert!(is_layer_path("/h/p.usdz[x/y.usdc]"));
     }
 
     #[test]

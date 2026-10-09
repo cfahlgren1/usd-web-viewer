@@ -175,12 +175,10 @@ impl UsdScene {
     /// Fails rather than expand it past `limit` bytes.
     #[wasm_bindgen(js_name = packagedFile)]
     pub fn packaged_file(&mut self, path: &str, limit: f64) -> Result<Option<Vec<u8>>, JsError> {
-        let Some((package, _)) = resolver::split_packaged(path) else {
-            return Ok(None);
-        };
-        if !self.packages.bytes.contains_key(package) {
+        if resolver::split_packaged(path).is_none() {
             return Ok(None);
         }
+        // A package not held reads as not found.
         match self.packages.read_packaged_within(path, limit as u64) {
             Ok(file) => Ok(Some(file)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),

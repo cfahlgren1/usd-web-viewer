@@ -6,7 +6,6 @@ mod common;
 use common::scene;
 use usd_wasm::Scene;
 
-
 /// World-space bounds of an instance (local bounds through its matrix; the
 /// tests only translate and scale).
 fn bounds(s: &Scene, path: &str) -> [[f32; 3]; 2] {

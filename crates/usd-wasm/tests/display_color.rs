@@ -5,7 +5,6 @@ mod common;
 
 use usd_wasm::Scene;
 
-
 fn scene(display_color: &str) -> Scene {
     common::scene(&format!(
         r#"#usda 1.0

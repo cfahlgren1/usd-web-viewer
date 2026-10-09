@@ -160,12 +160,14 @@ export async function loadUsd(url, options = {}) {
       case 'geometry':
         built.addGeometry(data.index, data.meta, data.arrays);
         break;
-      case 'scene':
-        built.info.stats = data.stats;
-        built.info.warnings.push(...data.stats.warnings);
+      case 'scene': {
+        const { warnings, ...stats } = data.stats;
+        built.info.stats = stats;
+        built.info.warnings.push(...warnings);
         delivered = true;
         resolveScene(built);
         break;
+      }
       case 'texture':
         if (data.bitmap) {
           built.applyTexture(data.path, data.bitmap, data.color);
