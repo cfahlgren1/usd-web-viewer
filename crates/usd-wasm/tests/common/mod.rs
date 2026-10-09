@@ -44,9 +44,3 @@ pub fn compose(root: &str, read: impl Fn(&str) -> Option<Vec<u8>>) -> Result<Loa
     }
     Err("composition still missing layers after 16 rounds".to_owned())
 }
-
-/// The scene of a single in-memory layer.
-pub fn scene(usda: &str) -> Scene {
-    let root = "/h/root.usda";
-    compose(root, |path| (path == root).then(|| usda.as_bytes().to_vec())).expect("composes").scene
-}
