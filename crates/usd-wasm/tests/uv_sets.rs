@@ -44,6 +44,7 @@ fn texture_samples_the_primvar_it_names() {
     let Composed::Scene(scene) = loader.compose("/h/root.usda").unwrap() else {
         panic!("missing layers");
     };
+    let scene = scene.read_all().unwrap();
     let geometry = &scene.geometries[0];
     let texture = &scene.materials[0].maps[0].1;
     assert_eq!(texture.uv_set.as_deref(), Some("custom"));

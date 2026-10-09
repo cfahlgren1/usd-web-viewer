@@ -3,6 +3,7 @@
 use std::fmt::Write;
 
 use crate::Scene;
+use crate::extract::Geometry;
 use crate::material::Texture;
 
 pub fn scene_meta(scene: &Scene) -> String {
@@ -34,41 +35,8 @@ pub fn scene_meta(scene: &Scene) -> String {
         o.push('}');
     }
     o.push(']');
-    o.push_str(",\"geometries\":[");
-    for (i, g) in scene.geometries.iter().enumerate() {
-        if i > 0 {
-            o.push(',');
-        }
-        let [[x0, y0, z0], [x1, y1, z1]] = g.bounds.map(|p| p.map(|v| num(v.into())));
-        let _ = write!(
-            o,
-            "{{\"vertices\":{},\"points\":{},\"hasColors\":{},\"bounds\":[{x0},{y0},{z0},{x1},{y1},{z1}],\"uvSets\":[",
-            g.positions.len() / 3,
-            g.points,
-            !g.colors.is_empty()
-        );
-        for (j, (name, _)) in g.uvs.iter().enumerate() {
-            if j > 0 {
-                o.push(',');
-            }
-            string(&mut o, name);
-        }
-        o.push_str("],\"groups\":[");
-        for (j, group) in g.groups.iter().enumerate() {
-            if j > 0 {
-                o.push(',');
-            }
-            let _ = write!(o, "[{},{}", group.start, group.count);
-            if let Some(subset) = &group.subset {
-                o.push(',');
-                string(&mut o, subset);
-            }
-            o.push(']');
-        }
-        o.push_str("]}");
-    }
-
-    o.push_str("],\"instances\":[");
+    let _ = write!(o, ",\"geometryCount\":{}", scene.sources.len());
+    o.push_str(",\"instances\":[");
     for (i, inst) in scene.instances.iter().enumerate() {
         if i > 0 {
             o.push(',');
@@ -82,14 +50,15 @@ pub fn scene_meta(scene: &Scene) -> String {
             }
             o.push_str(&num(*v));
         }
-        o.push_str("],\"materials\":[");
-        for (j, m) in inst.materials.iter().enumerate() {
+        let _ = write!(o, "],\"material\":{},\"subsets\":{{", inst.material);
+        for (j, (name, m)) in inst.subsets.iter().enumerate() {
             if j > 0 {
                 o.push(',');
             }
-            let _ = write!(o, "{m}");
+            string(&mut o, name);
+            let _ = write!(o, ":{m}");
         }
-        o.push_str("]}");
+        o.push_str("}}");
     }
 
     o.push_str("],\"materials\":[");
@@ -127,6 +96,39 @@ pub fn scene_meta(scene: &Scene) -> String {
             texture(&mut o, t);
         }
         o.push_str("}}");
+    }
+    o.push_str("]}");
+    o
+}
+
+/// One geometry's metadata (everything but the bulk arrays), as JSON.
+pub fn geometry_meta(g: &Geometry) -> String {
+    let mut o = String::with_capacity(256);
+    let [[x0, y0, z0], [x1, y1, z1]] = g.bounds.map(|p| p.map(|v| num(v.into())));
+    let _ = write!(
+        o,
+        "{{\"vertices\":{},\"points\":{},\"hasColors\":{},\"bounds\":[{x0},{y0},{z0},{x1},{y1},{z1}],\"uvSets\":[",
+        g.positions.len() / 3,
+        g.points,
+        !g.colors.is_empty()
+    );
+    for (j, (name, _)) in g.uvs.iter().enumerate() {
+        if j > 0 {
+            o.push(',');
+        }
+        string(&mut o, name);
+    }
+    o.push_str("],\"groups\":[");
+    for (j, group) in g.groups.iter().enumerate() {
+        if j > 0 {
+            o.push(',');
+        }
+        let _ = write!(o, "[{},{}", group.start, group.count);
+        if let Some(subset) = &group.subset {
+            o.push(',');
+            string(&mut o, subset);
+        }
+        o.push(']');
     }
     o.push_str("]}");
     o

@@ -8,7 +8,7 @@ fn scene(usda: &str) -> Scene {
         .add_layer("/h/root.usda", usda.as_bytes().to_vec())
         .expect("layer parses");
     match loader.compose("/h/root.usda").expect("composes") {
-        Composed::Scene(scene) => scene,
+        Composed::Scene(scene) => scene.read_all().expect("reads geometry"),
         Composed::Missing(missing) => panic!("missing layers: {missing:?}"),
     }
 }

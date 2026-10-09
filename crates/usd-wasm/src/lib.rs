@@ -28,7 +28,9 @@ pub struct Loader {
     unavailable: HashSet<String>,
 }
 
-/// What [`Loader::compose`] produced: a scene, or the layers it still needs.
+/// What [`Loader::compose`] produced: a planned scene (triangle data still to
+/// read, see [`Scene::read_geometry`] and [`Scene::read_all`]), or the layers
+/// it still needs.
 pub enum Composed {
     Scene(Scene),
     Missing(Vec<String>),
@@ -90,7 +92,7 @@ impl Loader {
             missing.extend(taken);
             return Ok(Composed::Missing(missing));
         }
-        let mut scene = extract::extract(&stage)?;
+        let mut scene = extract::plan(&stage)?;
         let diagnostics = stage.composition_errors();
         for d in diagnostics.iter().take(5) {
             scene.warnings.push(extract::Warning { code: "composition", message: d.to_string(), path: None });

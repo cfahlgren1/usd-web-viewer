@@ -1,6 +1,6 @@
 # usd-web-viewer
 
-View OpenUSD files in the browser. Real USD composition (sublayers, references, payloads, variants) in a **593 KB** WASM module, rendered with three.js. MIT, no `SharedArrayBuffer`, no COOP/COEP headers, loads straight from Hugging Face Hub URLs.
+View OpenUSD files in the browser. Real USD composition (sublayers, references, payloads, variants) in a **594 KB** WASM module, rendered with three.js. MIT, no `SharedArrayBuffer`, no COOP/COEP headers, loads straight from Hugging Face Hub URLs.
 
 | LG laptop | Robotiq gripper | Standard Bots arm | NVIDIA IV pole | NVIDIA chair | imagine.io railing |
 |:-:|:-:|:-:|:-:|:-:|:-:|
@@ -65,7 +65,7 @@ scene.add(root);   // THREE.Group, Y-up, metres
 | `textures` | `'preview'` | `'none'`; `'preview'`: base color up to `maxTextureSize`, roughness / metallic / occlusion (and opacity / emissive) maps up to 512 px, no normal maps; `'full'`: every map, normals included, up to `maxTextureSize`. See [preview vs full](bench/results/README.md#texture-modes-preview-vs-full) |
 | `maxTextureSize` | `1024` | Long-side cap; textures are decoded straight to this size in the worker |
 | `signal` | – | `AbortSignal`: cancels fetches, terminates the worker, rejects with a `UsdLoadError` of code `aborted` |
-| `onProgress` | – | `{ stage: 'layers', loaded, total, bytes }`, `{ stage: 'compose', round }`, `{ stage: 'textures', loaded, total, bytes }` |
+| `onProgress` | – | `{ stage: 'layers', loaded, total, bytes }`, `{ stage: 'compose', round }`, `{ stage: 'geometry', loaded, total }`, `{ stage: 'textures', loaded, total, bytes }` |
 | `headers` | – | Sent with layer and texture requests to the root URL's origin only (see [Embedding elsewhere](#embedding-elsewhere)) |
 | `fetch` | – | Your own `fetch(url, { headers, signal })`, used for every request (proxied from the worker); `headers` is set only for the root URL's origin, `signal` aborts when the load stops |
 | `wasmUrl` / `workerUrl` | bundled | Serve the `.wasm` / worker script from your own CDN |
@@ -73,6 +73,12 @@ scene.add(root);   // THREE.Group, Y-up, metres
 | `maxLayerBytes` | 1 GiB | Total size of USD layers to fetch before failing with a `fetch` error |
 
 Errors are `UsdLoadError`s with a `code` (`aborted`, `fetch`, `compose`, `worker`, `webgl`), the failing `url` and, for a root layer that could not be fetched, the HTTP `status` (401 / 403 for a gated or private repo, 404 when missing). A missing sublayer, reference or payload is not an error: it is left out with a warning. `complete` rejects too if the load is aborted or disposed, or the worker dies after the geometry arrived.
+
+The compiled WASM module is shared by every load in the page. Serve `usd_wasm_bg.wasm` with `Content-Type: application/wasm` (for streaming compilation) and, when the file name carries a content hash (bundlers add one), `Cache-Control: public, max-age=31536000, immutable`; otherwise `Cache-Control: no-cache` with an `ETag`, so repeat visits revalidate instead of downloading it again. Compiling takes about 8 ms in Chromium (lazy tier-up), so fetching the root layer in parallel with it was measured and not worth the extra code.
+
+Meshes stream out of the worker one at a time, so only one mesh's arrays are in WASM memory at once: `createViewer` shows them as they arrive (the Standard Bots arm's first mesh appears in about half the time), while `load()` / `loadUsd()` still resolve once every mesh is in, with `onProgress` reporting `{ stage: 'geometry', loaded, total }` on the way.
+
+Geometry is kept on the GPU only: once three.js has uploaded a mesh, its CPU-side arrays are released (bounds are precomputed, so framing and culling never need them). The trade-off: a lost WebGL context cannot be restored without reloading, and CPU raycasting against the meshes is not available.
 
 `info.warnings` lists `{ code, message, path? }` for what could not be shown faithfully: `layer-missing`, `layer-unreadable`, `prim-unsupported` (e.g. `BasisCurves`, implicit `Sphere` / `Cube`), `material-fallback` (MDL other than OmniPBR/glTF, MaterialX), `texture-failed` and `composition`. It grows until `complete` settles. TypeScript declarations ship with the package.
 
@@ -91,9 +97,9 @@ Six real [SimReady](https://huggingface.co/datasets/cfahlgren1/simready-usd-web-
 | | **usd-web-viewer** | [Needle](https://www.npmjs.com/package/@needle-tools/usd) | [three.js `USDLoader`](https://github.com/mrdoob/three.js/tree/r186/examples/jsm/loaders/usd) | [tinyusdz](https://github.com/lighttransport/tinyusdz) | GLB (pre-converted) |
 |---|---|---|---|---|---|
 | Renders the 6 packages | **6/6** | 5/6 | 1/6 | 2/6 | 6/6 |
-| WASM download (brotli) | **593 KB** | 6.0 MB | – | 1.4 MB | – |
-| Peak tab memory | **167–624 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
-| WASM heap | **2–86 MB** | ~700 MB | – | 18–64 MB | – |
+| WASM download (brotli) | **594 KB** | 6.0 MB | – | 1.4 MB | – |
+| Peak tab memory | **164–612 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
+| WASM heap | **2–75 MB** | ~700 MB | – | 18–64 MB | – |
 | IV pole fully loaded | **0.7 s**² | 11.8 s | ✗ | ✗ | 0.1 s |
 | Needs COOP/COEP | **no** | yes | no | no | no |
 | License | **MIT** | PolyForm Noncommercial | MIT | Apache-2.0 / MIT | – |

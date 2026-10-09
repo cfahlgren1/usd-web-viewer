@@ -7,6 +7,8 @@ export type TextureMode = 'none' | 'preview' | 'full';
 export type LoadProgress =
   | { readonly stage: 'layers'; readonly loaded: number; /** Grows while layer dependencies are discovered. */ readonly total: number; readonly bytes: number }
   | { readonly stage: 'compose'; readonly round: number }
+  /** Meshes streaming out of the worker; the load resolves once `loaded === total`. */
+  | { readonly stage: 'geometry'; readonly loaded: number; readonly total: number }
   | { readonly stage: 'textures'; readonly loaded: number; readonly total: number; readonly bytes: number };
 
 export interface LoadOptions {

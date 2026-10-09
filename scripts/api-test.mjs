@@ -31,7 +31,7 @@ test('progress reports layers, compose and textures', async () => {
     return seen;
   }, LAPTOP);
   const stages = [...new Set(progress.map((p) => p.stage))];
-  assert.deepEqual(stages, ['layers', 'compose', 'textures']);
+  assert.deepEqual(stages, ['layers', 'compose', 'geometry', 'textures']);
   const last = progress.at(-1);
   assert.equal(last.loaded, last.total);
   assert.ok(progress.find((p) => p.stage === 'layers').bytes > 1e6);

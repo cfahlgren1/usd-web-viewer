@@ -2,7 +2,7 @@
 // textures as downscaled ImageBitmaps. One worker per load: the page
 // terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, imageInfo, limiter, sameOrigin, takeGeometries, takePackagedTextures, textureJobs } from './load-core.js';
+import { composeStage, fetchLimited, imageInfo, limiter, readGeometries, sameOrigin, takePackagedTextures, textureJobs } from './load-core.js';
 
 // Textures in flight at once (fetch and decode): decoding a large image
 // briefly holds it at full size, so wide parallelism spikes memory.
@@ -82,16 +82,19 @@ self.onmessage = async ({ data }) => {
       maxLayerBytes,
       onProgress: progress,
     });
-    const geometries = takeGeometries(scene, meta);
+    stats.initMs = tInit - t0;
+    self.postMessage({ type: 'meta', meta });
+    // One mesh at a time: each is transferred (not copied) as soon as it is read.
+    readGeometries(scene, meta, (index, g, arrays) => {
+      const transfer = arrays ? [arrays.positions, arrays.normals, arrays.colors, arrays.indices, ...arrays.uvs].filter(Boolean).map((a) => a.buffer) : [];
+      self.postMessage({ type: 'geometry', index, meta: g, arrays }, transfer);
+      progress({ stage: 'geometry', loaded: index + 1, total: meta.geometryCount });
+    });
     const packaged = takePackagedTextures(scene, meta, { textures });
     scene.free();
-    stats.initMs = tInit - t0;
     stats.totalMs = performance.now() - t0;
     stats.wasmMemoryBytes = wasm.memory.buffer.byteLength;
-
-    const transfer = [];
-    for (const g of geometries) for (const a of [g.positions, g.normals, g.colors, g.indices, ...g.uvs]) if (a) transfer.push(a.buffer);
-    self.postMessage({ type: 'scene', meta, geometries, stats }, transfer);
+    self.postMessage({ type: 'scene', stats });
 
     const jobs = textureJobs(meta, { textures, maxSize: maxTextureSize });
     let loaded = 0;
