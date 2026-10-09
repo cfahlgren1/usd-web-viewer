@@ -8,6 +8,7 @@
     "serve": "node bench/server.mjs",
     "test": "node --test 'packages/viewer/test/*.test.mjs'",
     "test:node": "node scripts/node-test.mjs",
+    "licenses": "node scripts/third-party-licenses.mjs",
     "bench": "node bench/run.mjs"
   },
   "devDependencies": {
