@@ -14,7 +14,7 @@ use std::sync::Arc;
 use openusd::ar::{self, Asset, ResolvedPath};
 
 /// File bytes keyed by virtual path, shared between the loader and resolver.
-pub type Files = Rc<RefCell<HashMap<String, Arc<[u8]>>>>;
+pub type Files = Rc<RefCell<HashMap<String, Arc<Vec<u8>>>>>;
 
 /// Extensions composition reads as layers. Anything else (textures, MDL) is
 /// an opaque asset that resolves without being present.
@@ -117,7 +117,7 @@ impl ar::Resolver for MemoryResolver {
 
 /// A read cursor over shared bytes, so opening a layer does not copy the map entry.
 struct SharedBytes {
-    bytes: Arc<[u8]>,
+    bytes: Arc<Vec<u8>>,
     pos: u64,
 }
 

@@ -12,7 +12,7 @@ use openusd::{sdf, usd};
 
 pub mod deps;
 pub mod extract;
-mod json;
+pub mod json;
 pub mod material;
 pub mod resolver;
 #[cfg(target_arch = "wasm32")]
@@ -47,8 +47,7 @@ impl Loader {
     /// Stores a layer under its virtual path and returns the asset paths it
     /// authors, so the host can prefetch them in parallel.
     pub fn add_layer(&mut self, path: &str, bytes: Vec<u8>) -> openusd::Result<Vec<Dependency>> {
-        let bytes: Arc<[u8]> = bytes.into();
-        self.files.borrow_mut().insert(path.to_owned(), bytes);
+        self.files.borrow_mut().insert(path.to_owned(), Arc::new(bytes));
         let layer = sdf::Layer::open_with(self.resolver(), path)?;
         Ok(deps::layer_dependencies(layer.data(), path))
     }
