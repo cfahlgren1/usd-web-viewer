@@ -23,7 +23,15 @@ pub fn scene_meta(scene: &Scene) -> String {
         if i > 0 {
             o.push(',');
         }
-        string(&mut o, w);
+        o.push_str("{\"code\":");
+        string(&mut o, w.code);
+        o.push_str(",\"message\":");
+        string(&mut o, &w.message);
+        if let Some(path) = &w.path {
+            o.push_str(",\"path\":");
+            string(&mut o, path);
+        }
+        o.push('}');
     }
     o.push(']');
     o.push_str(",\"geometries\":[");

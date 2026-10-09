@@ -1,6 +1,6 @@
 # usd-web-viewer
 
-View OpenUSD files in the browser. Real USD composition (sublayers, references, payloads, variants) in a **591 KB** WASM module, rendered with three.js. MIT, no `SharedArrayBuffer`, no COOP/COEP headers, loads straight from Hugging Face Hub URLs.
+View OpenUSD files in the browser. Real USD composition (sublayers, references, payloads, variants) in a **593 KB** WASM module, rendered with three.js. MIT, no `SharedArrayBuffer`, no COOP/COEP headers, loads straight from Hugging Face Hub URLs.
 
 | LG laptop | Robotiq gripper | Standard Bots arm | NVIDIA IV pole | NVIDIA chair | imagine.io railing |
 |:-:|:-:|:-:|:-:|:-:|:-:|
@@ -16,65 +16,73 @@ Drop-in element (works as is in Vite and other bundlers; see [`examples/vite`](e
 
 ```html
 <script type="module">import 'usd-web-viewer/element';</script>
+<style>usd-viewer:not(:defined) { display: block; min-height: 200px }</style>
 
 <usd-viewer
   src="https://huggingface.co/datasets/Robotiq-Official/simready-assets/resolve/main/Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda"
-  max-texture-size="1024" background="#f2f2f2"></usd-viewer>
+  alt="Robotiq 2F-85 gripper"></usd-viewer>
 ```
 
-| Attribute | | Event | `detail` |
+| Attribute (property) | | Event | |
 |---|---|---|---|
-| `src` | root layer URL; changing it reloads | `progress` | `{ stage, loaded, total, bytes }` |
-| `max-texture-size` | long-side cap, default 1024 | `load` | `{ root, info, textures, dispose }` |
-| `background` | CSS color | `error` | `Error` |
-| `textures` | `preview` (default) or `full` | | |
+| `src` | root layer URL; changing it reloads, empty clears | `progress` | `detail`: `LoadProgress` |
+| `textures` | `none`, `preview` (default) or `full` | `load` | `detail`: `LoadInfo`; the full result is `el.result` |
+| `max-texture-size` (`maxTextureSize`) | long-side cap, default 1024 | `error` | an `ErrorEvent`; `.error` is a `UsdLoadError` |
+| `alt` | accessible description (`role="img"`, `aria-label`) | | |
+| `touch-action` (`touchAction`) | applied to the canvas, default `pan-y` so the page scrolls on touch screens | | |
 
-The element sizes itself to its box, aborts an in-flight load when `src` changes, and frees the renderer and WASM worker when removed.
+The element sizes itself to its box, is transparent (style its background), aborts an in-flight load when `src` changes, survives being moved in the DOM, and frees the renderer, GPU context and WASM worker when removed. `el.viewer` exposes the underlying viewer. Importing it on a server (no DOM) is safe.
 
 Or drive it from JavaScript:
 
 ```js
-import { createViewer, hubUrl } from 'usd-web-viewer';
+import { createViewer } from 'usd-web-viewer';
+import { hubUrl } from 'usd-web-viewer/hub';
 
-const viewer = await createViewer(document.getElementById('app'));
-const controller = new AbortController();
-const { info, textures } = await viewer.load(hubUrl('Robotiq-Official/simready-assets', 'Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda'), {
-  signal: controller.signal,
-  headers: { Authorization: `Bearer ${token}` },          // gated / private repos
-  onProgress: ({ stage, loaded, total }) => console.log(stage, loaded, total),
-});
-
+const viewer = createViewer(document.getElementById('app')); // throws UsdLoadError('webgl') without WebGL
+const { info, complete } = await viewer.load(
+  hubUrl('Robotiq-Official/simready-assets', 'Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda', { revision: '<commit sha>' }),
+  { onProgress: (p) => console.log(p.stage, p) },
+);
 console.log(info.meshes, info.triangles, info.warnings); // geometry is on screen now
-await textures;                                          // textures streamed in
+console.log(await complete);                             // { textures, failed } once textures streamed in
 ```
+
+A newer `viewer.load()` aborts the one in flight (its promise rejects with code `aborted`); `viewer.frame(object?)` re-frames the camera, `viewer.clear()` removes the stage and `viewer.dispose()` frees everything. `createViewer(target, { background })` sets an opaque background; the canvas is transparent by default.
 
 Bring your own three.js scene instead:
 
 ```js
 import { loadUsd } from 'usd-web-viewer';
 
-const { root, info, textures, dispose } = await loadUsd(url, { maxTextureSize: 512 });
+const { root, info, complete, dispose } = await loadUsd(url, { textures: 'none' });
 scene.add(root);   // THREE.Group, Y-up, metres
-// later: dispose() frees geometries, materials and textures
+// later: dispose() frees geometries, materials and textures and stops streaming
 ```
 
 | Option (`load` / `loadUsd`) | Default | |
 |---|---|---|
+| `textures` | `'preview'` | `'none'`; `'preview'`: base color up to `maxTextureSize`, roughness / metallic / occlusion (and opacity / emissive) maps up to 512 px, no normal maps; `'full'`: every map, normals included, up to `maxTextureSize`. See [preview vs full](bench/results/README.md#texture-modes-preview-vs-full) |
 | `maxTextureSize` | `1024` | Long-side cap; textures are decoded straight to this size in the worker |
-| `textures` | `'preview'` | `'preview'`: base color up to `maxTextureSize`, roughness / metallic / occlusion (and opacity / emissive) maps up to 512 px, no normal maps. `'full'`: every map, normals included, up to `maxTextureSize`. See [preview vs full](bench/results/README.md#texture-modes-preview-vs-full) |
-| `prefetchVariants` | `false` | Fetch layers inside variants the layer doesn't select |
-| `signal` | – | `AbortSignal`: cancels fetches, terminates the worker, rejects with `AbortError` |
-| `onProgress` | – | `({ stage: 'layers' \| 'compose' \| 'textures', loaded, total, bytes })` |
-| `headers` | – | Sent with every layer and texture request (e.g. `Authorization`) |
+| `signal` | – | `AbortSignal`: cancels fetches, terminates the worker, rejects with a `UsdLoadError` of code `aborted` |
+| `onProgress` | – | `{ stage: 'layers', loaded, total, bytes }`, `{ stage: 'compose', round }`, `{ stage: 'textures', loaded, total, bytes }` |
+| `headers` | – | Sent with every layer and texture request (see [Embedding elsewhere](#embedding-elsewhere)) |
 | `fetch` | – | Your own `fetch(url, { headers, signal })`, used for every request (proxied from the worker) |
+| `wasmUrl` / `workerUrl` | bundled | Serve the `.wasm` / worker script from your own CDN |
 | `maxConcurrentFetches` | `16` | Requests in flight at once (textures: at most 4 fetched and decoded at once) |
-| `maxLayerBytes` | 1 GiB | Total size of USD layers to fetch before failing with a `resource limit exceeded` error |
-| `onTexture` | – | Called after each texture is applied |
-| `wasmUrl` | bundled | Serve the `.wasm` from your own CDN |
+| `maxLayerBytes` | 1 GiB | Total size of USD layers to fetch before failing with a `fetch` error |
 
-`info.warnings` lists what could not be shown faithfully: missing or unreadable layers, unsupported prim types (e.g. `BasisCurves`, implicit `Sphere` / `Cube`), materials falling back to grey (MDL other than OmniPBR/glTF, MaterialX), failed textures, composition diagnostics.
+Errors are `UsdLoadError`s with a `code` (`aborted`, `fetch`, `compose`, `worker`, `webgl`), the failing `url` and, for a root layer that could not be fetched, the HTTP `status` (401 / 403 for a gated or private repo, 404 when missing). A missing sublayer, reference or payload is not an error: it is left out with a warning. `complete` rejects too if the load is aborted or disposed, or the worker dies after the geometry arrived.
 
-Hub helpers: `hubUrl(repo, path, { revision, repoType })` builds `resolve` URLs; `findSimReadyRoot(files, rootUsds?)` picks a SimReady package's root layer from its file listing (and `.metadata/com.nvidia.simready.root_usds.json` when you have it). TypeScript declarations ship with the package.
+`info.warnings` lists `{ code, message, path? }` for what could not be shown faithfully: `layer-missing`, `layer-unreadable`, `prim-unsupported` (e.g. `BasisCurves`, implicit `Sphere` / `Cube`), `material-fallback` (MDL other than OmniPBR/glTF, MaterialX), `texture-failed` and `composition`. It grows until `complete` settles. TypeScript declarations ship with the package.
+
+### On the Hub
+
+Hub `resolve` URLs work as they are, with no token: on huggingface.co the page's own cookies authorize gated and private repos the user can see. `hubUrl(repo, path, { revision, repoType })` from `usd-web-viewer/hub` builds them; pass a commit sha as `revision` rather than `main` so every layer of a multi-layer stage comes from the same commit.
+
+### Embedding elsewhere
+
+On another origin there are no Hub cookies: pass `headers: { Authorization: 'Bearer <token>' }` for gated or private repos, or your own `fetch` (e.g. one that goes through your backend). Both apply to every layer and texture request.
 
 ## Compared with other browser USD viewers
 
@@ -83,7 +91,7 @@ Six real [SimReady](https://huggingface.co/datasets/cfahlgren1/simready-usd-web-
 | | **usd-web-viewer** | [Needle](https://www.npmjs.com/package/@needle-tools/usd) | [three.js `USDLoader`](https://github.com/mrdoob/three.js/tree/r186/examples/jsm/loaders/usd) | [tinyusdz](https://github.com/lighttransport/tinyusdz) | GLB (pre-converted) |
 |---|---|---|---|---|---|
 | Renders the 6 packages | **6/6** | 5/6 | 1/6 | 2/6 | 6/6 |
-| WASM download (brotli) | **591 KB** | 6.0 MB | – | 1.4 MB | – |
+| WASM download (brotli) | **593 KB** | 6.0 MB | – | 1.4 MB | – |
 | Peak tab memory | **170–623 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
 | WASM heap | **2–86 MB** | ~700 MB | – | 18–64 MB | – |
 | IV pole fully loaded | **0.7 s**² | 11.8 s | ✗ | ✗ | 0.1 s |

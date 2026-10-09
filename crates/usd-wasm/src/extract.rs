@@ -22,7 +22,16 @@ pub struct Scene {
     pub materials: Vec<Material>,
     pub stats: Stats,
     /// What the viewer could not show faithfully, for the host to surface.
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Warning>,
+}
+
+/// Something the viewer could not show faithfully.
+pub struct Warning {
+    /// `prim-unsupported`, `material-fallback` or `composition`.
+    pub code: &'static str,
+    pub message: String,
+    /// An example prim or material path, when there is one.
+    pub path: Option<String>,
 }
 
 #[derive(Default, Debug)]
@@ -111,7 +120,8 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
     let mut xforms = XformCache::new(None);
     let mut geometry_by_source: HashMap<String, u32> = HashMap::new();
     let mut materials = material::Cache::default();
-    let mut unsupported: HashMap<String, usize> = HashMap::new();
+    // Prim type -> (count, first path).
+    let mut unsupported: HashMap<String, (usize, String)> = HashMap::new();
 
     let mut prototypes: Vec<Prototype> = Vec::new();
     for path in &paths {
@@ -148,7 +158,7 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
             Some("Mesh") => {}
             Some(ty @ ("Points" | "BasisCurves" | "NurbsCurves" | "NurbsPatch" | "Cube" | "Sphere" | "Cylinder" | "Cone" | "Capsule" | "Plane" | "Volume")) => {
                 if !own.invisible && !own.hidden_purpose {
-                    *unsupported.entry(ty.to_owned()).or_default() += 1;
+                    unsupported.entry(ty.to_owned()).or_insert_with(|| (0, path.as_str().to_owned())).0 += 1;
                 }
                 continue;
             }
@@ -247,15 +257,20 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
     }
     let mut types: Vec<_> = unsupported.into_iter().collect();
     types.sort();
-    for (ty, count) in types {
-        scene.warnings.push(format!("{count} {ty} prim(s) not drawn (unsupported type)"));
+    for (ty, (count, first)) in types {
+        scene.warnings.push(Warning {
+            code: "prim-unsupported",
+            message: format!("{count} {ty} prim(s) not drawn (unsupported type)"),
+            path: Some(first),
+        });
     }
     let fallback: Vec<&str> = scene.materials.iter().filter(|m| m.kind == "fallback" && !m.path.is_empty()).map(|m| m.path.as_str()).collect();
     if let Some(first) = fallback.first() {
-        scene.warnings.push(format!(
-            "{} material(s) have no UsdPreviewSurface or readable MDL and show as grey, e.g. {first}",
-            fallback.len()
-        ));
+        scene.warnings.push(Warning {
+            code: "material-fallback",
+            message: format!("{} material(s) have no UsdPreviewSurface or readable MDL and show as grey", fallback.len()),
+            path: Some((*first).to_owned()),
+        });
     }
     Ok(scene)
 }

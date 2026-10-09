@@ -93,10 +93,11 @@ impl Loader {
         let mut scene = extract::extract(&stage)?;
         let diagnostics = stage.composition_errors();
         for d in diagnostics.iter().take(5) {
-            scene.warnings.push(format!("composition: {d}"));
+            scene.warnings.push(extract::Warning { code: "composition", message: d.to_string(), path: None });
         }
         if diagnostics.len() > 5 {
-            scene.warnings.push(format!("composition: {} more diagnostics", diagnostics.len() - 5));
+            let message = format!("{} more composition diagnostics", diagnostics.len() - 5);
+            scene.warnings.push(extract::Warning { code: "composition", message, path: None });
         }
         Ok(Composed::Scene(scene))
     }

@@ -26,7 +26,7 @@ test('progress reports layers, compose and textures', async () => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');
     const seen = [];
     const result = await loadUsd(url, { onProgress: (p) => seen.push(p) });
-    await result.textures;
+    await result.complete;
     result.dispose();
     return seen;
   }, LAPTOP);
@@ -37,7 +37,7 @@ test('progress reports layers, compose and textures', async () => {
   assert.ok(progress.find((p) => p.stage === 'layers').bytes > 1e6);
 });
 
-test('abort rejects with AbortError and stops the worker', async () => {
+test('abort rejects with an aborted UsdLoadError and stops the worker', async () => {
   const outcome = await page.evaluate(async (url) => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');
     const controller = new AbortController();
@@ -47,15 +47,15 @@ test('abort rejects with AbortError and stops the worker', async () => {
       await pending;
       return 'resolved';
     } catch (error) {
-      return error.name;
+      return `${error.name}:${error.code}`;
     }
   }, THOR);
-  assert.equal(outcome, 'AbortError');
+  assert.equal(outcome, 'UsdLoadError:aborted');
   const already = await page.evaluate(async (url) => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');
-    return loadUsd(url, { signal: AbortSignal.abort() }).then(() => 'resolved', (e) => e.name);
+    return loadUsd(url, { signal: AbortSignal.abort() }).then(() => 'resolved', (e) => e.code);
   }, LAPTOP);
-  assert.equal(already, 'AbortError');
+  assert.equal(already, 'aborted');
 });
 
 test('headers reach layer and texture requests', async () => {
@@ -63,10 +63,11 @@ test('headers reach layer and texture requests', async () => {
   await page.evaluate(async (url) => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');
     const result = await loadUsd(url, { headers: { Authorization: 'Bearer test-token' } });
-    await result.textures;
+    await result.complete;
     result.dispose();
   }, LAPTOP);
-  const data = (await stats()).filter((r) => r.url.startsWith('/data/'));
+  // Only this load's requests (an earlier aborted load can still be draining).
+  const data = (await stats()).filter((r) => r.url.startsWith('/data/LGElectronics/'));
   assert.ok(data.some((r) => r.url.endsWith('.usd')) && data.some((r) => r.url.endsWith('.jpg')));
   assert.ok(data.every((r) => r.auth === 'Bearer test-token'), JSON.stringify(data.map((r) => [r.url, r.auth])));
 });
@@ -76,7 +77,7 @@ test('a custom fetch serves every request', async () => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');
     const seen = [];
     const result = await loadUsd(url, { fetch: (u, init) => (seen.push(u), fetch(u, init)) });
-    await result.textures;
+    await result.complete;
     result.dispose();
     return seen;
   }, LAPTOP);
@@ -91,25 +92,111 @@ test('warnings name grey fallback materials and unresolved layers', async () => 
     result.dispose();
     return result.info.warnings;
   }, CHESS);
-  assert.ok(warnings.some((w) => w.includes('show as grey')), JSON.stringify(warnings));
-  assert.ok(warnings.some((w) => w.startsWith('composition: unresolved')), JSON.stringify(warnings));
+  assert.ok(warnings.some((w) => w.code === 'material-fallback' && w.path), JSON.stringify(warnings));
+  assert.ok(warnings.some((w) => w.code === 'composition' && w.message.startsWith('unresolved')), JSON.stringify(warnings));
+});
+
+test('a missing root layer fails with a fetch error carrying the HTTP status', async () => {
+  const error = await page.evaluate(async () => {
+    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    return loadUsd('/data/nope/missing.usda').then(
+      () => null,
+      (e) => ({ name: e.name, code: e.code, status: e.status, url: e.url, hasStack: e.message.includes('\n    at ') }),
+    );
+  });
+  assert.deepEqual({ ...error, url: undefined }, { name: 'UsdLoadError', code: 'fetch', status: 404, url: undefined, hasStack: false });
+  assert.ok(error.url.endsWith('/data/nope/missing.usda'));
+});
+
+test('a missing sublayer is a warning, through fetch and a custom fetch alike', async () => {
+  const out = await page.evaluate(async (root) => {
+    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const plain = await loadUsd(root);
+    const custom = await loadUsd(root, { fetch: (u, init) => fetch(u, init) });
+    plain.dispose();
+    custom.dispose();
+    return [plain.info.warnings.map((w) => w.code), custom.info.warnings.map((w) => w.code)];
+  }, '/conformance/fixtures/missing_sublayer.usda');
+  assert.deepEqual(out[0], out[1], 'same warnings either way');
+  assert.ok(out[0].includes('layer-missing'), JSON.stringify(out));
+});
+
+test('overlapping viewer.load calls: the newer one wins and the older is discarded', async () => {
+  const out = await page.evaluate(async ([a, b]) => {
+    const { createViewer } = await import('/packages/viewer/src/index.js');
+    const host = document.body.appendChild(document.createElement('div'));
+    host.style.cssText = 'width:200px;height:150px';
+    const viewer = createViewer(host);
+    const first = viewer.load(a).then(() => 'resolved', (e) => e.code);
+    const second = await viewer.load(b);
+    const firstOutcome = await first;
+    const shown = viewer.scene.children.filter((c) => c.name === 'usd').length;
+    const secondStillShown = viewer.scene.children.includes(second.root);
+    viewer.dispose();
+    viewer.dispose();
+    return { firstOutcome, shown, secondStillShown, canvasRemoved: !host.querySelector('canvas') };
+  }, [THOR, LAPTOP]);
+  assert.deepEqual(out, { firstOutcome: 'aborted', shown: 1, secondStillShown: true, canvasRemoved: true });
+});
+
+test('textures none loads no textures; complete reports counts', async () => {
+  const counts = await page.evaluate(async (url) => {
+    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const none = await loadUsd(url, { textures: 'none' });
+    const preview = await loadUsd(url);
+    const result = [await none.complete, await preview.complete];
+    none.dispose();
+    preview.dispose();
+    return result;
+  }, LAPTOP);
+  assert.deepEqual(counts, [{ textures: 0, failed: 0 }, { textures: 3, failed: 0 }]);
+});
+
+test('<usd-viewer> reports a missing src as an ErrorEvent with a UsdLoadError', async () => {
+  await page.goto(`${BASE}/examples/element.html?src=${encodeURIComponent('/data/nope/missing.usd')}`);
+  await page.waitForFunction(() => window.loadError, null, { timeout: 30000 });
+  const error = await page.evaluate(() => ({ name: window.loadError.name, code: window.loadError.code, status: window.loadError.status }));
+  assert.deepEqual(error, { name: 'UsdLoadError', code: 'fetch', status: 404 });
 });
 
 test('<usd-viewer> loads src and dispatches progress and load', async () => {
   await page.goto(`${BASE}/examples/element.html?src=${encodeURIComponent(process.argv.includes('--hub') ? HUB_LAPTOP : LAPTOP)}`);
   await page.waitForFunction(() => window.loaded, null, { timeout: 60000 });
-  const { info, events } = await page.evaluate(() => ({ info: window.loaded, events: window.events }));
+  const { info, events, props } = await page.evaluate(() => {
+    const el = document.getElementById('viewer');
+    el.textures = 'none';
+    el.touchAction = 'none';
+    return {
+      info: window.loaded,
+      events: window.events,
+      props: {
+        role: el.getAttribute('role'),
+        label: el.getAttribute('aria-label'),
+        texturesAttr: el.getAttribute('textures'),
+        touch: el.viewer.renderer.domElement.style.touchAction,
+        tabIndex: el.viewer.renderer.domElement.tabIndex,
+        hasResult: !!el.result?.root,
+        transparent: el.viewer.scene.background === null,
+      },
+    };
+  });
   assert.equal(info.triangles, 134228);
-  assert.ok(events.length > 0);
+  assert.ok(events.length > 0, 'progress events');
+  assert.deepEqual(props, { role: 'img', label: 'USD model', texturesAttr: 'none', touch: 'none', tabIndex: 0, hasResult: true, transparent: true });
   await page.waitForTimeout(1500);
   await page.screenshot({ path: '/tmp/usd-viewer-element.png' });
-  // Removing the element disposes the viewer.
-  const removed = await page.evaluate(() => {
+  // Moving the element keeps its viewer; removing it disposes the viewer.
+  const lifecycle = await page.evaluate(async () => {
     const el = document.getElementById('viewer');
+    const viewer = el.viewer;
+    document.body.append(el);
+    await Promise.resolve();
+    const kept = el.viewer === viewer;
     el.remove();
-    return el.viewer === null;
+    await Promise.resolve();
+    return { kept, disposed: el.viewer === null };
   });
-  assert.ok(removed);
+  assert.deepEqual(lifecycle, { kept: true, disposed: true });
 });
 
 let failed = 0;

@@ -1,104 +1,119 @@
 import type * as THREE from 'three';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
-export interface LoadProgress {
-  /** `layers` while fetching layers, `compose` while composing, `textures` while textures stream in. */
-  stage: 'layers' | 'compose' | 'textures';
-  loaded: number;
-  /** Known so far: grows while layer dependencies are discovered. */
-  total: number;
-  /** Bytes received in this stage. */
-  bytes: number;
-}
+/** `preview` (default): base color up to `maxTextureSize`, roughness / metallic / occlusion / opacity / emissive maps up to 512 px, no normal maps. `full`: every map, normals included, up to `maxTextureSize`. `none`: no textures. */
+export type TextureMode = 'none' | 'preview' | 'full';
+
+export type LoadProgress =
+  | { readonly stage: 'layers'; readonly loaded: number; /** Grows while layer dependencies are discovered. */ readonly total: number; readonly bytes: number }
+  | { readonly stage: 'compose'; readonly round: number }
+  | { readonly stage: 'textures'; readonly loaded: number; readonly total: number; readonly bytes: number };
 
 export interface LoadOptions {
+  /** Default `preview`. */
+  textures?: TextureMode | undefined;
   /** Long-side cap for decoded textures, in pixels. Default 1024. */
-  maxTextureSize?: number;
-  /**
-   * `preview` (default): base color up to `maxTextureSize`, roughness / metallic / occlusion maps up to 512 px, no normal maps.
-   * `full`: every map, normals included, up to `maxTextureSize`.
-   */
-  textures?: 'preview' | 'full';
-  /** Fetch layers named inside variants the layer itself doesn't select. Default false. */
-  prefetchVariants?: boolean;
-  /** Requests in flight at once. Default 16 (textures: at most 4 fetched and decoded at once). */
-  maxConcurrentFetches?: number;
-  /** Total bytes of USD layers to fetch before failing with `resource limit exceeded`. Default 1 GiB. */
-  maxLayerBytes?: number;
-  /** Headers for every request (layers and textures), e.g. `{ Authorization: 'Bearer hf_…' }`. */
-  headers?: Record<string, string>;
-  /** Custom fetch for every request, run on the page (requests are proxied from the worker). */
-  fetch?: (url: string, init: { headers?: Record<string, string>; signal?: AbortSignal }) => Promise<Response>;
-  /** Aborts fetches and the worker; the load rejects with an `AbortError`. */
-  signal?: AbortSignal;
-  onProgress?: (progress: LoadProgress) => void;
-  /** Called after each texture is applied. */
-  onTexture?: () => void;
+  maxTextureSize?: number | undefined;
+  /** Aborts fetches and the worker; the load rejects with a UsdLoadError of code `aborted`. */
+  signal?: AbortSignal | undefined;
+  /** Sent with every layer and texture request. For embedding on another site, e.g. `{ Authorization: 'Bearer hf_…' }`. */
+  headers?: Record<string, string> | undefined;
+  /** Your own fetch for every request, run on the page (requests are proxied from the worker). */
+  fetch?: ((url: string, init: { headers?: Record<string, string> | undefined; signal?: AbortSignal | undefined }) => Promise<Response>) | undefined;
+  onProgress?: ((progress: LoadProgress) => void) | undefined;
   /** Where the `.wasm` binary is served from. Defaults to the copy next to the package. */
-  wasmUrl?: string | URL;
+  wasmUrl?: string | URL | undefined;
+  /** Where the worker script is served from. Defaults to the copy next to the package. */
+  workerUrl?: string | URL | undefined;
+  /** Requests in flight at once. Default 16 (textures: at most 4 fetched and decoded at once). */
+  maxConcurrentFetches?: number | undefined;
+  /** Total bytes of USD layers to fetch before failing with a `fetch` error. Default 1 GiB. */
+  maxLayerBytes?: number | undefined;
 }
 
+export type WarningCode = 'layer-missing' | 'layer-unreadable' | 'prim-unsupported' | 'material-fallback' | 'texture-failed' | 'composition';
+
+export interface LoadWarning {
+  readonly code: WarningCode;
+  readonly message: string;
+  /** The layer URL, texture path or an example prim / material path. */
+  readonly path?: string | undefined;
+}
+
+export type MaterialKind = 'preview' | 'omnipbr' | 'gltf-pbr' | 'displayColor' | 'fallback';
+
 export interface LoadStats {
-  layers: number;
-  layerBytes: number;
-  missing: number;
-  rounds: number;
-  fetchMs: number;
-  parseMs: number;
-  composeMs: number;
-  initMs: number;
-  totalMs: number;
-  wasmMemoryBytes: number;
+  readonly layers: number;
+  readonly layerBytes: number;
+  readonly missing: number;
+  readonly rounds: number;
+  readonly fetchMs: number;
+  readonly parseMs: number;
+  readonly composeMs: number;
+  readonly initMs: number;
+  readonly totalMs: number;
+  readonly wasmMemoryBytes: number;
 }
 
 export interface LoadInfo {
-  upAxis: 'Y' | 'Z';
-  metersPerUnit: number;
-  meshes: number;
-  geometries: number;
-  triangles: number;
-  materials: number;
-  materialKinds: Record<string, number>;
-  stats: LoadStats;
-  /** What could not be shown faithfully: missing layers, unsupported prim types, grey fallback materials, failed textures, composition diagnostics. */
-  warnings: string[];
-  textureErrors: string[];
+  readonly upAxis: 'Y' | 'Z';
+  readonly metersPerUnit: number;
+  readonly meshes: number;
+  readonly geometries: number;
+  readonly triangles: number;
+  readonly materials: number;
+  readonly materialKinds: Readonly<Partial<Record<MaterialKind, number>>>;
+  readonly stats: LoadStats;
+  /** What could not be shown faithfully. Grows (texture failures) until `complete` settles. */
+  readonly warnings: readonly LoadWarning[];
 }
 
 export interface LoadResult {
   /** Y-up, in meters. */
-  root: THREE.Group;
-  info: LoadInfo;
-  /** Resolves when every texture has streamed in. */
-  textures: Promise<void>;
-  /** Frees geometries, materials and textures. */
+  readonly root: THREE.Group;
+  readonly info: LoadInfo;
+  /** Settles when textures have streamed in; rejects with a UsdLoadError if the load is aborted, disposed or the worker dies. */
+  readonly complete: Promise<{ textures: number; failed: number }>;
+  /** Frees geometries, materials and textures and stops any textures still streaming. */
   dispose(): void;
+}
+
+export type UsdLoadErrorCode = 'aborted' | 'fetch' | 'compose' | 'worker' | 'webgl';
+
+export class UsdLoadError extends Error {
+  readonly name: 'UsdLoadError';
+  readonly code: UsdLoadErrorCode;
+  /** The URL that failed, when there is one. */
+  readonly url?: string | undefined;
+  /** HTTP status of a failed root layer fetch: 401 / 403 for gated or private repos, 404 when missing. */
+  readonly status?: number | undefined;
 }
 
 export function loadUsd(url: string, options?: LoadOptions): Promise<LoadResult>;
 
 export interface ViewerOptions {
-  background?: THREE.ColorRepresentation;
+  /** Canvas background. Default: transparent. */
+  background?: THREE.ColorRepresentation | undefined;
 }
 
 export interface Viewer {
-  renderer: THREE.WebGLRenderer;
-  scene: THREE.Scene;
-  camera: THREE.PerspectiveCamera;
-  controls: OrbitControls;
+  readonly renderer: THREE.WebGLRenderer;
+  readonly scene: THREE.Scene;
+  readonly camera: THREE.PerspectiveCamera;
+  readonly controls: OrbitControls;
+  /** Loads a stage, replacing the current one once its geometry shows. A newer load aborts this one. */
+  load(url: string, options?: LoadOptions): Promise<LoadResult>;
+  /** Removes and frees the current stage. */
+  clear(): void;
+  /** Points the camera at `object`, by default the current stage. */
+  frame(object?: THREE.Object3D): void;
   requestRender(): void;
-  /** Loads a stage, replacing the current one. Resolves when geometry shows. */
-  load(url: string, options?: Omit<LoadOptions, 'onTexture'>): Promise<LoadResult>;
+  /** Frees the renderer, the GPU context, the current stage and any load in flight. Safe to call twice. */
   dispose(): void;
 }
 
-export function createViewer(target: HTMLElement | HTMLCanvasElement, options?: ViewerOptions): Promise<Viewer>;
+/** Throws a UsdLoadError of code `webgl` when WebGL is unavailable. */
+export function createViewer(target: HTMLElement | HTMLCanvasElement, options?: ViewerOptions): Viewer;
 
 /** Points the camera at the visible bounds of `object`. */
 export function frame(camera: THREE.PerspectiveCamera, controls: OrbitControls | undefined, object: THREE.Object3D): void;
-
-/** The URL serving `path` from a Hugging Face Hub repo. */
-export function hubUrl(repo: string, path: string, options?: { revision?: string; repoType?: 'dataset' | 'model' | 'space'; endpoint?: string }): string;
-
-/** The root layer of a SimReady package from its file listing and optional `root_usds.json`. */
-export function findSimReadyRoot(files: string[], rootUsds?: { entries?: string[] }): string | null;
