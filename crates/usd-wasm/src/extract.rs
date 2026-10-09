@@ -14,14 +14,14 @@ use crate::material::{self, Material};
 
 /// Everything a renderer needs from a stage. [`plan`] fills in all but the
 /// triangle data, which [`Scene::read_geometry`] reads one mesh at a time from
-/// `sources`; [`extract`] reads it all up front into `geometries`.
+/// `sources`; [`Scene::read_all`] reads it all up front into `geometries`.
 #[derive(Default)]
 pub struct Scene {
     pub up_axis: String,
     pub meters_per_unit: f64,
     /// What to read for each geometry; holding the prims keeps the stage alive.
     pub sources: Vec<Source>,
-    /// Triangle data, shared by every instance that draws it (after [`extract`]).
+    /// Triangle data, shared by every instance that draws it (after [`Scene::read_all`]).
     pub geometries: Vec<Geometry>,
     pub instances: Vec<Instance>,
     pub materials: Vec<Material>,
@@ -104,8 +104,6 @@ pub struct Instance {
     /// subset name): a geometry group takes its subset's, else the mesh's.
     pub material: u32,
     pub subsets: Vec<(String, u32)>,
-    /// One material index per geometry group (after [`extract`]).
-    pub materials: Vec<u32>,
     pub double_sided: bool,
 }
 
@@ -204,11 +202,6 @@ impl Placer<'_> {
     }
 }
 
-/// Extracts everything, triangle data included.
-pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
-    plan(stage, usize::MAX)?.read_all()
-}
-
 impl Instance {
     /// The material a geometry group is drawn with.
     pub fn material_for(&self, group: &Group) -> u32 {
@@ -219,8 +212,8 @@ impl Instance {
 
 impl Scene {
     /// Reads every geometry into `geometries`, dropping instances of meshes
-    /// with nothing drawable and filling in per-group materials and triangle
-    /// counts. Releases the sources (and with them the stage).
+    /// with nothing drawable and counting triangles. Releases the sources
+    /// (and with them the stage).
     pub fn read_all(mut self) -> openusd::Result<Scene> {
         let mut index = vec![None; self.sources.len()];
         for (i, slot) in index.iter_mut().enumerate() {
@@ -237,10 +230,8 @@ impl Scene {
                 self.stats.skipped.push((instance.path, "empty"));
                 continue;
             };
-            let g = &self.geometries[geometry as usize];
             instance.geometry = geometry;
-            instance.materials = g.groups.iter().map(|group| instance.material_for(group)).collect();
-            self.stats.triangles += g.indices.len() / 3;
+            self.stats.triangles += self.geometries[geometry as usize].indices.len() / 3;
             self.instances.push(instance);
         }
         self.sources.clear();
@@ -453,7 +444,6 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
                 matrix: matrix.0,
                 material: mesh_material,
                 subsets: subsets.clone(),
-                materials: Vec::new(),
                 double_sided,
             });
         }

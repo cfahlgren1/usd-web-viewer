@@ -82,7 +82,8 @@ fn inspect(root: &str) -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("LIST").is_ok() {
         for i in &scene.instances {
             let g = &scene.geometries[i.geometry as usize];
-            println!("    mesh {} tris {} mats {:?}", i.path, g.indices.len() / 3, i.materials);
+            let materials: Vec<u32> = g.groups.iter().map(|group| i.material_for(group)).collect();
+            println!("    mesh {} tris {} mats {materials:?}", i.path, g.indices.len() / 3);
             if std::env::var("MATRIX").is_ok() {
                 println!("      matrix {:?}", i.matrix.map(|v| (v * 1000.0).round() / 1000.0));
             }

@@ -39,6 +39,7 @@ fn js_error(e: impl std::error::Error) -> JsError {
 }
 
 #[wasm_bindgen]
+#[derive(Default)]
 pub struct UsdLoader {
     inner: Loader,
     scene: Option<Scene>,
@@ -48,10 +49,7 @@ pub struct UsdLoader {
 impl UsdLoader {
     #[wasm_bindgen(constructor)]
     pub fn new() -> UsdLoader {
-        UsdLoader {
-            inner: Loader::new(),
-            scene: None,
-        }
+        UsdLoader::default()
     }
 
     pub fn has(&self, path: &str) -> bool {
@@ -92,12 +90,6 @@ impl UsdLoader {
         let packages = self.inner.take_texture_packages(&scene);
         self.inner.clear();
         Ok(UsdScene { scene, current: None, packages })
-    }
-}
-
-impl Default for UsdLoader {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
