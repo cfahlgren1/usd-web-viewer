@@ -6,13 +6,26 @@
   "type": "module",
   "main": "./src/index.js",
   "exports": {
-    ".": "./src/index.js",
-    "./worker": "./src/worker.js",
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./element": {
+      "types": "./src/element.d.ts",
+      "default": "./src/element.js"
+    },
     "./wasm/usd_wasm_bg.wasm": "./wasm/usd_wasm_bg.wasm"
   },
-  "files": ["src", "wasm/usd_wasm.js", "wasm/usd_wasm_bg.wasm"],
-  "sideEffects": false,
+  "files": [
+    "src",
+    "wasm/usd_wasm.js",
+    "wasm/usd_wasm_bg.wasm"
+  ],
+  "sideEffects": [
+    "./src/element.js"
+  ],
   "peerDependencies": {
     "three": ">=0.160.0"
-  }
+  },
+  "types": "./src/index.d.ts"
 }

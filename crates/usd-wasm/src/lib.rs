@@ -90,7 +90,15 @@ impl Loader {
             missing.extend(taken);
             return Ok(Composed::Missing(missing));
         }
-        Ok(Composed::Scene(extract::extract(&stage)?))
+        let mut scene = extract::extract(&stage)?;
+        let diagnostics = stage.composition_errors();
+        for d in diagnostics.iter().take(5) {
+            scene.warnings.push(format!("composition: {d}"));
+        }
+        if diagnostics.len() > 5 {
+            scene.warnings.push(format!("composition: {} more diagnostics", diagnostics.len() - 5));
+        }
+        Ok(Composed::Scene(scene))
     }
 
     /// A file inside a stored USDZ package (`/h/pkg.usdz[tex.png]`), e.g. a texture.

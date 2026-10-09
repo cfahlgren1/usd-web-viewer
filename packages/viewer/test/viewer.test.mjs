@@ -34,9 +34,10 @@ const TEXTURE = { path: 'https://example.test/t.png', channel: 'rgb', scale: [1,
 function sceneMessage(matrix) {
   return {
     type: 'scene',
-    stats: {},
+    stats: { warnings: [] },
     meta: {
       upAxis: 'Y',
+      warnings: [],
       metersPerUnit: 1,
       stats: { triangles: 1 },
       geometries: [{ groups: [[0, 3]], bounds: [0, 0, 0, 1, 1, 0], uvSets: [], hasColors: false }],
@@ -106,4 +107,29 @@ test('geometry bounds come from the worker, so framing does not rescan positions
   assert.deepEqual(geometry.boundingBox, new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 1, 0)));
   assert.deepEqual(geometry.boundingSphere.center, new THREE.Vector3(0.5, 0.5, 0));
   assert.ok(geometry.boundingSphere.radius >= Math.SQRT1_2);
+});
+
+test('abort before geometry rejects with AbortError and stops the worker', async () => {
+  const controller = new AbortController();
+  const loading = loadUsd('scene.usda', { signal: controller.signal });
+  await new Promise((resolve) => setTimeout(resolve));
+  const worker = FakeWorker.last;
+  controller.abort();
+  await assert.rejects(loading, { name: 'AbortError' });
+  assert.equal(worker.terminated, true);
+  // A scene that was already on its way is dropped.
+  worker.send(sceneMessage(IDENTITY));
+});
+
+test('abort after geometry stops textures but leaves the model to its owner', async () => {
+  const controller = new AbortController();
+  const loading = loadUsd('scene.usda', { signal: controller.signal });
+  await new Promise((resolve) => setTimeout(resolve));
+  const worker = FakeWorker.last;
+  worker.send(sceneMessage(IDENTITY));
+  const { root, textures } = await loading;
+  controller.abort();
+  assert.equal(worker.terminated, true);
+  await textures;
+  assert.equal(root.children.length, 1);
 });

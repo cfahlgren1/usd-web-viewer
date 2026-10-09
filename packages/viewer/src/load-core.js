@@ -16,7 +16,7 @@
  * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
  * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
  * @param {number} [o.maxLayerBytes=1 GiB]  total size of the distinct layers held for composition
- * @param {(stage: string, detail?: object) => void} [o.onProgress]
+ * @param {(progress: { stage: 'layers' | 'compose', loaded: number, total: number, bytes: number }) => void} [o.onProgress]
  * @returns {Promise<{ scene: import('../wasm/usd_wasm.js').UsdScene, meta: object, stats: object }>}
  */
 export async function composeStage({
@@ -33,6 +33,7 @@ export async function composeStage({
   const loader = new UsdLoader();
   const stats = { layers: 0, layerBytes: 0, missing: 0, rounds: 0, fetchMs: 0, parseMs: 0, composeMs: 0, warnings: [] };
   const started = new Map();
+  const progress = () => onProgress({ stage: 'layers', loaded: stats.layers + stats.missing, total: started.size, bytes: stats.layerBytes });
   const throttle = limiter(maxConcurrentFetches);
   // Re-fetched layers replace their earlier bytes, so count each path once.
   const layerSizes = new Map();
@@ -47,7 +48,9 @@ export async function composeStage({
       stats.fetchMs = Math.max(stats.fetchMs, performance.now() - t0);
       if (!bytes) {
         stats.missing++;
+        stats.warnings.push(`layer not found: ${urlOf(path)}`);
         loader.markUnavailable(path);
+        progress();
         return;
       }
       heldBytes += bytes.byteLength - (layerSizes.get(path) ?? 0);
@@ -61,13 +64,14 @@ export async function composeStage({
         deps = loader.addLayer(path, bytes);
       } catch (error) {
         // An unreadable layer is left out; composition carries on without it.
-        stats.warnings.push(`${path}: ${error.message || error}`);
+        stats.warnings.push(`unreadable layer ${urlOf(path)}: ${error.message || error}`);
         loader.markUnavailable(path);
+        progress();
         return;
       } finally {
         stats.parseMs += performance.now() - t1;
       }
-      onProgress('layer', { path, bytes: bytes.byteLength });
+      progress();
       await Promise.all(
         deps
           .filter((d) => d[0] === 'L' || (prefetchVariants && d[0] === 'V'))
@@ -83,12 +87,12 @@ export async function composeStage({
 
   for (;;) {
     stats.rounds++;
+    onProgress({ stage: 'compose', loaded: stats.layers, total: started.size, bytes: stats.layerBytes });
     const t0 = performance.now();
     const missing = loader.compose(root);
     stats.composeMs += performance.now() - t0;
     if (!missing.length) break;
     if (stats.rounds > 16) throw new Error(`composition still missing layers: ${missing.join(', ')}`);
-    onProgress('missing', { missing });
     // The list also names layers the failed attempt consumed; fetch them again.
     for (const path of missing) started.delete(path);
     await Promise.all(missing.map(fetchLayer));
@@ -125,9 +129,12 @@ export function limiter(max) {
     });
 }
 
-/** Fetches a body, giving up once it passes `maxBytes`; null on an HTTP error. */
-export async function fetchLimited(url, maxBytes) {
-  const response = await fetch(url);
+/**
+ * Fetches a body, giving up once it passes `maxBytes`; null on an HTTP error.
+ * `fetchFn` is the global fetch or a stand-in with the same contract.
+ */
+export async function fetchLimited(url, maxBytes, { headers, fetchFn = fetch } = {}) {
+  const response = await fetchFn(url, { headers });
   if (!response.ok) return null;
   const tooBig = () => resourceLimit(`${url} is larger than ${maxBytes} bytes`);
   if (Number(response.headers.get('content-length')) > maxBytes) {

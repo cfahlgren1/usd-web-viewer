@@ -1,6 +1,6 @@
 // Loads, composes and extracts a USD stage off the main thread, then streams
-// base-color textures as downscaled ImageBitmaps. One worker per load: the
-// page terminates it when done, which releases all WASM memory at once.
+// textures as downscaled ImageBitmaps. One worker per load: the page
+// terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { UsdLoader } from '../wasm/usd_wasm.js';
 import { composeStage, fetchLimited, limiter, takeGeometries, takePackagedTextures, textureJobs } from './load-core.js';
 
@@ -8,8 +8,34 @@ import { composeStage, fetchLimited, limiter, takeGeometries, takePackagedTextur
 // briefly holds it at full size, so wide parallelism spikes memory.
 const TEXTURE_CONCURRENCY = 4;
 
-self.onmessage = async (event) => {
-  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', prefetchVariants = false, maxConcurrentFetches = 16, maxLayerBytes } = event.data;
+// Requests answered by the page, for a caller-supplied `fetch`.
+const proxied = new Map();
+let nextId = 0;
+
+/** A fetch that asks the page (which runs the caller's `fetch`) and waits for the reply. */
+function proxiedFetch(url) {
+  const id = nextId++;
+  self.postMessage({ type: 'fetch', id, url });
+  return new Promise((resolve) => proxied.set(id, resolve)).then(
+    ({ ok, status, buffer, error }) => {
+      if (error) throw new Error(error);
+      return new Response(ok ? buffer : null, { status: ok ? 200 : status || 500 });
+    },
+  );
+}
+
+self.onmessage = async ({ data }) => {
+  if (data.type === 'fetched') {
+    proxied.get(data.id)?.(data);
+    proxied.delete(data.id);
+    return;
+  }
+  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', prefetchVariants = false, maxConcurrentFetches = 16, maxLayerBytes = 2 ** 30, headers, proxyFetch } = data;
+  // Every request, layer or texture, goes through here.
+  const fetchOptions = { headers, fetchFn: proxyFetch ? proxiedFetch : fetch };
+  const fetchBytes = (target, maxBytes) => fetchLimited(target, maxBytes, fetchOptions);
+  const progress = (p) => self.postMessage({ type: 'progress', progress: p });
+
   try {
     const t0 = performance.now();
     const wasm = await init({ module_or_path: wasmModule });
@@ -17,11 +43,12 @@ self.onmessage = async (event) => {
 
     const { scene, meta, stats } = await composeStage({
       UsdLoader,
-      fetchBytes: fetchLimited,
+      fetchBytes,
       rootUrl: url,
       prefetchVariants,
       maxConcurrentFetches,
       maxLayerBytes,
+      onProgress: progress,
     });
     const geometries = takeGeometries(scene, meta);
     const packaged = takePackagedTextures(scene, meta);
@@ -34,18 +61,25 @@ self.onmessage = async (event) => {
     for (const g of geometries) for (const a of [g.positions, g.normals, g.colors, g.indices, ...g.uvs]) if (a) transfer.push(a.buffer);
     self.postMessage({ type: 'scene', meta, geometries, stats }, transfer);
 
+    const jobs = textureJobs(meta, { textures, maxSize: maxTextureSize });
+    let loaded = 0;
+    let bytes = 0;
+    progress({ stage: 'textures', loaded, total: jobs.length, bytes });
     // The limiter runs jobs in order, so base colors come first.
     const throttle = limiter(Math.min(maxConcurrentFetches, TEXTURE_CONCURRENCY));
     await Promise.all(
-      textureJobs(meta, { textures, maxSize: maxTextureSize }).map(({ path, size }) =>
+      jobs.map(({ path, size }) =>
         throttle(async () => {
           try {
-            const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await fetchBlob(path);
-            const bitmap = await decodeTexture(blob, size);
+            const body = packaged.get(path) ?? (await fetchBytes(path, maxLayerBytes));
+            if (!body) throw new Error(`not found: ${path}`);
+            bytes += body.byteLength;
+            const bitmap = await decodeTexture(new Blob([body]), size);
             self.postMessage({ type: 'texture', path, bitmap }, [bitmap]);
           } catch (error) {
             self.postMessage({ type: 'texture', path, error: String(error?.message || error) });
           }
+          progress({ stage: 'textures', loaded: ++loaded, total: jobs.length, bytes });
         }),
       ),
     );
@@ -54,12 +88,6 @@ self.onmessage = async (event) => {
     self.postMessage({ type: 'error', message: String(error?.stack || error?.message || error) });
   }
 };
-
-async function fetchBlob(url) {
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
-  return response.blob();
-}
 
 /** Decodes an image straight to at most `maxSize` px on its long side. */
 async function decodeTexture(blob, maxSize) {

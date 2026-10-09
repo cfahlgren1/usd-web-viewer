@@ -3,13 +3,14 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { applyFallback, attachTexture, configureTexture, createMaterial, variant } from './materials.js';
 
-const WASM_URL = new URL('../wasm/usd_wasm_bg.wasm', import.meta.url);
-const WORKER_URL = new URL('./worker.js', import.meta.url);
+export { findSimReadyRoot, hubUrl } from './hub.js';
 
 let wasmModule = null;
 
 /** Compiles the WASM module once per page; workers instantiate it without refetching. */
-function compileWasm(url = WASM_URL) {
+function compileWasm(url) {
+  // Written inline so bundlers (Vite, webpack) emit the asset and rewrite the URL.
+  url ??= new URL('../wasm/usd_wasm_bg.wasm', import.meta.url);
   wasmModule ||= WebAssembly.compileStreaming(fetch(url)).catch((error) => {
     wasmModule = null;
     throw error;
@@ -22,76 +23,105 @@ function compileWasm(url = WASM_URL) {
  * `textures` resolves when every texture has streamed in.
  *
  * @param {string} url  root layer URL (relative URLs resolve against the page)
- * @param {object} [options]
- * @param {number} [options.maxTextureSize=1024]  long-side cap for decoded textures
- * @param {'preview' | 'full'} [options.textures='preview']  `preview`: base color up to maxTextureSize, other maps up to 512 px, no normal maps; `full`: every map up to maxTextureSize
- * @param {boolean} [options.prefetchVariants=false]  fetch layers named inside variants before composing
- * @param {number} [options.maxConcurrentFetches=16]  requests in flight at once
- * @param {number} [options.maxLayerBytes=1 GiB]  total size of the distinct USD layers fetched before giving up
- * @param {() => void} [options.onTexture]  called after each texture is applied
- * @param {string | URL} [options.wasmUrl]  override where the WASM binary lives
- * @returns {Promise<{ root: THREE.Group, info: object, textures: Promise<void>, dispose: () => void }>}
+ * @param {import('./index.js').LoadOptions} [options]
+ * @returns {Promise<import('./index.js').LoadResult>}
  *   `dispose` also stops any textures still streaming and settles `textures`.
  */
 export async function loadUsd(url, options = {}) {
-  const { maxTextureSize = 1024, textures: textureMode = 'preview', prefetchVariants = false, maxConcurrentFetches, maxLayerBytes, onTexture = () => {} } = options;
+  const { maxTextureSize = 1024, textures: textureMode = 'preview', prefetchVariants = false, maxConcurrentFetches, maxLayerBytes } = options;
+  const { onTexture, onProgress, signal, headers } = options;
+  signal?.throwIfAborted();
   const absoluteUrl = new URL(url, location.href).href;
   const module = await compileWasm(options.wasmUrl);
-  const worker = new Worker(WORKER_URL, { type: 'module' });
+  signal?.throwIfAborted();
+  // Inline `new Worker(new URL(...))` is the pattern bundlers recognise and bundle.
+  const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 
   let resolveScene, rejectScene, resolveTextures;
   const scenePromise = new Promise((resolve, reject) => ((resolveScene = resolve), (rejectScene = reject)));
   const textures = new Promise((resolve) => (resolveTextures = resolve));
   let built = null;
-  let disposed = false;
-  const finish = () => {
+  let delivered = false;
+  let stopped = false;
+  // One way out for done, error, dispose and abort: stop the worker (freeing
+  // its WASM memory) and settle `textures`.
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
     worker.terminate();
+    signal?.removeEventListener('abort', abort);
     resolveTextures();
   };
+  function abort() {
+    stop();
+    // Before geometry resolves nothing has reached the caller: free it here.
+    if (built && !delivered) built.dispose();
+    rejectScene(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+  }
+  signal?.addEventListener('abort', abort, { once: true });
 
   worker.onmessage = ({ data }) => {
-    // Messages already queued when the model was disposed.
-    if (disposed) {
+    // Messages already queued when the load was stopped (disposed or aborted).
+    if (stopped) {
       data.bitmap?.close();
       return;
     }
     switch (data.type) {
+      case 'fetch':
+        proxyFetch(options.fetch, data, headers, signal).then(({ message, transfer }) => worker.postMessage(message, transfer));
+        break;
+      case 'progress':
+        onProgress?.(data.progress);
+        break;
       case 'scene':
         built = buildScene(data.meta, data.geometries);
         built.info.stats = data.stats;
+        built.info.warnings = [...data.meta.warnings, ...data.stats.warnings];
+        delivered = true;
         resolveScene(built);
         break;
       case 'texture':
         if (data.bitmap && built) {
           built.applyTexture(data.path, data.bitmap);
-          onTexture();
+          onTexture?.();
         } else if (data.error && built) {
           built.textureFailed(data.path);
           built.info.textureErrors.push(`${data.path}: ${data.error}`);
+          built.info.warnings.push(`texture not loaded: ${data.path}: ${data.error}`);
         }
         break;
       case 'done':
-        finish();
+        stop();
         break;
       case 'error':
+        stop();
         rejectScene(new Error(data.message));
-        finish();
         break;
     }
   };
   worker.onerror = (event) => {
+    stop();
     rejectScene(new Error(event.message || 'worker failed to start'));
-    finish();
   };
-  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, prefetchVariants, maxConcurrentFetches, maxLayerBytes });
+  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, prefetchVariants, maxConcurrentFetches, maxLayerBytes, headers, proxyFetch: !!options.fetch });
 
   const scene = await scenePromise;
   const dispose = () => {
-    disposed = true;
-    finish();
+    stop();
     scene.dispose();
   };
   return { root: scene.root, info: scene.info, textures, dispose };
+}
+
+/** Runs one worker request through the caller's `fetch` and packages the reply. */
+async function proxyFetch(fetchFn, { id, url }, headers, signal) {
+  try {
+    const response = await fetchFn(url, { headers, signal });
+    const buffer = response.ok ? await response.arrayBuffer() : null;
+    return { message: { type: 'fetched', id, ok: response.ok, status: response.status, buffer }, transfer: buffer ? [buffer] : [] };
+  } catch (error) {
+    return { message: { type: 'fetched', id, ok: false, status: 0, buffer: null, error: String(error) }, transfer: [] };
+  }
 }
 
 function buildScene(meta, arrays) {
