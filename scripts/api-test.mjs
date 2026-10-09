@@ -50,16 +50,18 @@ async function routeTextured(root, texture) {
   await page.context().route(root, (route) => route.fulfill({ body: usda, contentType: 'text/plain' }));
 }
 
-/** Counts the drawn (non-transparent) pixels of an image blob, in the page. */
-const DESCRIBE = `async (blob) => {
-  const bitmap = await createImageBitmap(blob);
-  const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d');
-  ctx.drawImage(bitmap, 0, 0);
-  const { data } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-  let drawn = 0;
-  for (let i = 3; i < data.length; i += 4) if (data[i]) drawn++;
-  return { type: blob.type, width: bitmap.width, height: bitmap.height, drawn: drawn > 100 };
-}`;
+/** Installs window.describeImage, which counts the drawn (non-transparent) pixels of an image blob. */
+function installDescribeImage() {
+  window.describeImage = async (blob) => {
+    const bitmap = await createImageBitmap(blob);
+    const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d');
+    ctx.drawImage(bitmap, 0, 0);
+    const { data } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+    let drawn = 0;
+    for (let i = 3; i < data.length; i += 4) if (data[i]) drawn++;
+    return { type: blob.type, width: bitmap.width, height: bitmap.height, drawn: drawn > 100 };
+  };
+}
 
 test('headers never follow a redirect to another origin', async () => {
   // Three origins, as when a page loads from a CDN: the page's, the root's, and another that a layer on the
@@ -308,21 +310,19 @@ test('lifecycle: a newer load wins; stopping a load stops all of it, while WASM 
 });
 
 test('many instances of one mesh render as one InstancedMesh', async () => {
-  const out = await page.evaluate(
-    async ([url, describe]) => {
-      const { createViewer } = await import('/packages/viewer/src/index.js');
-      const host = document.body.appendChild(document.createElement('div'));
-      host.style.cssText = 'width:200px;height:150px';
-      const viewer = createViewer(host);
-      const result = await viewer.load(url);
-      const meshes = result.root.children.map((m) => [m.isInstancedMesh ?? false, m.count ?? 1]);
-      const image = await (0, eval)(describe)(await viewer.toBlob());
-      viewer.dispose();
-      host.remove();
-      return { meshes, instances: result.info.meshes, drawn: image.drawn };
-    },
-    ['/fixtures/nested_instancers.usda', DESCRIBE],
-  );
+  await page.evaluate(installDescribeImage);
+  const out = await page.evaluate(async (url) => {
+    const { createViewer } = await import('/packages/viewer/src/index.js');
+    const host = document.body.appendChild(document.createElement('div'));
+    host.style.cssText = 'width:200px;height:150px';
+    const viewer = createViewer(host);
+    const result = await viewer.load(url);
+    const meshes = result.root.children.map((m) => [m.isInstancedMesh ?? false, m.count ?? 1]);
+    const image = await window.describeImage(await viewer.toBlob());
+    viewer.dispose();
+    host.remove();
+    return { meshes, instances: result.info.meshes, drawn: image.drawn };
+  }, '/fixtures/nested_instancers.usda');
   assert.deepEqual(out, { meshes: [[true, 6]], instances: 6, drawn: true });
 });
 
@@ -520,8 +520,9 @@ test('toBlob captures a freshly rendered frame, as PNG or WebP, at the canvas si
   await emptyElementPage();
   await addViewer('s', { src: SHAPES, textures: 'none' });
   await waitFor('s', 'load');
-  const shots = await page.evaluate(async (describeSource) => {
-    const describe = (0, eval)(describeSource);
+  await page.evaluate(installDescribeImage);
+  const shots = await page.evaluate(async () => {
+    const describe = window.describeImage;
     const el = document.getElementById('s');
     const canvas = el.viewer.renderer.domElement;
     // Long after the last frame: only a fresh render has pixels to read.
@@ -537,7 +538,7 @@ test('toBlob captures a freshly rendered frame, as PNG or WebP, at the canvas si
         (e) => e.message,
       );
     return { full, thumb, wide, idle, canvas: [canvas.width, canvas.height] };
-  }, DESCRIBE);
+  });
   assert.deepEqual(shots.full, { type: 'image/png', width: shots.canvas[0], height: shots.canvas[1], drawn: true });
   assert.deepEqual(shots.thumb, { type: 'image/webp', width: 64, height: 48, drawn: true });
   assert.deepEqual(shots.wide, { type: 'image/png', width: 100, height: Math.round((100 * shots.canvas[1]) / shots.canvas[0]), drawn: true });

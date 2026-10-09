@@ -172,9 +172,28 @@ test('imageInfo reads the size of PNG, JPEG and WebP from the header, and whethe
   const be32 = (n) => [n >>> 24, (n >> 16) & 255, (n >> 8) & 255, n & 255];
   // A 64 x 32 PNG signature and IHDR chunk; a 64 x 32 baseline JPEG SOF0 with `components` channels.
   const png = (bitDepth, colorType) =>
-    bytes([0x89], 'PNG', [13, 10, 26, 10], be32(13), 'IHDR', be32(64), be32(32), [bitDepth, colorType], new Array(7).fill(0));
+    bytes(
+      [0x89],
+      'PNG',
+      [13, 10, 26, 10],
+      be32(13),
+      'IHDR',
+      be32(64),
+      be32(32),
+      [bitDepth, colorType],
+      Array.from({ length: 7 }, () => 0),
+    );
   const jpeg = (components) => bytes([0xff, 0xd8, 0xff, 0xc0, 0, 0x11, 8, 0, 32, 0, 64, components, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1]);
-  const riff = (chunk, data) => bytes('RIFF', [0, 0, 0, 0], 'WEBP', chunk, [0, 0, 0, 0], data, new Array(16).fill(0));
+  const riff = (chunk, data) =>
+    bytes(
+      'RIFF',
+      [0, 0, 0, 0],
+      'WEBP',
+      chunk,
+      [0, 0, 0, 0],
+      data,
+      Array.from({ length: 16 }, () => 0),
+    );
   const vp8l = (639 | (479 << 14)) >>> 0;
   const color = (width, height) => ({ width, height, color: true });
   const data = { width: 64, height: 32, color: false };
@@ -192,8 +211,24 @@ test('imageInfo reads the size of PNG, JPEG and WebP from the header, and whethe
     ['lossy WebP', riff('VP8 ', [0, 0, 0, 0x9d, 1, 0x2a, ...le16(640), ...le16(480)]), color(640, 480)],
     ['lossless WebP', riff('VP8L', [0x2f, vp8l & 255, (vp8l >> 8) & 255, (vp8l >> 16) & 255, vp8l >>> 24]), color(640, 480)],
     ['extended WebP', riff('VP8X', [0, 0, 0, 0, ...le24(20000 - 1), ...le24(30 - 1)]), color(20000, 30)],
-    ['GIF', bytes('GIF89a', le16(20000), le16(20000), new Array(20).fill(0)), null],
-    ['BMP', bytes('BM', new Array(40).fill(0)), null],
+    [
+      'GIF',
+      bytes(
+        'GIF89a',
+        le16(20000),
+        le16(20000),
+        Array.from({ length: 20 }, () => 0),
+      ),
+      null,
+    ],
+    [
+      'BMP',
+      bytes(
+        'BM',
+        Array.from({ length: 40 }, () => 0),
+      ),
+      null,
+    ],
     ['truncated RIFF', bytes('RIFF'), null],
   ]) {
     assert.deepEqual(imageInfo(header), expected, what);
@@ -205,8 +240,8 @@ test('a mesh whose corners share one point welds in linear time', { timeout: 100
   const normals = Array.from({ length: faces * 3 }, (_, i) => `(${i}, 1, 0)`).join(', ');
   const usda = `#usda 1.0
 def Mesh "M" {
-  int[] faceVertexCounts = [${new Array(faces).fill(3).join(',')}]
-  int[] faceVertexIndices = [${new Array(faces * 3).fill(0).join(',')}]
+  int[] faceVertexCounts = [${Array.from({ length: faces }, () => 3).join(',')}]
+  int[] faceVertexIndices = [${Array.from({ length: faces * 3 }, () => 0).join(',')}]
   point3f[] points = [(0, 0, 0)]
   normal3f[] normals = [${normals}] (interpolation = "faceVarying")
 }`;
@@ -225,7 +260,7 @@ test('indices are 16-bit up to index 65535, 32-bit past it', async () => {
   const mesh = (name, points) => `def Mesh "${name}" {
   int[] faceVertexCounts = [3]
   int[] faceVertexIndices = [0, 1, ${points - 1}]
-  point3f[] points = [${new Array(points).fill('(0, 0, 0)').join(', ')}]
+  point3f[] points = [${Array.from({ length: points }, () => '(0, 0, 0)').join(', ')}]
 }`;
   const s = server({ 'https://h/root.usda': `#usda 1.0\n${mesh('A', 65536)}\n${mesh('B', 65537)}` });
   const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
@@ -654,12 +689,12 @@ test('limits: requests in flight, layer files and bytes, drawn triangles and ins
   def GeomSubset "S" {
     uniform token elementType = "face"
     uniform token familyName = "materialBind"
-    int[] indices = [${new Array(100).fill(0)}]
+    int[] indices = [${Array.from({ length: 100 }, () => 0)}]
   }
 }`;
   const instancer = (count) => `def PointInstancer "PI" {
   rel prototypes = [</PI/P/M>]
-  int[] protoIndices = [${new Array(count).fill(0)}]
+  int[] protoIndices = [${Array.from({ length: count }, () => 0)}]
   point3f[] positions = [${Array.from({ length: count }, (_, i) => `(${i}, 0, 0)`)}]
   def Scope "P" {
     ${QUAD}

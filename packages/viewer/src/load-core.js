@@ -546,7 +546,7 @@ export async function fetchWithPolicy(fetchFn, url, policy, headers, init = {}) 
  * meshes left out, `nothing-drawable` when no mesh had anything to draw.
  */
 export function readGeometries(scene, meta, onGeometry, { maxTriangles = DEFAULTS.maxTriangles } = {}) {
-  const instances = new Array(meta.geometryCount).fill(0);
+  const instances = Array.from({ length: meta.geometryCount }, () => 0);
   for (const { geometry } of meta.instances) instances[geometry]++;
   let drawn = 0;
   let left = maxTriangles;
