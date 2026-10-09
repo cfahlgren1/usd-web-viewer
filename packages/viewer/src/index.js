@@ -86,10 +86,13 @@ export async function loadUsd(url, options = {}) {
     if (error) rejectComplete(error);
     else resolveComplete({ ...counts });
   };
-  function abort() {
+  function fail(error) {
     // Before geometry resolves nothing has reached the caller: free it here.
     if (built && !delivered) built.dispose();
-    stop(aborted());
+    stop(error);
+  }
+  function abort() {
+    fail(aborted());
   }
   signal?.addEventListener('abort', abort, { once: true });
 
@@ -99,6 +102,14 @@ export async function loadUsd(url, options = {}) {
       data.bitmap?.close();
       return;
     }
+    try {
+      receive(data);
+    } catch (error) {
+      data.bitmap?.close();
+      fail(new UsdLoadError('worker', `could not build the scene: ${error?.message || error}`, { url: absoluteUrl, cause: error }));
+    }
+  };
+  function receive(data) {
     switch (data.type) {
       case 'fetch':
         proxyFetch(data);
@@ -141,13 +152,13 @@ export async function loadUsd(url, options = {}) {
         stop();
         break;
       case 'error':
-        stop(new UsdLoadError(data.code, data.message, { url: data.url, status: data.status }));
+        fail(new UsdLoadError(data.code, data.message, { url: data.url, status: data.status }));
         break;
     }
-  };
+  }
   worker.onerror = (event) => {
     event.preventDefault?.();
-    stop(new UsdLoadError('worker', event.message || 'the worker failed', { url: absoluteUrl }));
+    fail(new UsdLoadError('worker', event.message || 'the worker failed', { url: absoluteUrl }));
   };
   worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, maxConcurrentFetches, maxLayerBytes, headers, proxyFetch: !!options.fetch });
 

@@ -82,6 +82,8 @@ async function load(matrix = IDENTITY) {
   return { ...result, worker, textureCount: () => textures };
 }
 
+const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const fakeBitmap = () => ({ width: 4, height: 4, closed: false, close() { this.closed = true; } });
 
 test('a rotated child under a non-uniformly scaled parent keeps its shear', async () => {
@@ -154,6 +156,17 @@ test('a worker error after geometry rejects complete instead of vanishing', asyn
   await assert.rejects(complete, { name: 'UsdLoadError', code: 'compose', message: 'boom' });
 });
 
+test('a message the page cannot handle fails the load and stops the worker', async () => {
+  const loading = loadUsd('scene.usda');
+  await tick();
+  const worker = FakeWorker.last;
+  const [meta, geometry] = sceneMessages(IDENTITY);
+  worker.send(meta);
+  worker.send({ ...geometry, arrays: null });
+  await assert.rejects(loading, { name: 'UsdLoadError', code: 'worker', message: /could not build the scene/ });
+  assert.equal(worker.terminated, true);
+});
+
 test('complete reports texture counts and failures become warnings', async () => {
   const { complete, worker, info } = await load();
   worker.send({ type: 'texture', path: 'https://example.test/t.png', bitmap: fakeBitmap() });
@@ -162,8 +175,6 @@ test('complete reports texture counts and failures become warnings', async () =>
   assert.deepEqual(await complete, { textures: 1, failed: 1 });
   assert.deepEqual(info.warnings, [{ code: 'texture-failed', message: 'HTTP 404', path: 'https://example.test/u.png' }]);
 });
-
-const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Starts a load with a custom fetch; the fake worker then asks the page for requests. */
 async function proxiedLoad(fetch, options = {}) {
