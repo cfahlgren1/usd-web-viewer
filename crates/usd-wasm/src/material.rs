@@ -40,8 +40,9 @@ pub struct Texture {
     /// `value = texel * scale + bias`, per channel (`UsdUVTexture`).
     pub scale: [f32; 4],
     pub bias: [f32; 4],
-    /// Used when the image cannot be read.
-    pub fallback: Option<[f32; 4]>,
+    /// What the input shows when the image cannot be read: its own value
+    /// (authored or the shader's default), as for an input with no texture.
+    pub value: Option<[f32; 3]>,
     /// `sourceColorSpace`: `raw`, `sRGB` or `auto` (unset).
     pub color_space: Option<String>,
     /// `primvars:<name>` the texture is sampled with, when it says.
@@ -62,7 +63,7 @@ impl Texture {
             channel: "rgb".to_owned(),
             scale: [1.0; 4],
             bias: [0.0; 4],
-            fallback: None,
+            value: None,
             color_space: None,
             uv_set: None,
             uv_scale: [1.0, 1.0],
@@ -237,6 +238,8 @@ fn read_preview_surface(stage: &Stage, shader: &sdf::Path, path: String) -> open
                 Some("UsdUVTexture") => match texture_node(stage, &mut nodes, &node)? {
                     Some(mut texture) => {
                         texture.channel = output;
+                        let own = stage.attribute(input(shader, name)?).map_err(openusd::Error::from)?.get::<Value>()?;
+                        texture.value = Some(own.as_ref().and_then(|v| color(v).or_else(|| float(v).map(|f| [f; 3]))).unwrap_or(preview_default(name)));
                         if name == "diffuseColor" {
                             m.color = [1.0; 3];
                         }
@@ -285,6 +288,17 @@ fn read_preview_surface(stage: &Stage, shader: &sdf::Path, path: String) -> open
     Ok(m)
 }
 
+/// A UsdPreviewSurface input's value when none is authored.
+fn preview_default(input: &str) -> [f32; 3] {
+    match input {
+        "diffuseColor" => [0.18; 3],
+        "roughness" => [0.5; 3],
+        "occlusion" | "opacity" => [1.0; 3],
+        "normal" => [0.0, 0.0, 1.0],
+        _ => [0.0; 3],
+    }
+}
+
 fn texture_node(
     stage: &Stage,
     nodes: &mut HashMap<sdf::Path, Option<Texture>>,
@@ -317,7 +331,6 @@ fn uv_texture(stage: &Stage, shader: &sdf::Path) -> openusd::Result<Option<Textu
     if let Some(v) = value(shader, "bias")?.as_ref().and_then(vec4) {
         texture.bias = v;
     }
-    texture.fallback = value(shader, "fallback")?.as_ref().and_then(vec4);
     texture.color_space = value(shader, "sourceColorSpace")?.as_ref().and_then(string);
     texture.wrap = [value(shader, "wrapS")?.as_ref().and_then(string), value(shader, "wrapT")?.as_ref().and_then(string)];
     let Source::Output(mut reader, _) = follow(stage, &input(shader, "st")?, 0)? else {
@@ -361,7 +374,8 @@ fn read_omnipbr(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Res
     let scale = value("texture_scale")?.as_ref().and_then(vec2).unwrap_or([1.0, 1.0]);
     let texture = |path| Texture { uv_scale: scale, ..Texture::new(path) };
     if let Some(file) = value("diffuse_texture")?.as_ref().and_then(asset) {
-        m.maps.push(("diffuseColor", texture(file)));
+        let constant = m.color;
+        m.maps.push(("diffuseColor", Texture { value: Some(constant), ..texture(file) }));
         // OmniPBR multiplies the texture by diffuse_tint, not the constant.
         m.color = value("diffuse_tint")?.as_ref().and_then(color).unwrap_or([1.0; 3]);
     }
@@ -401,7 +415,7 @@ fn read_gltf_pbr(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Re
     m.roughness = value("roughness_factor")?.as_ref().and_then(float).unwrap_or(1.0);
     m.metallic = value("metallic_factor")?.as_ref().and_then(float).unwrap_or(1.0);
     if let Some(t) = gltf_texture(stage, shader, "base_color_texture")? {
-        m.maps.push(("diffuseColor", t));
+        m.maps.push(("diffuseColor", Texture { value: Some(m.color), ..t }));
     }
     if let Some(t) = gltf_texture(stage, shader, "normal_texture")? {
         m.maps.push(("normal", Texture { scale: [2.0; 4], bias: [-1.0; 4], ..t }));
@@ -433,12 +447,17 @@ fn gltf_texture(stage: &Stage, shader: &sdf::Path, name: &str) -> openusd::Resul
     }))
 }
 
+/// A texture file's path. A UDIM set (`name.<UDIM>.png`) loads only its first
+/// tile, 1001: drawing the others needs a texture per tile.
 fn asset(value: &Value) -> Option<String> {
     match value {
-        Value::AssetPath(a) if !a.is_empty() => Some(match a.resolved_path() {
-            Some(resolved) if !resolved.is_empty() => resolved.to_owned(),
-            _ => a.asset_path().to_owned(),
-        }),
+        Value::AssetPath(a) if !a.is_empty() => {
+            let path = match a.resolved_path() {
+                Some(resolved) if !resolved.is_empty() => resolved,
+                _ => a.asset_path(),
+            };
+            Some(path.replace("<UDIM>", "1001"))
+        }
         _ => None,
     }
 }

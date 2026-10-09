@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { initSync, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, readGeometries, takePackagedTextures } from '../src/load-core.js';
+import { composeStage, fetchLimited, loadFailure, readGeometries, takePackagedTextures, textureJobs } from '../src/load-core.js';
+import { UsdLoadError } from '../src/errors.js';
 
 initSync({ module: readFileSync(new URL('../wasm/usd_wasm_bg.wasm', import.meta.url)) });
 
@@ -256,4 +257,113 @@ def Material "Mat${i}" {
     assert.equal(read.length, reads, textures);
     if (reads) assert.equal(packaged.get('https://h/shared.usdz[tex.png]').byteLength, 1 << 20);
   }
+});
+
+test('layers that reference each other compose instead of waiting on each other forever', { timeout: 5000 }, async () => {
+  const s = server({
+    'https://h/root.usda': '#usda 1.0\ndef "A" (references = @./a.usda@) {}',
+    'https://h/a.usda': `#usda 1.0\n(defaultPrim = "M")\n${QUAD}\ndef "Back" (references = @./b.usda@) {}`,
+    'https://h/b.usda': '#usda 1.0\n(defaultPrim = "X")\ndef "X" (references = @./a.usda@) {}',
+  });
+  const { scene, stats } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+  scene.free();
+  assert.equal(stats.layers, 3);
+  assert.deepEqual(s.requested.sort(), ['https://h/a.usda', 'https://h/b.usda', 'https://h/root.usda']);
+});
+
+test('a stage with nothing to draw says so, after naming what it could not draw', async () => {
+  const read = async (usda) => {
+    const s = server({ 'https://h/root.usda': `#usda 1.0\n${usda}` });
+    const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+    const warnings = readGeometries(scene, meta, () => {});
+    scene.free();
+    return [...meta.warnings, ...warnings].map((w) => w.code);
+  };
+  assert.deepEqual(await read('def ParticleField3DGaussianSplat "Splat" {}'), ['prim-unsupported', 'nothing-drawable']);
+  assert.deepEqual(await read('def Mesh "Empty" {}'), ['nothing-drawable']);
+  assert.deepEqual(await read(QUAD), []);
+});
+
+test('running out of WASM memory fails as a scene too large to load', () => {
+  const GiB = 2 ** 30;
+  const oom = new Error('failed to decode field "default" at /W/body.normals: failed to read vec: out of memory');
+  assert.match(loadFailure(oom, 1 * GiB).message, /^scene too large to load: ran out of memory.*body\.normals/);
+  assert.equal(loadFailure(oom, 1 * GiB).code, 'compose');
+  // An allocation that aborts traps; near the 4 GiB ceiling that is memory, not a bug.
+  assert.match(loadFailure(new WebAssembly.RuntimeError('unreachable'), 3.9 * GiB).message, /^scene too large to load/);
+  assert.deepEqual(loadFailure(new WebAssembly.RuntimeError('unreachable'), 0.1 * GiB), { code: 'compose', message: 'unreachable', url: undefined, status: undefined });
+  const fetchError = loadFailure(new UsdLoadError('fetch', 'HTTP 404 for https://h/a.usd', { url: 'https://h/a.usd', status: 404 }), 4 * GiB);
+  assert.deepEqual(fetchError, { code: 'fetch', message: 'HTTP 404 for https://h/a.usd', url: 'https://h/a.usd', status: 404 });
+});
+
+test('a UDIM texture loads its first tile, 1001', async () => {
+  const s = server({
+    'https://h/root.usda': `#usda 1.0
+def Mesh "M" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+  int[] faceVertexCounts = [3]
+  int[] faceVertexIndices = [0, 1, 2]
+  point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+  rel material:binding = </Mat>
+}
+def Material "Mat" {
+  token outputs:surface.connect = </Mat/Surface.outputs:surface>
+  def Shader "Surface" {
+    uniform token info:id = "UsdPreviewSurface"
+    color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
+    token outputs:surface
+  }
+  def Shader "Tex" {
+    uniform token info:id = "UsdUVTexture"
+    asset inputs:file = @Textures/body_alb.<UDIM>.png@
+    float3 outputs:rgb
+  }
+}`,
+  });
+  const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+  scene.free();
+  assert.deepEqual(
+    textureJobs(meta, { textures: 'full' }).map((j) => j.path),
+    ['https://h/Textures/body_alb.1001.png'],
+  );
+});
+
+test('textures inside a package nested in packages are found where the nesting says', async () => {
+  const material = `def Mesh "M" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+  int[] faceVertexCounts = [3]
+  int[] faceVertexIndices = [0, 1, 2]
+  point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+  rel material:binding = </M/Mat>
+  def Material "Mat" {
+    token outputs:surface.connect = </M/Mat/Surface.outputs:surface>
+    def Shader "Surface" {
+      uniform token info:id = "UsdPreviewSurface"
+      color3f inputs:diffuseColor.connect = </M/Mat/Tex.outputs:rgb>
+      token outputs:surface
+    }
+    def Shader "Tex" {
+      uniform token info:id = "UsdUVTexture"
+      asset inputs:file = @0/t.png@
+      float3 outputs:rgb
+    }
+  }
+}`;
+  const deep = storedZip([
+    { name: 'deep.usda', data: Buffer.from(`#usda 1.0\n(defaultPrim = "M")\n${material}`) },
+    { name: '0/t.png', data: Buffer.from('deep texture') },
+  ]);
+  const mid = storedZip([
+    { name: 'mid.usda', data: Buffer.from('#usda 1.0\n(defaultPrim = "Mid")\ndef "Mid" (references = @0/deep.usdz@) {}') },
+    { name: '0/deep.usdz', data: deep },
+  ]);
+  const outer = storedZip([
+    { name: 'outer.usda', data: Buffer.from('#usda 1.0\ndef "Outer" (references = @0/mid.usdz@) {}') },
+    { name: '0/mid.usdz', data: mid },
+  ]);
+  const s = server({ 'https://h/outer.usdz': outer });
+  const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/outer.usdz' });
+  const textures = takePackagedTextures(scene, meta, { textures: 'full' });
+  scene.free();
+  const path = 'https://h/outer.usdz[0/mid.usdz[0/deep.usdz[0/t.png]]]';
+  assert.deepEqual(textureJobs(meta, { textures: 'full' }).map((j) => j.path), [path]);
+  assert.equal(new TextDecoder().decode(textures.get(path)), 'deep texture');
 });

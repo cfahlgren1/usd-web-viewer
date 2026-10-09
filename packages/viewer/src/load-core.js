@@ -48,8 +48,14 @@ export async function composeStage({
   // Re-fetched layers replace their earlier bytes, so count each path once.
   const layerSizes = new Map();
 
+  // Jobs in flight. A job queues its dependencies here rather than awaiting
+  // them, so layers that reference each other cannot wait on each other.
+  const pending = [];
+  const drain = async () => {
+    while (pending.length) await Promise.all(pending.splice(0));
+  };
   const fetchLayer = (path) => {
-    if (loader.has(path) || started.has(path)) return started.get(path);
+    if (loader.has(path) || started.has(path)) return;
     const job = (async () => {
       const t0 = performance.now();
       heldBytes -= layerSizes.get(path) ?? 0;
@@ -101,17 +107,14 @@ export async function composeStage({
         stats.parseMs += performance.now() - t1;
       }
       progress();
-      await Promise.all(
-        deps
-          .filter((d) => d[0] === 'L' || (prefetchVariants && d[0] === 'V'))
-          .map((d) => fetchLayer(d.slice(1))),
-      );
+      for (const d of deps) if (d[0] === 'L' || (prefetchVariants && d[0] === 'V')) fetchLayer(d.slice(1));
     })();
     started.set(path, job);
-    return job;
+    pending.push(job);
   };
 
-  await fetchLayer(root);
+  fetchLayer(root);
+  await drain();
   if (!loader.has(root)) throw new UsdLoadError('compose', `could not read ${rootUrl}`, { url: rootUrl });
 
   for (;;) {
@@ -124,12 +127,29 @@ export async function composeStage({
     if (stats.rounds > 16) throw new UsdLoadError('compose', `composition still missing layers: ${missing.join(', ')}`);
     // The list also names layers the failed attempt consumed; fetch them again.
     for (const path of missing) started.delete(path);
-    await Promise.all(missing.map(fetchLayer));
+    missing.forEach(fetchLayer);
+    await drain();
   }
   const scene = loader.takeScene();
   loader.free();
   const meta = JSON.parse(scene.meta());
   return { scene, meta, stats };
+}
+
+/**
+ * What the page is told about a failed load. Fetch and resource-limit errors
+ * keep their code, url and status; anything the WASM side throws is a
+ * composition failure. Running out of WASM memory (4 GiB at most) reads as a
+ * scene too large to load: an allocation that fails while reading a layer
+ * reports "out of memory", one that aborts traps as `unreachable`.
+ */
+export function loadFailure(error, wasmMemoryBytes) {
+  const { code = 'compose', url, status } = error ?? {};
+  const message = String(error?.message || error);
+  const outOfMemory = /out of memory|memory allocation/i.test(message) || (error instanceof WebAssembly.RuntimeError && wasmMemoryBytes > 3 * 2 ** 30);
+  if (code !== 'compose' || !outOfMemory) return { code, message, url, status };
+  const gib = (wasmMemoryBytes / 2 ** 30).toFixed(1);
+  return { code, message: `scene too large to load: ran out of memory (${gib} GiB of WebAssembly memory in use): ${message}`, url, status };
 }
 
 function resourceLimit(detail) {
@@ -228,15 +248,18 @@ export function sameOrigin(url, root) {
  * Reads each geometry out of WASM in turn, so only one mesh's arrays are in
  * WASM memory at a time, and calls `onGeometry(index, meta, arrays)` with
  * JS-owned typed arrays (`meta` and `arrays` are null for a mesh with nothing
- * drawable). Releases the stage afterwards.
+ * drawable). Releases the stage afterwards. Returns warnings: a
+ * `nothing-drawable` one when no mesh had anything to draw.
  */
 export function readGeometries(scene, meta, onGeometry) {
+  let drawn = 0;
   for (let i = 0; i < meta.geometryCount; i++) {
     const json = scene.read(i);
     if (!json) {
       onGeometry(i, null, null);
       continue;
     }
+    drawn++;
     const g = JSON.parse(json);
     onGeometry(i, g, {
       positions: scene.positions(),
@@ -247,6 +270,8 @@ export function readGeometries(scene, meta, onGeometry) {
     });
   }
   scene.finish();
+  if (drawn) return [];
+  return [{ code: 'nothing-drawable', message: 'nothing to draw: the stage has no visible meshes with geometry' }];
 }
 
 /**

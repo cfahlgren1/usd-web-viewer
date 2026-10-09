@@ -2,7 +2,7 @@
 // textures as downscaled ImageBitmaps. One worker per load: the page
 // terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, imageInfo, limiter, readGeometries, sameOrigin, takePackagedTextures, textureJobs } from './load-core.js';
+import { composeStage, fetchLimited, imageInfo, limiter, loadFailure, readGeometries, sameOrigin, takePackagedTextures, textureJobs } from './load-core.js';
 
 // Textures in flight at once (fetch and decode): decoding a large image
 // briefly holds it at full size, so wide parallelism spikes memory.
@@ -69,9 +69,11 @@ self.onmessage = async ({ data }) => {
   };
   const progress = (p) => self.postMessage({ type: 'progress', progress: p });
 
+  let wasmMemory;
   try {
     const t0 = performance.now();
     const wasm = await init({ module_or_path: wasmModule });
+    wasmMemory = wasm.memory;
     const tInit = performance.now();
 
     const { scene, meta, stats } = await composeStage({
@@ -85,13 +87,14 @@ self.onmessage = async ({ data }) => {
     stats.initMs = tInit - t0;
     self.postMessage({ type: 'meta', meta });
     // One mesh at a time: each is transferred (not copied) as soon as it is read.
-    readGeometries(scene, meta, (index, g, arrays) => {
+    const warnings = readGeometries(scene, meta, (index, g, arrays) => {
       const transfer = arrays ? [arrays.positions, arrays.normals, arrays.colors, arrays.indices, ...arrays.uvs].filter(Boolean).map((a) => a.buffer) : [];
       self.postMessage({ type: 'geometry', index, meta: g, arrays }, transfer);
       progress({ stage: 'geometry', loaded: index + 1, total: meta.geometryCount });
     });
     const packaged = takePackagedTextures(scene, meta, { textures });
     scene.free();
+    stats.warnings.push(...warnings);
     stats.totalMs = performance.now() - t0;
     stats.wasmMemoryBytes = wasm.memory.buffer.byteLength;
     self.postMessage({ type: 'scene', stats });
@@ -121,10 +124,7 @@ self.onmessage = async ({ data }) => {
     );
     self.postMessage({ type: 'done' });
   } catch (error) {
-    // Fetch and resource-limit errors keep their code, url and status; anything
-    // the WASM side throws is a composition failure.
-    const { code = 'compose', url: failedUrl, status } = error ?? {};
-    self.postMessage({ type: 'error', code, message: String(error?.message || error), url: failedUrl, status });
+    self.postMessage({ type: 'error', ...loadFailure(error, wasmMemory?.buffer.byteLength ?? 0) });
   }
 };
 
