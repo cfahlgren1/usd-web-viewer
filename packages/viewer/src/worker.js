@@ -112,7 +112,8 @@ self.onmessage = async ({ data }) => {
       progress({ stage: 'geometry', loaded: index + 1, total: meta.geometryCount });
     };
     const warnings = readGeometries(scene, meta, onGeometry, { maxTriangles });
-    const packaged = takePackagedTextures(scene, meta, { textures, maxBytes: maxTextureBytes });
+    const jobs = textureJobs(meta, { textures, maxSize: maxTextureSize });
+    const packaged = takePackagedTextures(scene, jobs, { maxBytes: maxTextureBytes });
     for (const entry of packaged.values()) if (!(entry instanceof Error)) textureBytes += entry.byteLength;
     scene.free();
     stats.warnings.push(...warnings);
@@ -120,7 +121,6 @@ self.onmessage = async ({ data }) => {
     stats.wasmMemoryBytes = wasm.memory.buffer.byteLength;
     self.postMessage({ type: 'scene', stats });
 
-    const jobs = textureJobs(meta, { textures, maxSize: maxTextureSize });
     let loaded = 0;
     let bytes = 0;
     progress({ stage: 'textures', loaded, total: jobs.length, bytes });
@@ -134,7 +134,7 @@ self.onmessage = async ({ data }) => {
             if (entry instanceof Error) throw entry;
             // A packaged path is never a URL to fetch.
             if (!entry && path.includes('[')) throw new Error(`not found in its package: ${path}`);
-            const image = entry ?? (await fetchLimited(path, chargeTexture, { fetchFn: request }));
+            const image = entry ?? (await fetchBytes(path, chargeTexture));
             bytes += image.byteLength;
             const { bitmap, color } = await decodeTexture(image, size);
             self.postMessage({ type: 'texture', path, bitmap, color }, [bitmap]);

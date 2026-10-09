@@ -529,15 +529,15 @@ export function readGeometries(scene, meta, onGeometry, { maxTriangles = 20e6 } 
 }
 
 /**
- * Images stored inside a USDZ package (they cannot be fetched by URL) that the
- * texture mode loads, each read once, by path, all together at most
- * `maxBytes`. One that cannot be read maps to its error, so it fails as that
- * texture rather than the whole load.
+ * Images stored inside a USDZ package (they cannot be fetched by URL) among
+ * the texture `jobs` (see {@link textureJobs}), each read once, by path, all
+ * together at most `maxBytes`. One that cannot be read maps to its error, so
+ * it fails as that texture rather than the whole load.
  */
-export function takePackagedTextures(scene, meta, { textures, maxBytes = Infinity } = {}) {
+export function takePackagedTextures(scene, jobs, { maxBytes = Infinity } = {}) {
   const out = new Map();
   let left = maxBytes;
-  for (const { path } of textureJobs(meta, { textures })) {
+  for (const { path } of jobs) {
     if (!path.includes('[')) continue;
     try {
       const bytes = scene.packagedFile(path, left);

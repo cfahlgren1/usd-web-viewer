@@ -134,7 +134,7 @@ def Material "Mat${n}" {
   const usdz = storedZip([{ name: 'root.usda', data: Buffer.from(`#usda 1.0\n${names.map(mesh).join('\n')}`) }, ...names.map((n) => ({ name: `${n}.png`, data: Buffer.alloc(1 << 20) }))]);
   const s = server({ 'https://h/p.usdz': usdz });
   const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/p.usdz' });
-  const packaged = takePackagedTextures(scene, meta, { maxBytes: 2.5 * 2 ** 20 });
+  const packaged = takePackagedTextures(scene, textureJobs(meta, { textures: 'preview', maxSize: 1024 }), { maxBytes: 2.5 * 2 ** 20 });
   scene.free();
   assert.deepEqual([...packaged.values()].map((v) => (v instanceof Error ? 'refused' : v.byteLength)), [1 << 20, 1 << 20, 'refused']);
 });
@@ -426,7 +426,7 @@ def Material "Mat${i}" {
     const read = [];
     const packagedFile = scene.packagedFile.bind(scene);
     scene.packagedFile = (path, limit) => (read.push(path), packagedFile(path, limit));
-    const packaged = takePackagedTextures(scene, meta, { textures });
+    const packaged = takePackagedTextures(scene, textureJobs(meta, { textures, maxSize: 1024 }));
     scene.free();
     assert.equal(read.length, reads, textures);
     if (reads) assert.equal(packaged.get('https://h/shared.usdz[tex.png]').byteLength, 1 << 20);
@@ -551,7 +551,7 @@ test('textures inside a package nested in packages are found where the nesting s
   ]);
   const s = server({ 'https://h/outer.usdz': outer });
   const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/outer.usdz' });
-  const textures = takePackagedTextures(scene, meta, { textures: 'full' });
+  const textures = takePackagedTextures(scene, textureJobs(meta, { textures: 'full', maxSize: 1024 }));
   scene.free();
   const path = 'https://h/outer.usdz[0/mid.usdz[0/deep.usdz[0/t.png]]]';
   assert.deepEqual(textureJobs(meta, { textures: 'full' }).map((j) => j.path), [path]);
