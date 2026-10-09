@@ -34,7 +34,7 @@ pub struct Loader {
 /// read, see [`Scene::read_geometry`] and [`Scene::read_all`]), or the layers
 /// it still needs.
 pub enum Composed {
-    Scene(Scene),
+    Scene(Box<Scene>),
     Missing(Vec<String>),
 }
 
@@ -120,7 +120,7 @@ impl Loader {
                 path: None,
             });
         }
-        Ok(Composed::Scene(scene))
+        Ok(Composed::Scene(Box::new(scene)))
     }
 
     /// Moves out the USDZ packages `scene`'s textures live in, by package path,
