@@ -22,5 +22,6 @@ jobs:
       - run: npm ci
       - run: npm run build:wasm
       - run: npm test
+      - run: npm run check:types
       - run: cargo test
       - run: cargo clippy -- -D warnings
