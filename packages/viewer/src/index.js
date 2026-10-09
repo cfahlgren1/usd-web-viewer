@@ -47,6 +47,11 @@ export async function loadUsd(url, options = {}) {
   const worker = options.workerUrl
     ? new Worker(options.workerUrl, { type: 'module' })
     : new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+  // Ends the caller's fetches (custom `fetch` requests) when the load stops.
+  const requests = new AbortController();
+  const requestSignal = signal ? AbortSignal.any([signal, requests.signal]) : requests.signal;
+  // Bodies of custom-fetch responses the worker is reading, by request id.
+  const bodies = new Map();
 
   let resolveScene, rejectScene, resolveComplete, rejectComplete;
   const scenePromise = new Promise((resolve, reject) => ((resolveScene = resolve), (rejectScene = reject)));
@@ -63,6 +68,7 @@ export async function loadUsd(url, options = {}) {
     if (stopped) return;
     stopped = true;
     worker.terminate();
+    requests.abort();
     signal?.removeEventListener('abort', abort);
     rejectScene(error);
     if (error) rejectComplete(error);
@@ -83,7 +89,14 @@ export async function loadUsd(url, options = {}) {
     }
     switch (data.type) {
       case 'fetch':
-        proxyFetch(options.fetch, data, headers, signal).then(({ message, transfer }) => worker.postMessage(message, transfer));
+        proxyFetch(data);
+        break;
+      case 'pull':
+        pullChunk(data.id);
+        break;
+      case 'cancel':
+        bodies.get(data.id)?.cancel();
+        bodies.delete(data.id);
         break;
       case 'progress':
         onProgress?.(data.progress);
@@ -120,6 +133,35 @@ export async function loadUsd(url, options = {}) {
   };
   worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, maxConcurrentFetches, maxLayerBytes, headers, proxyFetch: !!options.fetch });
 
+  /** Runs one worker request through the caller's `fetch`; the body follows chunk by chunk. */
+  async function proxyFetch({ id, url: target }) {
+    try {
+      const init = { headers, signal: requestSignal };
+      const response = await options.fetch(target, init);
+      if (response.ok) bodies.set(id, (response.body ?? new Blob().stream()).getReader());
+      else response.body?.cancel();
+      worker.postMessage({ type: 'fetched', id, ok: response.ok, status: response.status });
+    } catch (error) {
+      worker.postMessage({ type: 'fetched', id, error: String(error) });
+    }
+  }
+
+  /** Reads the next chunk of a custom-fetch body for the worker, which asks once per chunk. */
+  async function pullChunk(id) {
+    try {
+      const { done, value } = await bodies.get(id).read();
+      if (done) {
+        bodies.delete(id);
+        return worker.postMessage({ type: 'chunk', id, done });
+      }
+      const chunk = value.byteLength === value.buffer.byteLength ? value : value.slice();
+      worker.postMessage({ type: 'chunk', id, chunk }, [chunk.buffer]);
+    } catch (error) {
+      bodies.delete(id);
+      worker.postMessage({ type: 'chunk', id, error: String(error) });
+    }
+  }
+
   const scene = await scenePromise;
   return {
     root: scene.root,
@@ -130,17 +172,6 @@ export async function loadUsd(url, options = {}) {
       scene.dispose();
     },
   };
-}
-
-/** Runs one worker request through the caller's `fetch` and packages the reply. */
-async function proxyFetch(fetchFn, { id, url }, headers, signal) {
-  try {
-    const response = await fetchFn(url, { headers, signal });
-    const buffer = response.ok ? await response.arrayBuffer() : null;
-    return { message: { type: 'fetched', id, ok: response.ok, status: response.status, buffer }, transfer: buffer ? [buffer] : [] };
-  } catch (error) {
-    return { message: { type: 'fetched', id, ok: false, status: 0, buffer: null, error: String(error) }, transfer: [] };
-  }
 }
 
 function buildScene(meta, arrays) {

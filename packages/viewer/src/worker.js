@@ -8,36 +8,60 @@ import { composeStage, fetchLimited, limiter, takeGeometries, takePackagedTextur
 // briefly holds it at full size, so wide parallelism spikes memory.
 const TEXTURE_CONCURRENCY = 4;
 
-// Requests answered by the page, for a caller-supplied `fetch`.
-const proxied = new Map();
+// Requests answered by the page, for a caller-supplied `fetch`. The page sends
+// the body one chunk per pull, so byte budgets apply as it arrives and
+// cancelling the body stops the caller's read.
+const replies = new Map();
+const pulls = new Map();
 let nextId = 0;
 
-/** A fetch that asks the page (which runs the caller's `fetch`) and waits for the reply. */
+/** A fetch that asks the page (which runs the caller's `fetch`) and streams its reply. */
 function proxiedFetch(url) {
   const id = nextId++;
   self.postMessage({ type: 'fetch', id, url });
-  return new Promise((resolve) => proxied.set(id, resolve)).then(
-    ({ ok, status, buffer, error }) => {
-      // A network failure in the caller's fetch reads like one from fetch itself.
-      if (error) throw new TypeError(error);
-      return new Response(ok ? buffer : null, { status: ok ? 200 : status || 500 });
-    },
-  );
+  return new Promise((resolve) => replies.set(id, resolve)).then(({ ok, status, error }) => {
+    // A network failure in the caller's fetch reads like one from fetch itself.
+    if (error) throw new TypeError(error);
+    if (!ok) return new Response(null, { status: status || 500 });
+    const body = new ReadableStream(
+      {
+        pull: (controller) =>
+          new Promise((resolve) => {
+            pulls.set(id, { controller, resolve });
+            self.postMessage({ type: 'pull', id });
+          }),
+        cancel: () => self.postMessage({ type: 'cancel', id }),
+      },
+      { highWaterMark: 0 },
+    );
+    return new Response(body);
+  });
+}
+
+/** Delivers one chunk (or the end, or a failure) of a proxied body. */
+function receiveChunk({ id, chunk, done, error }) {
+  const { controller, resolve } = pulls.get(id);
+  pulls.delete(id);
+  if (error) controller.error(new TypeError(error));
+  else if (done) controller.close();
+  else controller.enqueue(new Uint8Array(chunk));
+  resolve();
 }
 
 self.onmessage = async ({ data }) => {
   if (data.type === 'fetched') {
-    proxied.get(data.id)?.(data);
-    proxied.delete(data.id);
+    replies.get(data.id)?.(data);
+    replies.delete(data.id);
     return;
   }
+  if (data.type === 'chunk') return receiveChunk(data);
   const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes = 2 ** 30, headers, proxyFetch } = data;
   // Every request, layer or texture, goes through here.
-  const fetchFn = proxyFetch ? proxiedFetch : fetch;
-  const fetchBytes = (target, budget) => fetchLimited(target, budget, { fetchFn: (u) => fetchFn(u, { headers }) });
+  const request = proxyFetch ? proxiedFetch : (target) => fetch(target, { headers });
+  const fetchBytes = (target, budget) => fetchLimited(target, budget, { fetchFn: request });
   // Images stay a Blob (the browser may keep it off the JS heap) until decoded.
   const fetchBlob = async (target) => {
-    const response = await fetchFn(target, { headers });
+    const response = await request(target);
     if (!response.ok) throw new Error(`HTTP ${response.status} for ${target}`);
     return response.blob();
   };

@@ -7,11 +7,13 @@ import * as THREE from 'three';
 class FakeWorker {
   static last = null;
   terminated = false;
+  received = [];
   constructor() {
     FakeWorker.last = this;
   }
   postMessage(request) {
-    this.request = request;
+    this.request ??= request;
+    this.received.push(request);
   }
   terminate() {
     this.terminated = true;
@@ -148,4 +150,58 @@ test('complete reports texture counts and failures become warnings', async () =>
   worker.send({ type: 'done' });
   assert.deepEqual(await complete, { textures: 1, failed: 1 });
   assert.deepEqual(info.warnings, [{ code: 'texture-failed', message: 'HTTP 404', path: 'https://example.test/u.png' }]);
+});
+
+const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Starts a load with a custom fetch; the fake worker then asks the page for requests. */
+async function proxiedLoad(fetch, options = {}) {
+  const controller = new AbortController();
+  const loading = loadUsd('https://example.test/scene.usda', { fetch, signal: controller.signal, ...options });
+  loading.catch(() => {});
+  await tick();
+  return { worker: FakeWorker.last, loading, stop: () => controller.abort() };
+}
+
+test('a proxied body streams to the worker chunk by chunk and stops when it cancels', { timeout: 3000 }, async () => {
+  let pulls = 0;
+  let cancelled = false;
+  const endless = () =>
+    new Response(
+      new ReadableStream({
+        async pull(controller) {
+          pulls++;
+          await tick();
+          controller.enqueue(new Uint8Array(4096));
+        },
+        cancel: () => void (cancelled = true),
+      }),
+    );
+  const { worker, stop } = await proxiedLoad(async () => endless());
+  worker.send({ type: 'fetch', id: 1, url: 'https://example.test/a.usda' });
+  await tick(20);
+  worker.send({ type: 'pull', id: 1 });
+  await tick(20);
+  const chunks = worker.received.filter((m) => m.type === 'chunk' && m.id === 1);
+  assert.equal(chunks.length, 1);
+  assert.equal(chunks[0].chunk.byteLength, 4096);
+  worker.send({ type: 'cancel', id: 1 });
+  await tick(20);
+  assert.equal(cancelled, true);
+  assert.ok(pulls <= 3, `read only what the worker asked for (${pulls} pulls)`);
+  stop();
+});
+
+test('dispose aborts requests still running in the caller fetch', { timeout: 3000 }, async () => {
+  let signal;
+  const loading = loadUsd('https://example.test/scene.usda', { fetch: (url, init) => ((signal = init.signal), new Promise(() => {})) });
+  await tick();
+  const worker = FakeWorker.last;
+  worker.send(sceneMessage(IDENTITY));
+  const result = await loading;
+  worker.send({ type: 'fetch', id: 1, url: 'https://example.test/t.png' });
+  await tick();
+  assert.equal(signal.aborted, false);
+  result.dispose();
+  assert.equal(signal.aborted, true);
 });

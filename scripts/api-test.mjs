@@ -72,6 +72,45 @@ test('headers reach layer and texture requests', async () => {
   assert.ok(data.every((r) => r.auth === 'Bearer test-token'), JSON.stringify(data.map((r) => [r.url, r.auth])));
 });
 
+test('a custom fetch body is read only as far as the layer budget allows', async () => {
+  const out = await page.evaluate(async () => {
+    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    let chunks = 0;
+    const endless = () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            chunks++;
+            controller.enqueue(new Uint8Array(4096).fill(32));
+          },
+        }),
+      );
+    const error = await loadUsd('/endless.usda', { maxLayerBytes: 1024, fetch: async () => endless() }).then(() => null, (e) => e);
+    return { code: error?.code, message: error?.message, chunks };
+  });
+  assert.equal(out.code, 'fetch');
+  assert.match(out.message, /resource limit exceeded/);
+  assert.ok(out.chunks <= 3, `${out.chunks} chunks read`);
+});
+
+test('dispose aborts textures still pending in a custom fetch', async () => {
+  const aborted = await page.evaluate(async (url) => {
+    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const signals = [];
+    const result = await loadUsd(url, {
+      fetch: (u, init) => {
+        if (!u.endsWith('.jpg')) return fetch(u, init);
+        signals.push(init.signal);
+        return new Promise(() => {});
+      },
+    });
+    while (!signals.length) await new Promise((resolve) => setTimeout(resolve, 10));
+    result.dispose();
+    return signals.every((s) => s.aborted);
+  }, LAPTOP);
+  assert.equal(aborted, true);
+});
+
 test('a custom fetch serves every request', async () => {
   const urls = await page.evaluate(async (url) => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');
