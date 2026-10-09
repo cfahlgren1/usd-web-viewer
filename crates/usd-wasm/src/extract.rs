@@ -767,16 +767,16 @@ fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) 
     }
 
     let mut normals = match normals {
-        Some(n) => expand3(&n, &point_of, &face_of, per_corner),
+        Some(n) => expand(&n, &point_of, &face_of),
         None if faceted => face_normals(&points, &counts, &face_indices, &face_of, left_handed),
         None => smooth_normals(&points, &counts, &face_indices, &point_of, left_handed),
     };
     let mut uvs: Vec<(String, Vec<f32>)> = uvs
         .into_iter()
-        .map(|(name, uv)| (name, expand2(&uv, &point_of, &face_of, per_corner)))
+        .map(|(name, uv)| (name, expand(&uv, &point_of, &face_of)))
         .collect();
     let mut colors = match colors {
-        Some(c) => expand3(&c, &point_of, &face_of, per_corner),
+        Some(c) => expand(&c, &point_of, &face_of),
         None => Vec::new(),
     };
 
@@ -854,15 +854,8 @@ fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) 
     if indices.is_empty() {
         return Ok(None);
     }
-    let (mut min, mut max) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
-    for p in positions.chunks_exact(3) {
-        for k in 0..3 {
-            min[k] = min[k].min(p[k]);
-            max[k] = max[k].max(p[k]);
-        }
-    }
-
     Ok(Some(Geometry {
+        bounds: bounds(&positions),
         source: prim.path().as_str().to_owned(),
         positions,
         normals,
@@ -870,7 +863,6 @@ fn read_mesh(prim: &usd::Prim, color_primvar: Option<&str>, uv_sets: &[String]) 
         colors,
         indices,
         groups,
-        bounds: [min, max],
     }))
 }
 
@@ -933,33 +925,45 @@ fn fits(interp: Interp, len: usize, points: usize, faces: usize, corners: usize)
 }
 
 /// Picks the primvar value for output vertex `v`.
-fn pick(interp: Interp, v: usize, point_of: &[u32], face_of: &[u32], per_corner: bool) -> usize {
+fn pick(interp: Interp, v: usize, point_of: &[u32], face_of: &[u32]) -> usize {
     match interp {
         Interp::Constant => 0,
         Interp::Vertex => point_of[v] as usize,
         Interp::Uniform => face_of[v] as usize,
         // Only reachable in the per-corner layout, where vertex == corner.
-        Interp::FaceVarying => {
-            debug_assert!(per_corner);
-            v
+        Interp::FaceVarying => v,
+    }
+}
+
+/// A primvar's values at each output vertex, flattened.
+fn expand<const N: usize>(pv: &Primvar<[f32; N]>, point_of: &[u32], face_of: &[u32]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(point_of.len() * N);
+    for v in 0..point_of.len() {
+        out.extend_from_slice(&pv.values[pick(pv.interp, v, point_of, face_of)]);
+    }
+    out
+}
+
+/// The bounding box of flattened `positions`: min, then max.
+pub(crate) fn bounds(positions: &[f32]) -> [[f32; 3]; 2] {
+    let mut bounds = [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]];
+    for p in positions.chunks_exact(3) {
+        for k in 0..3 {
+            bounds[0][k] = bounds[0][k].min(p[k]);
+            bounds[1][k] = bounds[1][k].max(p[k]);
         }
     }
+    bounds
 }
 
-fn expand3(pv: &Primvar<[f32; 3]>, point_of: &[u32], face_of: &[u32], per_corner: bool) -> Vec<f32> {
-    let mut out = Vec::with_capacity(point_of.len() * 3);
-    for v in 0..point_of.len() {
-        out.extend_from_slice(&pv.values[pick(pv.interp, v, point_of, face_of, per_corner)]);
-    }
-    out
-}
-
-fn expand2(pv: &Primvar<[f32; 2]>, point_of: &[u32], face_of: &[u32], per_corner: bool) -> Vec<f32> {
-    let mut out = Vec::with_capacity(point_of.len() * 2);
-    for v in 0..point_of.len() {
-        out.extend_from_slice(&pv.values[pick(pv.interp, v, point_of, face_of, per_corner)]);
-    }
-    out
+/// Each face's corners, as point indices.
+fn faces<'a>(counts: &'a [i32], face_indices: &'a [i32]) -> impl Iterator<Item = &'a [i32]> {
+    let mut corner = 0;
+    counts.iter().map(move |&count| {
+        let n = count.max(0) as usize;
+        corner += n;
+        &face_indices[corner - n..corner]
+    })
 }
 
 /// Area-weighted smooth normals per point, the shading Hydra gives meshes
@@ -972,10 +976,7 @@ fn smooth_normals(
     left_handed: bool,
 ) -> Vec<f32> {
     let mut acc = vec![[0f32; 3]; points.len()];
-    let mut corner = 0usize;
-    for &count in counts {
-        let n = count.max(0) as usize;
-        let face = &face_indices[corner..corner + n];
+    for face in faces(counts, face_indices) {
         let normal = newell(points, face, left_handed);
         for &p in face {
             let a = &mut acc[p as usize];
@@ -983,7 +984,6 @@ fn smooth_normals(
             a[1] += normal[1];
             a[2] += normal[2];
         }
-        corner += n;
     }
     let mut out = Vec::with_capacity(point_of.len() * 3);
     for &p in point_of {
@@ -1000,13 +1000,7 @@ fn face_normals(
     face_of: &[u32],
     left_handed: bool,
 ) -> Vec<f32> {
-    let mut per_face = Vec::with_capacity(counts.len());
-    let mut corner = 0usize;
-    for &count in counts {
-        let n = count.max(0) as usize;
-        per_face.push(unit(newell(points, &face_indices[corner..corner + n], left_handed)));
-        corner += n;
-    }
+    let per_face: Vec<[f32; 3]> = faces(counts, face_indices).map(|face| unit(newell(points, face, left_handed))).collect();
     let mut out = Vec::with_capacity(face_of.len() * 3);
     for &f in face_of {
         out.extend_from_slice(&per_face[f as usize]);

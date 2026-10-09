@@ -9,7 +9,7 @@ use std::f32::consts::{FRAC_PI_2, PI, TAU};
 use openusd::sdf::Value;
 use openusd::usd;
 
-use crate::extract::{Geometry, Group, token_attr};
+use crate::extract::{Geometry, Group, bounds, token_attr};
 
 /// Segments around the axis of a curved surface.
 const SEGMENTS: usize = 32;
@@ -189,22 +189,16 @@ impl Mesh {
         if self.indices.is_empty() || self.positions.iter().flatten().all(|&c| c == 0.0) {
             return None;
         }
-        let mut bounds = [[f32::INFINITY; 3], [f32::NEG_INFINITY; 3]];
-        for p in &self.positions {
-            for k in 0..3 {
-                bounds[0][k] = bounds[0][k].min(p[k]);
-                bounds[1][k] = bounds[1][k].max(p[k]);
-            }
-        }
+        let positions: Vec<f32> = self.positions.into_iter().flatten().collect();
         Some(Geometry {
             source: prim.path().as_str().to_owned(),
-            positions: self.positions.into_iter().flatten().collect(),
+            bounds: bounds(&positions),
+            positions,
             normals: self.normals.into_iter().flatten().collect(),
             uvs: Vec::new(),
             colors: Vec::new(),
             groups: vec![Group { start: 0, count: self.indices.len() as u32, subset: None }],
             indices: self.indices,
-            bounds,
         })
     }
 }
