@@ -68,3 +68,36 @@ fn subdivision_mesh_without_normals_stays_smooth() {
     let s = scene(&mesh(FOLD));
     assert_eq!(vertex_normals(&s).len(), 6, "points are shared");
 }
+
+fn uvs(s: &Scene) -> Vec<[f32; 2]> {
+    s.geometries[0].uvs.chunks(2).map(|uv| [uv[0], uv[1]]).collect()
+}
+
+#[test]
+fn primvar_without_interpolation_is_constant() {
+    let s = scene(&mesh(&format!(
+        "{TWO_QUADS}\n        texCoord2f[] primvars:st = [(0.25, 0.75)]"
+    )));
+    let uvs = uvs(&s);
+    assert_eq!(uvs.len(), 6);
+    assert!(uvs.iter().all(|&uv| uv == [0.25, 0.75]));
+}
+
+#[test]
+fn normals_primvar_without_interpolation_is_constant() {
+    let s = scene(&mesh(&format!(
+        "{FOLD}\n        normal3f[] primvars:normals = [(0, 1, 0)]"
+    )));
+    assert!(vertex_normals(&s).iter().all(|&n| n == [0, 1, 0]));
+}
+
+#[test]
+fn normals_attribute_without_interpolation_is_per_vertex() {
+    let s = scene(&mesh(&format!(
+        "{TWO_QUADS}\n        normal3f[] normals = [(0, 0, 1), (0, 1, 0), (0, 0, 1), (0, 0, 1), (0, 1, 0), (0, 0, 1)]"
+    )));
+    let n = vertex_normals(&s);
+    assert_eq!(n.len(), 6);
+    assert_eq!(n[1], [0, 1, 0]);
+    assert_eq!(n[0], [0, 0, 1]);
+}

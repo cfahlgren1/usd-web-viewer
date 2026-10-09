@@ -339,13 +339,14 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
     }
     let left_handed = token_attr(prim, "orientation").as_deref() == Some("leftHanded");
 
-    let normals = match read_primvar(prim, "primvars:normals", Interp::Vertex, vec3s)? {
+    // Primvars fall back to constant interpolation; the `normals` attribute to vertex.
+    let normals = match read_primvar(prim, "primvars:normals", Interp::Constant, vec3s)? {
         Some(n) => Some(n),
         None => read_primvar(prim, "normals", Interp::Vertex, vec3s)?,
     };
     let mut uvs = None;
     for name in UV_NAMES {
-        if let Some(uv) = read_primvar(prim, name, Interp::FaceVarying, vec2s)? {
+        if let Some(uv) = read_primvar(prim, name, Interp::Constant, vec2s)? {
             uvs = Some(uv);
             break;
         }
