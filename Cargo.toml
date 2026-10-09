@@ -3,6 +3,8 @@ resolver = "3"
 members = ["crates/usd-wasm"]
 
 [workspace.dependencies]
+# Pinned to an unreleased commit for XformCache, the schema registry, Layer::open_with and
+# Attribute::has_authored_value, which 0.7.0 lacks; switch to openusd 0.8 from crates.io once released.
 openusd = { git = "https://github.com/mxpv/openusd", rev = "2d53b64b5dba9005bb05faad46d839520cf05f12" }
 openusd-schemas = { git = "https://github.com/mxpv/openusd", rev = "2d53b64b5dba9005bb05faad46d839520cf05f12", features = ["geom", "shade"] }
 
