@@ -485,8 +485,9 @@ fn read_mesh(prim: &usd::Prim, want_colors: bool, uv_sets: &[String]) -> openusd
 
 /// Merges per-corner vertices that share a point and have bit-identical
 /// attributes, rewriting `attrs` (each with its width) in place and returning
-/// the corner-to-vertex map. Candidates are chained per point, so the search
-/// stays local.
+/// the corner-to-vertex map. `attrs[0]` holds positions, equal for a shared
+/// point, so it is gathered but not compared. Candidates are chained per
+/// point, so the search stays local.
 fn weld(point_of: &[u32], point_count: usize, attrs: &mut [(&mut Vec<f32>, usize)]) -> Vec<u32> {
     const NONE: u32 = u32::MAX;
     let mut head = vec![NONE; point_count];
@@ -495,7 +496,7 @@ fn weld(point_of: &[u32], point_count: usize, attrs: &mut [(&mut Vec<f32>, usize
     let mut remap = Vec::with_capacity(point_of.len());
     for (corner, &point) in point_of.iter().enumerate() {
         let same = |other: usize| {
-            attrs.iter().all(|(data, w)| {
+            attrs[1..].iter().all(|(data, w)| {
                 let (a, b) = (&data[other * w..other * w + w], &data[corner * w..corner * w + w]);
                 a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
             })

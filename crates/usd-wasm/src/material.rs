@@ -227,43 +227,80 @@ fn input(shader: &sdf::Path, name: &str) -> openusd::Result<sdf::Path> {
 
 fn read_preview_surface(stage: &Stage, shader: &sdf::Path, path: String) -> openusd::Result<Material> {
     let mut m = Material::neutral(path, "preview", [0.18, 0.18, 0.18]);
+    // Packed maps (e.g. occlusion/roughness/metallic) read one texture node
+    // through several outputs: read each node once.
+    let mut nodes: HashMap<sdf::Path, Option<Texture>> = HashMap::new();
     for name in ["diffuseColor", "emissiveColor", "roughness", "metallic", "occlusion", "opacity", "opacityThreshold", "normal"] {
-        match follow(stage, &input(shader, name)?, 0)? {
-            Source::Value(v) => match name {
-                "diffuseColor" => m.color = color(&v).unwrap_or(m.color),
-                "emissiveColor" => m.emissive = color(&v).unwrap_or(m.emissive),
-                "roughness" => m.roughness = float(&v).unwrap_or(m.roughness),
-                "metallic" => m.metallic = float(&v).unwrap_or(m.metallic),
-                "opacity" => m.opacity = float(&v).unwrap_or(m.opacity),
-                "opacityThreshold" => m.opacity_threshold = float(&v).unwrap_or(0.0),
-                _ => {}
-            },
+        let constant = match follow(stage, &input(shader, name)?, 0)? {
+            Source::Value(v) => color(&v).or_else(|| float(&v).map(|f| [f; 3])),
             Source::Output(node, output) => match shader_id(stage, &node)?.as_deref() {
-                Some("UsdUVTexture") => {
-                    if let Some(texture) = uv_texture(stage, &node, output)? {
+                Some("UsdUVTexture") => match texture_node(stage, &mut nodes, &node)? {
+                    Some(mut texture) => {
+                        texture.channel = output;
                         if name == "diffuseColor" {
                             m.color = [1.0; 3];
                         }
                         m.maps.push((name, texture));
+                        None
                     }
-                }
+                    // No image: the texture yields its fallback (Hydra's default is black).
+                    None => {
+                        let fallback = match follow(stage, &input(&node, "fallback")?, 0)? {
+                            Source::Value(v) => vec4(&v),
+                            _ => None,
+                        };
+                        let [r, g, b, a] = fallback.unwrap_or([0.0, 0.0, 0.0, 1.0]);
+                        Some(match output.as_str() {
+                            "r" => [r; 3],
+                            "g" => [g; 3],
+                            "b" => [b; 3],
+                            "a" => [a; 3],
+                            _ => [r, g, b],
+                        })
+                    }
+                },
                 Some(id) if name == "diffuseColor" && id.starts_with("UsdPrimvarReader") => {
                     m.color = [1.0; 3];
                     if let Source::Value(v) = follow(stage, &input(&node, "varname")?, 0)? {
                         m.color_primvar = string(&v);
                     }
+                    None
                 }
-                _ => {}
+                _ => None,
             },
-            Source::None => {}
+            Source::None => None,
+        };
+        if let Some(c) = constant {
+            match name {
+                "diffuseColor" => m.color = c,
+                "emissiveColor" => m.emissive = c,
+                "roughness" => m.roughness = c[0],
+                "metallic" => m.metallic = c[0],
+                "opacity" => m.opacity = c[0],
+                "opacityThreshold" => m.opacity_threshold = c[0],
+                _ => {}
+            }
         }
     }
     Ok(m)
 }
 
-/// The image a `UsdUVTexture` samples, how its `output` channel is remapped,
-/// and the primvar and transform it is sampled with.
-fn uv_texture(stage: &Stage, shader: &sdf::Path, output: String) -> openusd::Result<Option<Texture>> {
+fn texture_node(
+    stage: &Stage,
+    nodes: &mut HashMap<sdf::Path, Option<Texture>>,
+    node: &sdf::Path,
+) -> openusd::Result<Option<Texture>> {
+    if let Some(texture) = nodes.get(node) {
+        return Ok(texture.clone());
+    }
+    let texture = uv_texture(stage, node)?;
+    nodes.insert(node.clone(), texture.clone());
+    Ok(texture)
+}
+
+/// The image a `UsdUVTexture` samples, how its channels are remapped, and the
+/// primvar and transform it is sampled with.
+fn uv_texture(stage: &Stage, shader: &sdf::Path) -> openusd::Result<Option<Texture>> {
     let value = |node: &sdf::Path, name: &str| -> openusd::Result<Option<Value>> {
         Ok(match follow(stage, &input(node, name)?, 0)? {
             Source::Value(v) => Some(v),
@@ -274,7 +311,6 @@ fn uv_texture(stage: &Stage, shader: &sdf::Path, output: String) -> openusd::Res
         return Ok(None);
     };
     let mut texture = Texture::new(path);
-    texture.channel = output;
     if let Some(v) = value(shader, "scale")?.as_ref().and_then(vec4) {
         texture.scale = v;
     }

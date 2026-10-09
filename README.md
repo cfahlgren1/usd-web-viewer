@@ -37,7 +37,7 @@ scene.add(root);   // THREE.Group, Y-up, metres
 | Option | Default | |
 |---|---|---|
 | `maxTextureSize` | `1024` | Long-side cap; textures are decoded straight to this size in the worker |
-| `normalMaps` | `false` | Also fetch and apply normal maps |
+| `normalMaps` | `true` | Fetch and apply normal maps (they stream in last; `false` saves bandwidth on assets with large normal maps) |
 | `prefetchVariants` | `false` | Fetch layers inside variants the layer doesn't select |
 | `onTexture` | – | Called after each texture is applied |
 | `wasmUrl` | bundled | Serve the `.wasm` from your own CDN |
@@ -49,22 +49,23 @@ Six real [SimReady](https://huggingface.co/datasets/cfahlgren1/simready-usd-web-
 | | **usd-web-viewer** | [Needle](https://www.npmjs.com/package/@needle-tools/usd) | [three.js `USDLoader`](https://github.com/mrdoob/three.js/tree/r186/examples/jsm/loaders/usd) | [tinyusdz](https://github.com/lighttransport/tinyusdz) | GLB (pre-converted) |
 |---|---|---|---|---|---|
 | Renders the 6 packages | **6/6** | 5/6 | 1/6 | 2/6 | 6/6 |
-| WASM download (brotli) | **527 KB** | 6.0 MB | – | 1.4 MB | – |
-| Peak tab memory | **167–418 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
-| WASM heap | **2–88 MB** | ~700 MB | – | 18–64 MB | – |
-| IV pole fully loaded | **0.6 s** | 11.8 s | ✗ | ✗ | 0.1 s |
+| WASM download (brotli) | **531 KB** | 6.0 MB | – | 1.4 MB | – |
+| Peak tab memory | **169–578 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
+| WASM heap | **2–91 MB** | ~700 MB | – | 18–64 MB | – |
+| IV pole fully loaded | **1.2 s**² | 11.8 s | ✗ | ✗ | 0.1 s |
 | Needs COOP/COEP | **no** | yes | no | no | no |
 | License | **MIT** | PolyForm Noncommercial | MIT | Apache-2.0 / MIT | – |
 
-¹ only on the assets it renders. Headless Chromium, software rendering, localhost, median of 3 cold runs. Full tables and screenshots: [`bench/results`](bench/results/README.md).
+¹ only on the assets it renders. ² all 15 textures (color, packed occlusion/roughness/metallic, normal), 218 MB of 4K PNGs; Needle loads the same set. Headless Chromium, software rendering, localhost, median of 3 cold runs. Full tables and screenshots: [`bench/results`](bench/results/README.md).
 
 ## Matches Pixar OpenUSD
 
-A Pixar `usd-core` oracle and our WASM build dump the same JSON per package (meshes, triangles, world bounding boxes, material bindings, UsdPreviewSurface inputs, texture paths), then get diffed.
+A Pixar `usd-core` oracle and our WASM build dump the same JSON per package (meshes, triangles, world bounding boxes, material bindings, UsdPreviewSurface inputs, and every textured input's file, channel, scale/bias, color space and UV set), then get diffed.
 
 | Set | Match |
 |---|---|
 | 6 benchmark assets | **6/6** |
+| usd-wg/assets material scenes | **10/10** |
 | Random Hub sample (nvidia, LG, Robotiq, Standard Bots, agibot, imagine.io) | **186/187** |
 
 The one miss is a 1.2e-5 unit offset on four lid meshes. Details: [`conformance/results`](conformance/results/README.md).
@@ -89,11 +90,13 @@ Geometry shows first and textures stream in after. The worker is then terminated
 
 | ✅ | ⚠️ not yet |
 |---|---|
-| `.usd` / `.usda` / `.usdc` / `.usdz` | Normal map `scale` / `bias` |
-| Sublayers, references, payloads, variants, instancing | Roughness / metallic / occlusion textures |
-| UsdPreviewSurface, `UsdUVTexture`, `UsdTransform2d` | Alpha cutouts, `sourceColorSpace`, EXR |
-| MDL `OmniPBR` / glTF `pbr.mdl` parameters, grey fallback | MaterialX (grey fallback) |
-| Visibility, purpose, `GeomSubset` materials | Skinning, animation, subdivision |
+| `.usd` / `.usda` / `.usdc` / `.usdz` | `black` wrap mode (clamped), `.hdr` / EXR textures |
+| Sublayers, references, payloads, variants, instancing | `opacityMode`, color spaces other than raw / sRGB / auto |
+| UsdPreviewSurface with textured diffuse, emissive, roughness, metallic, occlusion, opacity and normal inputs (any channel, `scale` / `bias`, `fallback`, `sourceColorSpace`) | Vertex-varying `displayColor` on `GeomSubset` materials |
+| `opacityThreshold` cutouts, texture alpha, `UsdTransform2d`, wrap modes, per-texture UV sets | MaterialX (grey fallback) |
+| `displayColor` (constant or per vertex / face), `UsdPrimvarReader` diffuse | Skinning, animation, subdivision |
+| MDL `OmniPBR` / glTF `pbr.mdl` parameters, grey fallback | |
+| Visibility, purpose, `GeomSubset` materials | |
 
 <details><summary>Build, test and benchmark</summary>
 
@@ -105,6 +108,8 @@ npm run serve           # http://127.0.0.1:8811/examples/index.html?url=<root .u
 node scripts/node-test.mjs                          # compose + extract in Node
 node bench/run.mjs --configs usd-wasm,gltf --runs 3
 node conformance/run.mjs --bench
+node conformance/run.mjs --usdwg                   # usd-wg/assets material scenes vs Pixar
+node conformance/browser-checks.mjs                # rendered fixtures (e.g. UV set routing)
 ```
 
 </details>
