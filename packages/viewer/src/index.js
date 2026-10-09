@@ -500,6 +500,31 @@ export function createViewer(target, options = {}) {
         if (pending === controller) pending = null;
       }
     },
+    /**
+     * An image of a freshly rendered frame, PNG by default, at the canvas size
+     * or `width` x `height` (one given keeps the aspect ratio). Rendered and
+     * read in the same task, so it needs no `preserveDrawingBuffer`.
+     */
+    toBlob({ type = 'image/png', quality, width, height } = {}) {
+      if (disposed || renderer.getContext().isContextLost()) return Promise.reject(new Error('no frame to capture: the viewer is disposed or its WebGL context is lost'));
+      const size = renderer.getSize(new THREE.Vector2());
+      const ratio = renderer.getPixelRatio();
+      const setSize = (w, h, pixelRatio) => {
+        renderer.setPixelRatio(pixelRatio);
+        renderer.setSize(w, h, false);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+      };
+      const resized = width || height;
+      if (resized) setSize(width || Math.round((height * size.x) / size.y), height || Math.round((width * size.y) / size.x), 1);
+      renderer.render(scene, camera);
+      const blob = new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('the canvas could not be encoded'))), type, quality));
+      if (resized) {
+        setSize(size.x, size.y, ratio);
+        renderer.render(scene, camera);
+      }
+      return blob;
+    },
     /** Removes and frees the current stage. */
     clear() {
       last = null;

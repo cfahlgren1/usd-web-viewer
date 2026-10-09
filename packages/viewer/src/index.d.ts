@@ -127,6 +127,13 @@ export interface ViewerOptions {
   onContextRestored?: ((reload: Promise<LoadResult> | null) => void) | undefined;
 }
 
+export interface ToBlobOptions {
+  type?: 'image/png' | 'image/webp' | undefined;
+  quality?: number | undefined;
+  width?: number | undefined;
+  height?: number | undefined;
+}
+
 export interface Viewer {
   readonly renderer: THREE.WebGLRenderer;
   readonly scene: THREE.Scene;
@@ -134,6 +141,12 @@ export interface Viewer {
   readonly controls: OrbitControls;
   /** Loads a stage, replacing the current one once its geometry shows. A newer load aborts this one. */
   load(url: string, options?: LoadOptions): Promise<LoadResult>;
+  /**
+   * Renders a fresh frame and encodes it, e.g. for a thumbnail: `type` `image/png` (default) or `image/webp` (PNG where the browser
+   * cannot encode WebP, as Safari), `quality` 0–1 for WebP, and an optional size in pixels (giving one keeps the aspect ratio;
+   * default: the canvas's). Rejects when the viewer is disposed or its WebGL context is lost.
+   */
+  toBlob(options?: ToBlobOptions): Promise<Blob>;
   /** Removes and frees the current stage. */
   clear(): void;
   /** Points the camera at `object`, by default the current stage. */

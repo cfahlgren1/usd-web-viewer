@@ -1,4 +1,4 @@
-import type { LoadInfo, LoadProgress, LoadResult, TextureMode, UsdLoadError, Viewer } from './index.js';
+import type { LoadInfo, LoadProgress, LoadResult, TextureMode, ToBlobOptions, UsdLoadError, Viewer } from './index.js';
 
 export interface UsdViewerErrorEvent extends ErrorEvent {
   readonly error: UsdLoadError;
@@ -36,6 +36,8 @@ export class UsdViewerElement extends HTMLElement {
   /** Null until a viewer starts (see `loading` and `reveal`). */
   readonly viewer: Viewer | null;
   readonly result: LoadResult | null;
+  /** A fresh frame as an image, for thumbnails (see `Viewer.toBlob`). Rejects while there is no viewer. */
+  toBlob(options?: ToBlobOptions): Promise<Blob>;
   addEventListener<K extends keyof UsdViewerEventMap>(type: K, listener: (this: UsdViewerElement, event: UsdViewerEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;
   addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
 }

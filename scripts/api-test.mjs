@@ -526,6 +526,39 @@ test('<usd-viewer> lazy elements scrolled far away release their viewer and load
   await page.waitForFunction(() => !document.getElementById('bottom').viewer, null, { timeout: 10000 });
 });
 
+test('toBlob captures a freshly rendered frame, as PNG or WebP, at the canvas size or a given one', async () => {
+  await emptyElementPage();
+  await addViewer('s', { src: LAPTOP, textures: 'none' });
+  await waitFor('s', 'load');
+  const shots = await page.evaluate(async () => {
+    const el = document.getElementById('s');
+    const canvas = el.viewer.renderer.domElement;
+    const describe = async (blob) => {
+      const bitmap = await createImageBitmap(blob);
+      const ctx = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d');
+      ctx.drawImage(bitmap, 0, 0);
+      const { data } = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+      let drawn = 0;
+      for (let i = 3; i < data.length; i += 4) if (data[i]) drawn++;
+      return { type: blob.type, width: bitmap.width, height: bitmap.height, drawn: drawn > 100 };
+    };
+    // Long after the last frame: only a fresh render has pixels to read.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    const full = await describe(await el.toBlob());
+    const thumb = await describe(await el.toBlob({ type: 'image/webp', width: 64, height: 48 }));
+    const wide = await describe(await el.viewer.toBlob({ width: 100 }));
+    return { full, thumb, wide, canvas: [canvas.width, canvas.height], restored: [canvas.width, canvas.height].join() === [el.viewer.renderer.domElement.width, el.viewer.renderer.domElement.height].join() };
+  });
+  assert.deepEqual(shots.full, { type: 'image/png', width: shots.canvas[0], height: shots.canvas[1], drawn: true });
+  assert.deepEqual(shots.thumb, { type: 'image/webp', width: 64, height: 48, drawn: true });
+  assert.deepEqual(shots.wide, { type: 'image/png', width: 100, height: Math.round((100 * shots.canvas[1]) / shots.canvas[0]), drawn: true });
+  const idle = await page.evaluate(() => {
+    const el = document.createElement('usd-viewer');
+    return el.toBlob().then(() => 'resolved', (e) => e.message);
+  });
+  assert.match(idle, /no viewer to capture/);
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try {
