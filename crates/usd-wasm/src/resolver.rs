@@ -153,11 +153,9 @@ pub fn check_package(package: &[u8]) -> io::Result<()> {
 
 /// Reads one file out of a USDZ (zip) package held in memory, refusing to
 /// expand it past `limit` bytes. Zip headers are untrusted: the declared size
-/// only sizes the buffer up to the package's own length.
+/// only sizes the buffer up to the package's own length. Packages nested in
+/// it are opened by [`Store`].
 pub fn read_packaged(package: &[u8], inner: &str, limit: u64) -> io::Result<Vec<u8>> {
-    if let Some((nested, rest)) = split_packaged(inner) {
-        return read_packaged(&read_packaged(package, nested, limit)?, rest, limit);
-    }
     let mut archive = zip::ZipArchive::new(io::Cursor::new(package)).map_err(io::Error::other)?;
     let entry = archive
         .by_name(inner)
@@ -438,51 +436,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn anchors_relative_paths() {
-        let root = "/huggingface.co/datasets/a/b/resolve/main/x/root.usd";
-        assert_eq!(
-            anchor_path("./payloads/base.usda", Some(root)).unwrap(),
-            "/huggingface.co/datasets/a/b/resolve/main/x/payloads/base.usda"
-        );
-        assert_eq!(
-            anchor_path("../tex/a.png", Some(root)).unwrap(),
-            "/huggingface.co/datasets/a/b/resolve/main/tex/a.png"
-        );
-        assert_eq!(
-            anchor_path("http://cdn.example/a/./b%20c.usd?x=1", Some(root)).unwrap(),
-            "http://cdn.example/a/b%20c.usd"
-        );
-        assert_eq!(anchor_path("../b.usd", Some("https://h/a/r.usd")).unwrap(), "https://h/b.usd");
-        assert_eq!(anchor_path("/c/d.usd", Some("https://h/a/r.usd")).unwrap(), "https://h/c/d.usd");
-        assert_eq!(anchor_path("t.png", Some("https://h/p.usdz")).unwrap(), "https://h/p.usdz[t.png]");
-        assert_eq!(anchor_path("SubUSDs\\textures\\t.jpg", Some("/h/r.usd")).unwrap(), "/h/SubUSDs/textures/t.jpg");
-        assert!(is_layer_path("/h/p.usdz[x/y.usdc]"));
-        assert_eq!(anchor_path("tex/a.png", Some("/h/p.usdz[root.usdc]")).unwrap(), "/h/p.usdz[tex/a.png]");
-        assert_eq!(anchor_path("a.usdc", Some("/h/p.usdz")).unwrap(), "/h/p.usdz[a.usdc]");
-        assert_eq!(anchor_path("./p.usdz[x/y.usd]", Some("/h/r.usda")).unwrap(), "/h/p.usdz[x/y.usd]");
-    }
-
-    #[test]
-    fn anchors_paths_inside_nested_packages() {
-        let mid = "/h/a.usdz[0/mid.usdz]";
-        assert_eq!(anchor_path("0/deep.usdz", Some(mid)).unwrap(), "/h/a.usdz[0/mid.usdz[0/deep.usdz]]");
-        let deep_layer = "/h/a.usdz[0/mid.usdz[0/deep.usdz[root.usda]]]";
-        assert_eq!(anchor_path("0/t.png", Some(deep_layer)).unwrap(), "/h/a.usdz[0/mid.usdz[0/deep.usdz[0/t.png]]]");
-        assert_eq!(anchor_path("../t.png", Some("/h/a.usdz[b.usdz[x/r.usda]]")).unwrap(), "/h/a.usdz[b.usdz[t.png]]");
-        assert!(is_layer_path("/h/a.usdz[0/mid.usdz[0/deep.usdz]]"));
-        assert!(!is_layer_path("/h/a.usdz[0/mid.usdz[0/t.png]]"));
-    }
-
-    #[test]
-    fn reads_files_from_nested_packages() {
-        let zip = |name: &str, data: &[u8]| {
-            let mut zip = zip::ZipWriter::new(io::Cursor::new(Vec::new()));
-            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
-            io::Write::write_all(&mut zip, data).unwrap();
-            zip.finish().unwrap().into_inner()
-        };
-        let outer = zip("0/mid.usdz", &zip("0/t.png", b"texel"));
-        assert_eq!(read_packaged(&outer, "0/mid.usdz[0/t.png]", 1 << 20).unwrap(), b"texel");
+    fn anchors_asset_paths() {
+        let hub = "/huggingface.co/datasets/a/b/resolve/main/x/root.usd";
+        // [authored, anchor, identifier]
+        for (asset, anchor, expected) in [
+            ("./payloads/base.usda", hub, "/huggingface.co/datasets/a/b/resolve/main/x/payloads/base.usda"),
+            ("../tex/a.png", hub, "/huggingface.co/datasets/a/b/resolve/main/tex/a.png"),
+            ("http://cdn.example/a/./b%20c.usd?x=1", hub, "http://cdn.example/a/b%20c.usd"),
+            ("../b.usd", "https://h/a/r.usd", "https://h/b.usd"),
+            ("/c/d.usd", "https://h/a/r.usd", "https://h/c/d.usd"),
+            ("SubUSDs\\textures\\t.jpg", "/h/r.usd", "/h/SubUSDs/textures/t.jpg"),
+            // Inside a package, and inside packages nested in it.
+            ("t.png", "https://h/p.usdz", "https://h/p.usdz[t.png]"),
+            ("a.usdc", "/h/p.usdz", "/h/p.usdz[a.usdc]"),
+            ("tex/a.png", "/h/p.usdz[root.usdc]", "/h/p.usdz[tex/a.png]"),
+            ("./p.usdz[x/y.usd]", "/h/r.usda", "/h/p.usdz[x/y.usd]"),
+            ("0/deep.usdz", "/h/a.usdz[0/mid.usdz]", "/h/a.usdz[0/mid.usdz[0/deep.usdz]]"),
+            ("0/t.png", "/h/a.usdz[0/mid.usdz[0/deep.usdz[root.usda]]]", "/h/a.usdz[0/mid.usdz[0/deep.usdz[0/t.png]]]"),
+            ("../t.png", "/h/a.usdz[b.usdz[x/r.usda]]", "/h/a.usdz[b.usdz[t.png]]"),
+        ] {
+            assert_eq!(anchor_path(asset, Some(anchor)).as_deref(), Some(expected), "{asset} from {anchor}");
+        }
+        for (path, layer) in [("/h/p.usdz[x/y.usdc]", true), ("/h/a.usdz[0/mid.usdz[0/deep.usdz]]", true), ("/h/a.usdz[0/mid.usdz[0/t.png]]", false)] {
+            assert_eq!(is_layer_path(path), layer, "{path}");
+        }
     }
 
     fn zip_with(name: &str, data: &[u8]) -> Vec<u8> {
