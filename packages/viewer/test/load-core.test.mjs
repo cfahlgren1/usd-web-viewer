@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { initSync, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, loadFailure, readGeometries, takePackagedTextures } from '../src/load-core.js';
+import { composeStage, fetchLimited, loadFailure, readGeometries, takePackagedTextures, textureJobs } from '../src/load-core.js';
 import { UsdLoadError } from '../src/errors.js';
 
 initSync({ module: readFileSync(new URL('../wasm/usd_wasm_bg.wasm', import.meta.url)) });
@@ -294,4 +294,35 @@ test('running out of WASM memory fails as a scene too large to load', () => {
   assert.deepEqual(loadFailure(new WebAssembly.RuntimeError('unreachable'), 0.1 * GiB), { code: 'compose', message: 'unreachable', url: undefined, status: undefined });
   const fetchError = loadFailure(new UsdLoadError('fetch', 'HTTP 404 for https://h/a.usd', { url: 'https://h/a.usd', status: 404 }), 4 * GiB);
   assert.deepEqual(fetchError, { code: 'fetch', message: 'HTTP 404 for https://h/a.usd', url: 'https://h/a.usd', status: 404 });
+});
+
+test('a UDIM texture loads its first tile, 1001', async () => {
+  const s = server({
+    'https://h/root.usda': `#usda 1.0
+def Mesh "M" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+  int[] faceVertexCounts = [3]
+  int[] faceVertexIndices = [0, 1, 2]
+  point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+  rel material:binding = </Mat>
+}
+def Material "Mat" {
+  token outputs:surface.connect = </Mat/Surface.outputs:surface>
+  def Shader "Surface" {
+    uniform token info:id = "UsdPreviewSurface"
+    color3f inputs:diffuseColor.connect = </Mat/Tex.outputs:rgb>
+    token outputs:surface
+  }
+  def Shader "Tex" {
+    uniform token info:id = "UsdUVTexture"
+    asset inputs:file = @Textures/body_alb.<UDIM>.png@
+    float3 outputs:rgb
+  }
+}`,
+  });
+  const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+  scene.free();
+  assert.deepEqual(
+    textureJobs(meta, { textures: 'full' }).map((j) => j.path),
+    ['https://h/Textures/body_alb.1001.png'],
+  );
 });

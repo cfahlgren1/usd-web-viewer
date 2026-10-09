@@ -433,12 +433,17 @@ fn gltf_texture(stage: &Stage, shader: &sdf::Path, name: &str) -> openusd::Resul
     }))
 }
 
+/// A texture file's path. A UDIM set (`name.<UDIM>.png`) loads only its first
+/// tile, 1001: drawing the others needs a texture per tile.
 fn asset(value: &Value) -> Option<String> {
     match value {
-        Value::AssetPath(a) if !a.is_empty() => Some(match a.resolved_path() {
-            Some(resolved) if !resolved.is_empty() => resolved.to_owned(),
-            _ => a.asset_path().to_owned(),
-        }),
+        Value::AssetPath(a) if !a.is_empty() => {
+            let path = match a.resolved_path() {
+                Some(resolved) if !resolved.is_empty() => resolved,
+                _ => a.asset_path(),
+            };
+            Some(path.replace("<UDIM>", "1001"))
+        }
         _ => None,
     }
 }

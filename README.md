@@ -144,7 +144,7 @@ Geometry shows first and textures stream in after. The worker is then terminated
 | UsdPreviewSurface with textured diffuse, emissive, roughness, metallic, occlusion, opacity and normal inputs (any channel, `scale` / `bias`, `fallback`, `sourceColorSpace`) | Vertex-varying `displayColor` on `GeomSubset` materials |
 | `opacityThreshold` cutouts, texture alpha, `UsdTransform2d`, wrap modes, per-texture UV sets | MaterialX (grey fallback) |
 | `displayColor` (constant or per vertex / face), `UsdPrimvarReader` diffuse | Skinning, animation, subdivision |
-| MDL `OmniPBR` / glTF `pbr.mdl` parameters, grey fallback | |
+| MDL `OmniPBR` / glTF `pbr.mdl` parameters, grey fallback | UDIM sets beyond the first tile (`<UDIM>` loads tile 1001 only) |
 | Visibility, purpose, `GeomSubset` materials | |
 
 <details><summary>Build, test and benchmark</summary>
