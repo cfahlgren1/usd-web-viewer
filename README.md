@@ -1,6 +1,6 @@
 # usd-web-viewer
 
-View OpenUSD files in the browser. Real USD composition (sublayers, references, payloads, variants) in a **527 KB** WASM module, rendered with three.js. MIT, no `SharedArrayBuffer`, no COOP/COEP headers, loads straight from Hugging Face Hub URLs.
+View OpenUSD files in the browser. Real USD composition (sublayers, references, payloads, variants) in a **585 KB** WASM module, rendered with three.js. MIT, no `SharedArrayBuffer`, no COOP/COEP headers, loads straight from Hugging Face Hub URLs.
 
 | LG laptop | Robotiq gripper | Standard Bots arm | NVIDIA IV pole | NVIDIA chair | imagine.io railing |
 |:-:|:-:|:-:|:-:|:-:|:-:|
@@ -51,7 +51,7 @@ Six real [SimReady](https://huggingface.co/datasets/cfahlgren1/simready-usd-web-
 | | **usd-web-viewer** | [Needle](https://www.npmjs.com/package/@needle-tools/usd) | [three.js `USDLoader`](https://github.com/mrdoob/three.js/tree/r186/examples/jsm/loaders/usd) | [tinyusdz](https://github.com/lighttransport/tinyusdz) | GLB (pre-converted) |
 |---|---|---|---|---|---|
 | Renders the 6 packages | **6/6** | 5/6 | 1/6 | 2/6 | 6/6 |
-| WASM download (brotli) | **527 KB** | 6.0 MB | – | 1.4 MB | – |
+| WASM download (brotli) | **585 KB** | 6.0 MB | – | 1.4 MB | – |
 | Peak tab memory | **167–418 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
 | WASM heap | **2–88 MB** | ~700 MB | – | 18–64 MB | – |
 | IV pole fully loaded | **0.6 s** | 11.8 s | ✗ | ✗ | 0.1 s |
@@ -102,7 +102,7 @@ Geometry shows first and textures stream in after. The worker is then terminated
 ```sh
 npm install
 cargo install wasm-bindgen-cli --version 0.2.129   # once
-npm run build:wasm      # cargo -> wasm-bindgen -> wasm-opt -Oz
+npm run build:wasm      # cargo -> wasm-bindgen -> wasm-opt -Os
 npm run serve           # http://127.0.0.1:8811/examples/index.html?url=<root .usd URL>
 node scripts/node-test.mjs                          # compose + extract in Node
 node bench/run.mjs --configs usd-wasm,gltf --runs 3
