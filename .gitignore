@@ -6,3 +6,4 @@ node_modules
 bench/results/raw/
 bench/crossbench/raw/
 bench/crossbench/results.json
+examples/space/dist/
