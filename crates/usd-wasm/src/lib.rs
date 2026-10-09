@@ -3,6 +3,8 @@
 //! The host fetches layers, hands them to a [`Loader`], fetches whatever the
 //! loader reports missing, and finally composes and extracts a [`Scene`].
 
+#![forbid(unsafe_code)]
+
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
