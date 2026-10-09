@@ -75,13 +75,19 @@ export class UsdViewerElement extends Base {
 
   /** A fresh frame as an image (see `Viewer.toBlob`); rejects while there is no viewer. */
   toBlob(options) {
-    return this.#viewer ? this.#viewer.toBlob(options) : Promise.reject(new Error('no viewer to capture: the element has not started (see loading and reveal)'));
+    return this.#viewer
+      ? this.#viewer.toBlob(options)
+      : Promise.reject(new Error('no viewer to capture: the element has not started (see loading and reveal)'));
   }
 
   connectedCallback() {
     if (!this.#parts) this.#render();
-    UsdViewerElement.#nearObserver ??= new IntersectionObserver((entries) => entries.forEach((e) => e.isIntersecting && e.target.#setNear(true)), { rootMargin: NEAR });
-    UsdViewerElement.#farObserver ??= new IntersectionObserver((entries) => entries.forEach((e) => e.isIntersecting || e.target.#setNear(false)), { rootMargin: FAR });
+    UsdViewerElement.#nearObserver ??= new IntersectionObserver((entries) => entries.forEach((e) => e.isIntersecting && e.target.#setNear(true)), {
+      rootMargin: NEAR,
+    });
+    UsdViewerElement.#farObserver ??= new IntersectionObserver((entries) => entries.forEach((e) => e.isIntersecting || e.target.#setNear(false)), {
+      rootMargin: FAR,
+    });
     UsdViewerElement.#nearObserver.observe(this);
     UsdViewerElement.#farObserver.observe(this);
     this.#update();

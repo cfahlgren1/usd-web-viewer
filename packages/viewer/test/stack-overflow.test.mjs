@@ -12,7 +12,10 @@ test('layers nested too deeply fail as a compose error, not a bare trap', async 
   const depth = 100000;
   const usda = '#usda 1.0\n' + 'def Xform "A" {\n'.repeat(depth) + '}\n'.repeat(depth);
   const fetchBytes = async () => new TextEncoder().encode(usda);
-  const error = await composeStage({ UsdLoader, fetchBytes, rootUrl: 'https://h/deep.usda' }).then(() => null, (e) => e);
+  const error = await composeStage({ UsdLoader, fetchBytes, rootUrl: 'https://h/deep.usda' }).then(
+    () => null,
+    (e) => e,
+  );
   assert.ok(error, 'the load fails');
   const failure = loadFailure(error, exports.memory.buffer.byteLength, lastPanic);
   assert.equal(failure.code, 'compose');

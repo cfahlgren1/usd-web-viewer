@@ -3,7 +3,20 @@
 // terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { lastPanic, UsdLoader } from '../wasm/usd_wasm.js';
 import { hubPackageLayers } from './hub-prefetch.js';
-import { DEFAULTS, canonicalUrl, composeStage, fetchLimited, fetchWithPolicy, imageInfo, limiter, loadFailure, readGeometries, requestPolicy, takePackagedTextures, textureJobs } from './load-core.js';
+import {
+  DEFAULTS,
+  canonicalUrl,
+  composeStage,
+  fetchLimited,
+  fetchWithPolicy,
+  imageInfo,
+  limiter,
+  loadFailure,
+  readGeometries,
+  requestPolicy,
+  takePackagedTextures,
+  textureJobs,
+} from './load-core.js';
 
 // Textures in flight at once (fetch and decode): decoding a large image
 // briefly holds it at full size, so wide parallelism spikes memory.
@@ -59,7 +72,21 @@ self.onmessage = async ({ data }) => {
     return;
   }
   if (data.type === 'chunk') return receiveChunk(data);
-  const { url, wasmModule, maxTextureSize = DEFAULTS.maxTextureSize, textures = DEFAULTS.textures, maxConcurrentFetches = DEFAULTS.maxConcurrentFetches, maxLayerBytes, maxTextureBytes = DEFAULTS.maxTextureBytes, maxLayers, maxInstances, maxTriangles, allowedOrigins, headers, proxyFetch } = data;
+  const {
+    url,
+    wasmModule,
+    maxTextureSize = DEFAULTS.maxTextureSize,
+    textures = DEFAULTS.textures,
+    maxConcurrentFetches = DEFAULTS.maxConcurrentFetches,
+    maxLayerBytes,
+    maxTextureBytes = DEFAULTS.maxTextureBytes,
+    maxLayers,
+    maxInstances,
+    maxTriangles,
+    allowedOrigins,
+    headers,
+    proxyFetch,
+  } = data;
   // Every request (layer, texture, Hub listing) goes through here, and
   // through the request policy first. The caller's headers go only where
   // cookies may, and never through a redirect off the Hub; a custom fetch on
@@ -160,7 +187,8 @@ self.onmessage = async ({ data }) => {
 async function decodeTexture(bytes, maxSize) {
   const info = imageInfo(bytes);
   if (!info) throw new Error('unsupported image format: only PNG, JPEG and WebP are read');
-  if (Math.max(info.width, info.height) > MAX_IMAGE_SIZE) throw new Error(`image too large: ${info.width}x${info.height} (at most ${MAX_IMAGE_SIZE} px a side)`);
+  if (Math.max(info.width, info.height) > MAX_IMAGE_SIZE)
+    throw new Error(`image too large: ${info.width}x${info.height} (at most ${MAX_IMAGE_SIZE} px a side)`);
   // USD texture coordinates put (0,0) at the bottom-left, three.js's default.
   const options = { imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none' };
   const scale = Math.min(1, maxSize / Math.max(info.width, info.height));

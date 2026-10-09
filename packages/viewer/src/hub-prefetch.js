@@ -31,11 +31,19 @@ export async function hubPackageLayers(rootUrl, request) {
     if (!response.ok) return none;
     const entries = await response.json();
     const decoded = parent.map(decodeURIComponent);
-    const manifest = [decoded, decoded.slice(0, -1)].find((dir) => dir.length >= listed.length && entries.some((e) => e.path === [...dir, SIMREADY_PACKAGE].join('/')));
+    const manifest = [decoded, decoded.slice(0, -1)].find(
+      (dir) => dir.length >= listed.length && entries.some((e) => e.path === [...dir, SIMREADY_PACKAGE].join('/')),
+    );
     const depth = (manifest ?? decoded).length;
-    const packageDir = decoded.slice(0, depth).map((name) => name + '/').join('');
+    const packageDir = decoded
+      .slice(0, depth)
+      .map((name) => name + '/')
+      .join('');
     // As the root spells it, so URLs match the ones composition resolves.
-    const base = `${origin}/${prefix}${repo}/resolve/${revision}/${parent.slice(0, depth).map((name) => name + '/').join('')}`;
+    const base = `${origin}/${prefix}${repo}/resolve/${revision}/${parent
+      .slice(0, depth)
+      .map((name) => name + '/')
+      .join('')}`;
     const layers = [];
     let bytes = 0;
     for (const { type, path: file, size } of entries) {

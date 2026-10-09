@@ -8,13 +8,28 @@ import * as THREE from 'three';
 
 // input -> three.js map and the shader chunk line to rewrite.
 export const SLOTS = {
-  diffuseColor: { map: 'map', chunk: 'map_fragment', from: 'diffuseColor *= sampledDiffuseColor;', to: (e) => `diffuseColor.rgb *= ${e('sampledDiffuseColor', 3)};` },
-  emissiveColor: { map: 'emissiveMap', chunk: 'emissivemap_fragment', from: 'totalEmissiveRadiance *= emissiveColor.rgb;', to: (e) => `totalEmissiveRadiance *= ${e('emissiveColor', 3)};` },
+  diffuseColor: {
+    map: 'map',
+    chunk: 'map_fragment',
+    from: 'diffuseColor *= sampledDiffuseColor;',
+    to: (e) => `diffuseColor.rgb *= ${e('sampledDiffuseColor', 3)};`,
+  },
+  emissiveColor: {
+    map: 'emissiveMap',
+    chunk: 'emissivemap_fragment',
+    from: 'totalEmissiveRadiance *= emissiveColor.rgb;',
+    to: (e) => `totalEmissiveRadiance *= ${e('emissiveColor', 3)};`,
+  },
   roughness: { map: 'roughnessMap', chunk: 'roughnessmap_fragment', from: 'texelRoughness.g', to: (e) => e('texelRoughness', 1) },
   metallic: { map: 'metalnessMap', chunk: 'metalnessmap_fragment', from: 'texelMetalness.b', to: (e) => e('texelMetalness', 1) },
   occlusion: { map: 'aoMap', chunk: 'aomap_fragment', from: 'texture2D( aoMap, vAoMapUv ).r', to: (e) => e('texture2D( aoMap, vAoMapUv )', 1) },
   opacity: { map: 'alphaMap', chunk: 'alphamap_fragment', from: 'texture2D( alphaMap, vAlphaMapUv ).g', to: (e) => e('texture2D( alphaMap, vAlphaMapUv )', 1) },
-  normal: { map: 'normalMap', chunk: 'normal_fragment_maps', from: 'texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0', to: (e) => e('texture2D( normalMap, vNormalMapUv )', 3) },
+  normal: {
+    map: 'normalMap',
+    chunk: 'normal_fragment_maps',
+    from: 'texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0',
+    to: (e) => e('texture2D( normalMap, vNormalMapUv )', 3),
+  },
 };
 
 /** A material from the extracted parameters; maps attach later as textures arrive. */
@@ -61,7 +76,10 @@ function prepare(material) {
   material.onBeforeCompile = (shader) => {
     for (const [input, ref] of Object.entries(material.userData.patches)) {
       const { chunk, from, to } = SLOTS[input];
-      const code = THREE.ShaderChunk[chunk].replaceAll(from, to((base, size) => remap(base, size, ref)));
+      const code = THREE.ShaderChunk[chunk].replaceAll(
+        from,
+        to((base, size) => remap(base, size, ref)),
+      );
       shader.fragmentShader = shader.fragmentShader.replace(`#include <${chunk}>`, code);
     }
   };
@@ -138,7 +156,8 @@ export function configureTexture(base, ref, colorSpaceValue, uvChannel) {
   texture.colorSpace = colorSpaceValue;
   texture.channel = uvChannel;
   // `black` has no three.js equivalent (no border color); clamp is closest.
-  const wrap = (token) => ({ mirror: THREE.MirroredRepeatWrapping, clamp: THREE.ClampToEdgeWrapping, black: THREE.ClampToEdgeWrapping })[token] ?? THREE.RepeatWrapping;
+  const wrap = (token) =>
+    ({ mirror: THREE.MirroredRepeatWrapping, clamp: THREE.ClampToEdgeWrapping, black: THREE.ClampToEdgeWrapping })[token] ?? THREE.RepeatWrapping;
   texture.wrapS = wrap(ref.wrapS);
   texture.wrapT = wrap(ref.wrapT);
   const [sx, sy] = ref.uvScale;

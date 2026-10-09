@@ -94,13 +94,16 @@ export async function composeStage({
         entry.charged += bytes;
         charge(bytes, url);
       };
-      entry.bytes = throttle(async () => {
-        if (composed || preloaded.get(key) !== entry) return null;
-        entry.started = true;
-        const bytes = await fetchBytes(url, budget);
-        if (bytes) budget(bytes.byteLength - entry.charged);
-        return bytes;
-      }, { later: true }).catch(() => {
+      entry.bytes = throttle(
+        async () => {
+          if (composed || preloaded.get(key) !== entry) return null;
+          entry.started = true;
+          const bytes = await fetchBytes(url, budget);
+          if (bytes) budget(bytes.byteLength - entry.charged);
+          return bytes;
+        },
+        { later: true },
+      ).catch(() => {
         heldBytes -= entry.charged;
         entry.charged = 0;
         return null;
@@ -160,7 +163,11 @@ export async function composeStage({
       if (!bytes) {
         if (path === root) {
           const status = failure?.status ?? (failure ? undefined : 404);
-          throw new UsdLoadError('fetch', `could not fetch ${rootUrl}${status ? ` (HTTP ${status})` : ''}`, { url: rootUrl, status, cause: failure ?? undefined });
+          throw new UsdLoadError('fetch', `could not fetch ${rootUrl}${status ? ` (HTTP ${status})` : ''}`, {
+            url: rootUrl,
+            status,
+            cause: failure ?? undefined,
+          });
         }
         stats.missing++;
         stats.warnings.push({ code: 'layer-missing', message: `layer not found: ${failure?.message ?? urlOf(path)}`, path: urlOf(path) });
@@ -196,7 +203,11 @@ export async function composeStage({
 
   fetchLayer(root);
   // A root without dependencies needs nothing else from its directory.
-  const rootHasDependencies = () => started.get(root).then(() => started.size > 1, () => false);
+  const rootHasDependencies = () =>
+    started.get(root).then(
+      () => started.size > 1,
+      () => false,
+    );
   preload?.then(async ({ layers, eager }) => (eager || (await rootHasDependencies())) && startPreload(layers));
   await drain();
   if (!loader.has(root)) {
@@ -239,7 +250,8 @@ export function loadFailure(error, wasmMemoryBytes, lastPanic) {
   const message = String(error?.message || error);
   const failure = (detail) => ({ code, message: detail, url, status });
   if (code !== 'compose') return failure(message);
-  const tooLarge = () => failure(`scene too large to load: ran out of memory (${(wasmMemoryBytes / 2 ** 30).toFixed(1)} GiB of WebAssembly memory in use): ${message}`);
+  const tooLarge = () =>
+    failure(`scene too large to load: ran out of memory (${(wasmMemoryBytes / 2 ** 30).toFixed(1)} GiB of WebAssembly memory in use): ${message}`);
   if (OUT_OF_MEMORY.test(message) || (error instanceof WebAssembly.RuntimeError && wasmMemoryBytes > 3 * 2 ** 30)) return tooLarge();
   if (!isTrap(error)) return failure(message);
   const panic = readPanic(lastPanic);
@@ -387,7 +399,35 @@ const HUB_CDN = /\.hf\.co\.?$/;
 const HUB_FILE = /^\/(?:(datasets|spaces)\/)?([\w.-]+)\/([\w.-]+)\/resolve\/([^/]*)/;
 const HUB_TREE = /^\/api\/(datasets|models|spaces)\/([\w.-]+)\/([\w.-]+)\/tree\/([^/]*)/;
 // First path segments of Hub pages and endpoints: never a model's owner.
-const HUB_RESERVED = new Set(['api', 'oauth', 'settings', 'login', 'logout', 'join', 'docs', 'models', 'datasets', 'spaces', 'organizations', 'new', 'pricing', 'blog', 'papers', 'posts', 'collections', 'notifications', 'search', 'chat', 'learn', 'tasks', 'enterprise', 'billing', 'static-proxy', 'avatars', 'front']);
+const HUB_RESERVED = new Set([
+  'api',
+  'oauth',
+  'settings',
+  'login',
+  'logout',
+  'join',
+  'docs',
+  'models',
+  'datasets',
+  'spaces',
+  'organizations',
+  'new',
+  'pricing',
+  'blog',
+  'papers',
+  'posts',
+  'collections',
+  'notifications',
+  'search',
+  'chat',
+  'learn',
+  'tasks',
+  'enterprise',
+  'billing',
+  'static-proxy',
+  'avatars',
+  'front',
+]);
 
 /** The path match of a Hub file or tree-listing URL (`[, type, owner, repo, revision]`), else null. */
 function hubMatch(url) {
@@ -536,7 +576,8 @@ export function readGeometries(scene, meta, onGeometry, { maxTriangles = DEFAULT
   }
   scene.finish();
   const warnings = [];
-  if (skipped.length) warnings.push({ code: 'triangle-limit', message: `${skipped.length} meshes left out: past maxTriangles (${maxTriangles}) drawn`, path: skipped[0] });
+  if (skipped.length)
+    warnings.push({ code: 'triangle-limit', message: `${skipped.length} meshes left out: past maxTriangles (${maxTriangles}) drawn`, path: skipped[0] });
   if (!drawn) warnings.push({ code: 'nothing-drawable', message: 'nothing to draw: the stage has no visible meshes with geometry' });
   return warnings;
 }

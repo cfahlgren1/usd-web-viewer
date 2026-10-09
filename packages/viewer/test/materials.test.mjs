@@ -6,11 +6,16 @@ import * as THREE from 'three';
 import { SLOTS, applyFallback, attachTexture, configureTexture, createMaterial } from '../src/materials.js';
 
 const ref = { path: 'image.png', channel: 'r', scale: [1, 1, 1, 1], bias: [0, 0, 0, 0], uvScale: [1, 1], uvTranslation: [0, 0], uvRotation: 0 };
-const material = (maps) => createMaterial({ path: '/M', kind: 'preview', color: [1, 1, 1], emissive: [0, 0, 0], roughness: 0.5, metallic: 0, opacity: 1, opacityThreshold: 0, maps });
-const attach = (m, isColor) => attachTexture(m, 'image.png', isColor, (r, colorSpace, channel) => configureTexture(new THREE.Texture(), r, colorSpace, channel));
+const material = (maps) =>
+  createMaterial({ path: '/M', kind: 'preview', color: [1, 1, 1], emissive: [0, 0, 0], roughness: 0.5, metallic: 0, opacity: 1, opacityThreshold: 0, maps });
+const attach = (m, isColor) =>
+  attachTexture(m, 'image.png', isColor, (r, colorSpace, channel) => configureTexture(new THREE.Texture(), r, colorSpace, channel));
 
 test('auto color space is decided by the image, the same for every input that samples it', () => {
-  for (const [isColor, expected] of [[true, THREE.SRGBColorSpace], [false, THREE.NoColorSpace]]) {
+  for (const [isColor, expected] of [
+    [true, THREE.SRGBColorSpace],
+    [false, THREE.NoColorSpace],
+  ]) {
     const m = material({ roughness: ref, diffuseColor: { ...ref, channel: 'rgb' } });
     attach(m, isColor);
     assert.deepEqual([m.map.colorSpace, m.roughnessMap.colorSpace], [expected, expected]);
@@ -23,7 +28,10 @@ test('auto color space is decided by the image, the same for every input that sa
 test("an image that cannot be read leaves the input's own value, not the texture's fallback", () => {
   const blue = material({ diffuseColor: { ...ref, channel: 'rgb', fallback: [1, 0, 0, 1], value: [0, 0, 1] }, roughness: { ...ref, value: [0.5, 0.5, 0.5] } });
   // Grey while loading.
-  assert.deepEqual(blue.color.toArray().map((v) => +v.toFixed(6)), [0.18, 0.18, 0.18]);
+  assert.deepEqual(
+    blue.color.toArray().map((v) => +v.toFixed(6)),
+    [0.18, 0.18, 0.18],
+  );
   applyFallback(blue, 'image.png');
   assert.deepEqual(blue.color.toArray(), [0, 0, 1]);
   assert.equal(blue.roughness, 0.5);

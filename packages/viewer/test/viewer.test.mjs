@@ -42,7 +42,15 @@ WebAssembly.compileStreaming = async () => ({});
 WebAssembly.compile = async () => ({});
 const { loadUsd } = await import('../src/index.js');
 
-const TEXTURE = { path: 'https://example.test/t.png', channel: 'rgb', scale: [1, 1, 1, 1], bias: [0, 0, 0, 0], uvScale: [1, 1], uvRotation: 0, uvTranslation: [0, 0] };
+const TEXTURE = {
+  path: 'https://example.test/t.png',
+  channel: 'rgb',
+  scale: [1, 1, 1, 1],
+  bias: [0, 0, 0, 0],
+  uvScale: [1, 1],
+  uvRotation: 0,
+  uvTranslation: [0, 0],
+};
 
 /** The worker's messages for one triangle drawn once with `matrix`, using a material with a color map. */
 function sceneMessages(matrix) {
@@ -55,7 +63,19 @@ function sceneMessages(matrix) {
         warnings: [],
         geometryCount: 1,
         instances: [{ path: '/M', geometry: 0, material: 0, subsets: {}, doubleSided: false, matrix }],
-        materials: [{ path: '/Mat', kind: 'preview', color: [1, 1, 1], emissive: [0, 0, 0], roughness: 0.5, metallic: 0, opacity: 1, opacityThreshold: 0, maps: { diffuseColor: TEXTURE } }],
+        materials: [
+          {
+            path: '/Mat',
+            kind: 'preview',
+            color: [1, 1, 1],
+            emissive: [0, 0, 0],
+            roughness: 0.5,
+            metallic: 0,
+            opacity: 1,
+            opacityThreshold: 0,
+            maps: { diffuseColor: TEXTURE },
+          },
+        ],
       },
     },
     {
@@ -88,7 +108,14 @@ async function load(matrix = IDENTITY) {
 
 const tick = (ms = 0) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const fakeBitmap = () => ({ width: 4, height: 4, closed: false, close() { this.closed = true; } });
+const fakeBitmap = () => ({
+  width: 4,
+  height: 4,
+  closed: false,
+  close() {
+    this.closed = true;
+  },
+});
 
 test('a rotated child under a non-uniformly scaled parent keeps its shear', async () => {
   // USD row vectors: rotate 45 degrees about Z, then scale x by 2.
@@ -107,7 +134,13 @@ test('dispose stops the worker and settles the complete promise', async () => {
   const { worker, complete, dispose } = await load();
   dispose();
   assert.equal(worker.terminated, true);
-  const settled = await Promise.race([complete.then(() => true, (e) => e.code === 'aborted'), new Promise((resolve) => setTimeout(() => resolve(false), 50))]);
+  const settled = await Promise.race([
+    complete.then(
+      () => true,
+      (e) => e.code === 'aborted',
+    ),
+    new Promise((resolve) => setTimeout(() => resolve(false), 50)),
+  ]);
   assert.equal(settled, true);
 });
 
@@ -201,7 +234,10 @@ test('progress carries an overall fraction that only grows and ends at 1', async
   }
   sceneMessages(IDENTITY).forEach((m) => worker.send(m));
   await loading;
-  assert.ok(seen.every((f, i) => i === 0 || f >= seen[i - 1]), `never decreases: ${seen}`);
+  assert.ok(
+    seen.every((f, i) => i === 0 || f >= seen[i - 1]),
+    `never decreases: ${seen}`,
+  );
   assert.equal(seen.at(-1), 1);
 });
 
@@ -337,8 +373,22 @@ test('instances of one geometry with the same materials draw as one InstancedMes
   const red = { ...meta.meta.materials[0], path: '/Red', maps: {} };
   meta.meta.materials = [{ ...red, path: '/Blue' }, red];
   // Six alike, two double-sided: one InstancedMesh and two meshes.
-  meta.meta.instances = Array.from({ length: 8 }, (_, x) => ({ path: `/I[${x}]`, geometry: 0, material: 0, subsets: { Part: 1 }, doubleSided: x >= 6, matrix: at(x) }));
-  geometry.meta = { ...geometry.meta, groups: [[0, 3, 'Part'], [3, 3]], bounds: [0, 0, 0, 1, 1, 0] };
+  meta.meta.instances = Array.from({ length: 8 }, (_, x) => ({
+    path: `/I[${x}]`,
+    geometry: 0,
+    material: 0,
+    subsets: { Part: 1 },
+    doubleSided: x >= 6,
+    matrix: at(x),
+  }));
+  geometry.meta = {
+    ...geometry.meta,
+    groups: [
+      [0, 3, 'Part'],
+      [3, 3],
+    ],
+    bounds: [0, 0, 0, 1, 1, 0],
+  };
   geometry.arrays = { ...geometry.arrays, positions: new Float32Array(12), normals: new Float32Array(12), indices: new Uint16Array([0, 1, 2, 0, 2, 3]) };
   const loading = loadUsd('scene.usda');
   await tick();
@@ -347,8 +397,17 @@ test('instances of one geometry with the same materials draw as one InstancedMes
   const [batch, ...single] = root.children;
   assert.equal(batch.isInstancedMesh, true);
   assert.equal(batch.count, 6);
-  assert.deepEqual(batch.material.map((m) => m.name), ['/Red', '/Blue']);
-  assert.deepEqual(single.map((m) => [m.isInstancedMesh ?? false, m.name]), [[false, '/I[6]'], [false, '/I[7]']]);
+  assert.deepEqual(
+    batch.material.map((m) => m.name),
+    ['/Red', '/Blue'],
+  );
+  assert.deepEqual(
+    single.map((m) => [m.isInstancedMesh ?? false, m.name]),
+    [
+      [false, '/I[6]'],
+      [false, '/I[7]'],
+    ],
+  );
   assert.deepEqual([info.meshes, info.triangles], [8, 16]);
   const matrix = new THREE.Matrix4();
   batch.getMatrixAt(5, matrix);

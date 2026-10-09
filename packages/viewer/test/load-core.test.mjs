@@ -99,7 +99,10 @@ test('a usdz layer whose files would expand too far is refused before openusd re
     { name: 'root.usda', data: Buffer.concat([quad, Buffer.alloc(1 << 20, 32)]), deflate: true, declaredSize: quad.length },
   ]) {
     const s = server({ 'https://h/bomb.usdz': storedZip([entry]) });
-    const error = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/bomb.usdz' }).then(() => null, (e) => e);
+    const error = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/bomb.usdz' }).then(
+      () => null,
+      (e) => e,
+    );
     assert.equal(error?.code, 'compose');
   }
   // An honest deflated package still loads.
@@ -131,12 +134,18 @@ def Material "Mat${n}" {
   }
 }`;
   const names = ['a', 'b', 'c'];
-  const usdz = storedZip([{ name: 'root.usda', data: Buffer.from(`#usda 1.0\n${names.map(mesh).join('\n')}`) }, ...names.map((n) => ({ name: `${n}.png`, data: Buffer.alloc(1 << 20) }))]);
+  const usdz = storedZip([
+    { name: 'root.usda', data: Buffer.from(`#usda 1.0\n${names.map(mesh).join('\n')}`) },
+    ...names.map((n) => ({ name: `${n}.png`, data: Buffer.alloc(1 << 20) })),
+  ]);
   const s = server({ 'https://h/p.usdz': usdz });
   const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/p.usdz' });
   const packaged = takePackagedTextures(scene, textureJobs(meta, { textures: 'preview', maxSize: 1024 }), { maxBytes: 2.5 * 2 ** 20 });
   scene.free();
-  assert.deepEqual([...packaged.values()].map((v) => (v instanceof Error ? 'refused' : v.byteLength)), [1 << 20, 1 << 20, 'refused']);
+  assert.deepEqual(
+    [...packaged.values()].map((v) => (v instanceof Error ? 'refused' : v.byteLength)),
+    [1 << 20, 1 << 20, 'refused'],
+  );
 });
 
 test('layers on origins outside allowedOrigins are left out with a warning, never requested', async () => {
@@ -146,7 +155,10 @@ test('layers on origins outside allowedOrigins are left out with a warning, neve
   scene.free();
   assert.deepEqual(fetched(blocked), ['https://h/root.usda']);
   assert.equal(meta.geometryCount, 0);
-  assert.deepEqual(stats.warnings.map((w) => [w.code, w.path]), [['layer-missing', 'https://other.example/a.usda']]);
+  assert.deepEqual(
+    stats.warnings.map((w) => [w.code, w.path]),
+    [['layer-missing', 'https://other.example/a.usda']],
+  );
   const allowed = server(files);
   const result = await composeStage({ UsdLoader, fetchBytes: allowed.fetchBytes, rootUrl: 'https://h/root.usda', allowedOrigins: ['https://other.example'] });
   result.scene.free();
@@ -159,7 +171,8 @@ test('imageInfo reads the size of PNG, JPEG and WebP from the header, and whethe
   const le24 = (n) => [n & 255, (n >> 8) & 255, n >> 16];
   const be32 = (n) => [n >>> 24, (n >> 16) & 255, (n >> 8) & 255, n & 255];
   // A 64 x 32 PNG signature and IHDR chunk; a 64 x 32 baseline JPEG SOF0 with `components` channels.
-  const png = (bitDepth, colorType) => bytes([0x89], 'PNG', [13, 10, 26, 10], be32(13), 'IHDR', be32(64), be32(32), [bitDepth, colorType], new Array(7).fill(0));
+  const png = (bitDepth, colorType) =>
+    bytes([0x89], 'PNG', [13, 10, 26, 10], be32(13), 'IHDR', be32(64), be32(32), [bitDepth, colorType], new Array(7).fill(0));
   const jpeg = (components) => bytes([0xff, 0xd8, 0xff, 0xc0, 0, 0x11, 8, 0, 32, 0, 64, components, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1]);
   const riff = (chunk, data) => bytes('RIFF', [0, 0, 0, 0], 'WEBP', chunk, [0, 0, 0, 0], data, new Array(16).fill(0));
   const vp8l = (639 | (479 << 14)) >>> 0;
@@ -219,7 +232,10 @@ test('indices are 16-bit up to index 65535, 32-bit past it', async () => {
   const out = [];
   readGeometries(scene, meta, (i, g, a) => out.push([g.maxIndex, a.indices.constructor.name]));
   scene.free();
-  assert.deepEqual(out, [[65535, 'Uint16Array'], [65536, 'Uint32Array']]);
+  assert.deepEqual(out, [
+    [65535, 'Uint16Array'],
+    [65536, 'Uint32Array'],
+  ]);
 });
 test('fetchLimited stops reading a streamed body past maxBytes', async (t) => {
   const chunk = Buffer.alloc(64 * 1024);
@@ -292,11 +308,45 @@ def "A" (
   const empty = '#usda 1.0\n(defaultPrim = "X")\ndef "X" {}';
   // [what, root URL, layers by URL, allowedOrigins, URLs requested]
   const cases = [
-    ['a signed root keeps its query; relative layers resolve without it', 'https://h/a/root.usda?sig=abc', { 'https://h/a/root.usda?sig=abc': sublayers('./sub.usda'), 'https://h/a/sub.usda': empty }, [], ['https://h/a/root.usda?sig=abc', 'https://h/a/sub.usda']],
-    ['authored escapes and spaces are encoded once', 'https://h/a/root.usda', { 'https://h/a/root.usda': sublayers('./a%20b.usda', './c d.usda'), 'https://h/a/a%20b.usda': empty, 'https://h/a/c d.usda': empty }, [], ['https://h/a/root.usda', 'https://h/a/a%20b.usda', 'https://h/a/c%20d.usda']],
-    ['absolute layers keep their scheme and host, and anchor their own relative paths', 'https://h/root.usda', { 'https://h/root.usda': sublayers('http://other.example/x/x.usda'), 'http://other.example/x/x.usda': sublayers('./y.usda'), 'http://other.example/x/y.usda': empty }, ['http://other.example'], ['https://h/root.usda', 'http://other.example/x/x.usda', 'http://other.example/x/y.usda']],
-    ['an encoded slash stays part of its path segment', 'https://h/d/resolve/refs%2Fpr%2F1/root.usda', { 'https://h/d/resolve/refs%2Fpr%2F1/root.usda': sublayers('./sub.usda'), 'https://h/d/resolve/refs%2Fpr%2F1/sub.usda': empty }, [], ['https://h/d/resolve/refs%2Fpr%2F1/root.usda', 'https://h/d/resolve/refs%2Fpr%2F1/sub.usda']],
-    ['a layer named only in a variant nothing selects is never requested', 'https://h/root.usda', { 'https://h/root.usda': variants, 'https://h/on.usda': empty }, [], ['https://h/root.usda', 'https://h/on.usda']],
+    [
+      'a signed root keeps its query; relative layers resolve without it',
+      'https://h/a/root.usda?sig=abc',
+      { 'https://h/a/root.usda?sig=abc': sublayers('./sub.usda'), 'https://h/a/sub.usda': empty },
+      [],
+      ['https://h/a/root.usda?sig=abc', 'https://h/a/sub.usda'],
+    ],
+    [
+      'authored escapes and spaces are encoded once',
+      'https://h/a/root.usda',
+      { 'https://h/a/root.usda': sublayers('./a%20b.usda', './c d.usda'), 'https://h/a/a%20b.usda': empty, 'https://h/a/c d.usda': empty },
+      [],
+      ['https://h/a/root.usda', 'https://h/a/a%20b.usda', 'https://h/a/c%20d.usda'],
+    ],
+    [
+      'absolute layers keep their scheme and host, and anchor their own relative paths',
+      'https://h/root.usda',
+      {
+        'https://h/root.usda': sublayers('http://other.example/x/x.usda'),
+        'http://other.example/x/x.usda': sublayers('./y.usda'),
+        'http://other.example/x/y.usda': empty,
+      },
+      ['http://other.example'],
+      ['https://h/root.usda', 'http://other.example/x/x.usda', 'http://other.example/x/y.usda'],
+    ],
+    [
+      'an encoded slash stays part of its path segment',
+      'https://h/d/resolve/refs%2Fpr%2F1/root.usda',
+      { 'https://h/d/resolve/refs%2Fpr%2F1/root.usda': sublayers('./sub.usda'), 'https://h/d/resolve/refs%2Fpr%2F1/sub.usda': empty },
+      [],
+      ['https://h/d/resolve/refs%2Fpr%2F1/root.usda', 'https://h/d/resolve/refs%2Fpr%2F1/sub.usda'],
+    ],
+    [
+      'a layer named only in a variant nothing selects is never requested',
+      'https://h/root.usda',
+      { 'https://h/root.usda': variants, 'https://h/on.usda': empty },
+      [],
+      ['https://h/root.usda', 'https://h/on.usda'],
+    ],
   ];
   for (const [what, rootUrl, files, allowedOrigins, expected] of cases) {
     const s = server(files);
@@ -352,7 +402,10 @@ def Material "Mat${i}" {
     { name: 'root.usda', data: Buffer.from(`#usda 1.0\n${materials.join('\n')}`) },
     { name: 'tex.png', data: Buffer.alloc(1 << 20) },
   ]);
-  for (const [textures, reads] of [['none', 0], ['preview', 1]]) {
+  for (const [textures, reads] of [
+    ['none', 0],
+    ['preview', 1],
+  ]) {
     const s = server({ 'https://h/shared.usdz': usdz });
     const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/shared.usdz' });
     const read = [];
@@ -486,7 +539,10 @@ test('textures inside a package nested in packages are found where the nesting s
   const textures = takePackagedTextures(scene, textureJobs(meta, { textures: 'full', maxSize: 1024 }));
   scene.free();
   const path = 'https://h/outer.usdz[0/mid.usdz[0/deep.usdz[0/t.png]]]';
-  assert.deepEqual(textureJobs(meta, { textures: 'full' }).map((j) => j.path), [path]);
+  assert.deepEqual(
+    textureJobs(meta, { textures: 'full' }).map((j) => j.path),
+    [path],
+  );
   assert.equal(new TextDecoder().decode(textures.get(path)), 'deep texture');
 });
 
@@ -502,7 +558,12 @@ test('preloaded layers are used when composition asks for them, and change nothi
   // As listed: spelled the way fetch spells it, root included.
   const listed = ['root.usda', 'a%20b.usda', 'b.usda', 'unused.usda'].map((name) => ({ url: `https://h/p/${name}`, size: 100 }));
   const s = server({ ...files, 'https://h/p/a%20b.usda': files['https://h/p/a b.usda'] }, { delayMs: 5 });
-  const actual = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/p/root.usda', preload: Promise.resolve({ layers: listed, eager: true }) });
+  const actual = await composeStage({
+    UsdLoader,
+    fetchBytes: s.fetchBytes,
+    rootUrl: 'https://h/p/root.usda',
+    preload: Promise.resolve({ layers: listed, eager: true }),
+  });
   assert.deepEqual(actual.meta, expected.meta);
   assert.equal(actual.stats.layers, 3);
   expected.scene.free();
@@ -523,7 +584,10 @@ test('a preload that fails gives way to the regular fetch, with its result', asy
   const { scene, stats } = await composeStage({ UsdLoader, fetchBytes, rootUrl: 'https://h/root.usda', preload });
   scene.free();
   assert.equal(stats.layers, 3);
-  assert.deepEqual(stats.warnings.map((w) => w.code), ['layer-missing']);
+  assert.deepEqual(
+    stats.warnings.map((w) => w.code),
+    ['layer-missing'],
+  );
   assert.deepEqual(requested.filter((u) => u === 'https://h/b.usda').length, 2);
 });
 
@@ -552,16 +616,25 @@ test('hubPackageLayers lists the SimReady package of a Hub root, and nothing for
   const { layers, eager } = await hubPackageLayers('https://huggingface.co/datasets/o/r/resolve/main/pkg/usd/root.usd?download=true', request);
   assert.deepEqual(requests, ['https://huggingface.co/api/datasets/o/r/tree/main/pkg?recursive=true']);
   assert.equal(eager, true);
-  assert.deepEqual(layers.map((l) => l.url), [
-    'https://huggingface.co/datasets/o/r/resolve/main/pkg/usd/root.usd',
-    'https://huggingface.co/datasets/o/r/resolve/main/pkg/usd/parts/a%20b.usdc',
-    'https://huggingface.co/datasets/o/r/resolve/main/pkg/materials/m.usda',
-  ]);
+  assert.deepEqual(
+    layers.map((l) => l.url),
+    [
+      'https://huggingface.co/datasets/o/r/resolve/main/pkg/usd/root.usd',
+      'https://huggingface.co/datasets/o/r/resolve/main/pkg/usd/parts/a%20b.usdc',
+      'https://huggingface.co/datasets/o/r/resolve/main/pkg/materials/m.usda',
+    ],
+  );
   // Without a manifest, only the root's own directory.
-  const bare = await hubPackageLayers('https://huggingface.co/o/r/resolve/main/pkg/usd/root.usd', async (url) => (requests.push(url), Response.json(tree.slice(1))));
+  const bare = await hubPackageLayers(
+    'https://huggingface.co/o/r/resolve/main/pkg/usd/root.usd',
+    async (url) => (requests.push(url), Response.json(tree.slice(1))),
+  );
   assert.equal(requests.at(-1), 'https://huggingface.co/api/models/o/r/tree/main/pkg?recursive=true');
   assert.equal(bare.eager, false);
-  assert.deepEqual(bare.layers.map((l) => l.url), ['https://huggingface.co/o/r/resolve/main/pkg/usd/root.usd', 'https://huggingface.co/o/r/resolve/main/pkg/usd/parts/a%20b.usdc']);
+  assert.deepEqual(
+    bare.layers.map((l) => l.url),
+    ['https://huggingface.co/o/r/resolve/main/pkg/usd/root.usd', 'https://huggingface.co/o/r/resolve/main/pkg/usd/parts/a%20b.usdc'],
+  );
   const none = { layers: [], eager: false };
   assert.deepEqual(await hubPackageLayers('https://example.com/datasets/o/r/resolve/main/pkg/usd/root.usd', request), none);
   assert.deepEqual(await hubPackageLayers('https://huggingface.co/datasets/o/r/resolve/main/x.usd', async () => new Response(null, { status: 401 })), none);
@@ -598,14 +671,55 @@ test('limits: requests in flight, layer files and bytes, drawn triangles and ins
   const cases = [
     ['layer requests in flight stay within maxConcurrentFetches', many, layers, [], { maxConcurrentFetches: 4 }, { requests: 41, inFlight: 4 }],
     ['layers past maxLayerBytes fail the load', many, layers, [], { maxLayerBytes: 600 }, { error: /resource limit exceeded/ }],
-    ['layers past maxLayers fail the load before they are requested', many, layers, [], { maxLayers: 20 }, { error: /more than maxLayers \(20\)/, requests: 20 }],
+    [
+      'layers past maxLayers fail the load before they are requested',
+      many,
+      layers,
+      [],
+      { maxLayers: 20 },
+      { error: /more than maxLayers \(20\)/, requests: 20 },
+    ],
     ['as many layers as maxLayers load', many, layers, [], { maxLayers: 41 }, { requests: 41 }],
-    ['meshes past maxTriangles are left out unread', `${['A', 'B', 'C'].map((name) => QUAD.replace('"M"', `"${name}"`)).join('\n')}`, {}, [], { maxTriangles: 5 }, { triangles: 4, warnings: [['triangle-limit', '/C']] }],
-    ['a face a subset names again is drawn once; the budget stops at zero', `${amp}\n${QUAD}`, {}, [], { maxTriangles: 65 }, { triangles: 64, warnings: [['triangle-limit', '/M']] }],
+    [
+      'meshes past maxTriangles are left out unread',
+      `${['A', 'B', 'C'].map((name) => QUAD.replace('"M"', `"${name}"`)).join('\n')}`,
+      {},
+      [],
+      { maxTriangles: 5 },
+      { triangles: 4, warnings: [['triangle-limit', '/C']] },
+    ],
+    [
+      'a face a subset names again is drawn once; the budget stops at zero',
+      `${amp}\n${QUAD}`,
+      {},
+      [],
+      { maxTriangles: 65 },
+      { triangles: 64, warnings: [['triangle-limit', '/M']] },
+    ],
     ['implicit shapes count', 'def Cube "C" {}\ndef Sphere "S" {}', {}, [], { maxTriangles: 20 }, { triangles: 12, warnings: [['triangle-limit', '/S']] }],
     ['placements past maxInstances', instancer(50), {}, [], { maxInstances: 10 }, { triangles: 20, warnings: [['instance-limit', '/PI']] }],
-    ['triangles count once per instance', instancer(10), {}, [], { maxTriangles: 19 }, { triangles: 0, warnings: [['triangle-limit', '/PI/P/M'], ['nothing-drawable', undefined]] }],
-    ['an unused preload is charged as it streams', '(subLayers = [@./a.usda@])', { 'a.usda': `#usda 1.0\n${QUAD}`, 'unused.usda': `#usda 1.0\n${' '.repeat(5000)}` }, ['a.usda', 'unused.usda'], { maxLayerBytes: 2000 }, { triangles: 2, warnings: [], unusedRead: 2000 }],
+    [
+      'triangles count once per instance',
+      instancer(10),
+      {},
+      [],
+      { maxTriangles: 19 },
+      {
+        triangles: 0,
+        warnings: [
+          ['triangle-limit', '/PI/P/M'],
+          ['nothing-drawable', undefined],
+        ],
+      },
+    ],
+    [
+      'an unused preload is charged as it streams',
+      '(subLayers = [@./a.usda@])',
+      { 'a.usda': `#usda 1.0\n${QUAD}`, 'unused.usda': `#usda 1.0\n${' '.repeat(5000)}` },
+      ['a.usda', 'unused.usda'],
+      { maxLayerBytes: 2000 },
+      { triangles: 2, warnings: [], unusedRead: 2000 },
+    ],
   ];
   for (const [what, root, others, preloads, options, expected] of cases) {
     const files = { 'https://h/root.usda': `#usda 1.0\n${root}` };
@@ -644,7 +758,12 @@ test('limits: requests in flight, layer files and bytes, drawn triangles and ins
     if ('requests' in expected) assert.equal(requests, expected.requests, what);
     if ('inFlight' in expected) assert.equal(maxInFlight, expected.inFlight, what);
     if ('triangles' in expected) assert.equal(drawn, expected.triangles, what);
-    if ('warnings' in expected) assert.deepEqual([...meta.warnings, ...limits].map((w) => [w.code, w.path]), expected.warnings, what);
+    if ('warnings' in expected)
+      assert.deepEqual(
+        [...meta.warnings, ...limits].map((w) => [w.code, w.path]),
+        expected.warnings,
+        what,
+      );
     assert.ok(unusedRead <= (expected.unusedRead ?? Infinity), `${what}: ${unusedRead} bytes read`);
   }
 });

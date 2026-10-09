@@ -38,7 +38,18 @@ export interface LoadOptions {
    * redirect, opaque or 3xx, is then fetched again without them); `init.credentials` and `init.referrerPolicy` are what the built-in fetch would
    * use; `init.signal` aborts when the load stops, and bodies still open are cancelled then.
    */
-  fetch?: ((url: string, init: { headers?: Record<string, string>; credentials: 'same-origin' | 'omit'; referrerPolicy: 'no-referrer'; redirect?: 'manual'; signal: AbortSignal }) => Promise<Response>) | undefined;
+  fetch?:
+    | ((
+        url: string,
+        init: {
+          headers?: Record<string, string>;
+          credentials: 'same-origin' | 'omit';
+          referrerPolicy: 'no-referrer';
+          redirect?: 'manual';
+          signal: AbortSignal;
+        },
+      ) => Promise<Response>)
+    | undefined;
   onProgress?: ((progress: LoadProgress) => void) | undefined;
   /** Where the `.wasm` binary is served from. Defaults to the copy next to the package. */
   wasmUrl?: string | URL | undefined;
@@ -79,7 +90,16 @@ export interface LoadOptions {
  * - `triangle-limit`: meshes left out past `maxTriangles`.
  * - `instance-limit`: instances left out past `maxInstances`.
  */
-export type WarningCode = 'layer-missing' | 'layer-unreadable' | 'prim-unsupported' | 'nothing-drawable' | 'material-fallback' | 'composition' | 'texture-failed' | 'triangle-limit' | 'instance-limit';
+export type WarningCode =
+  | 'layer-missing'
+  | 'layer-unreadable'
+  | 'prim-unsupported'
+  | 'nothing-drawable'
+  | 'material-fallback'
+  | 'composition'
+  | 'texture-failed'
+  | 'triangle-limit'
+  | 'instance-limit';
 
 export interface LoadWarning {
   readonly code: WarningCode;

@@ -70,7 +70,12 @@ const CASES = [
   // Pull request revisions: an encoded slash only in the revision of resolve and tree URLs.
   ['https://huggingface.co/datasets/o/r/resolve/refs%2Fpr%2F1/pkg/a.usda', 'https://huggingface.co/datasets/o/r/resolve/refs%2Fpr%2F1/pkg/root.usda', [], OWN],
   ['https://huggingface.co/datasets/o/r/resolve/refs%2fpr%2f1/tex.png', 'https://huggingface.co/datasets/o/r/resolve/refs%2Fpr%2F1/pkg/root.usda', [], OWN],
-  ['https://huggingface.co/api/datasets/o/r/tree/refs%2Fpr%2F1/pkg?recursive=true', 'https://huggingface.co/datasets/o/r/resolve/refs%2Fpr%2F1/pkg/root.usda', [], OWN],
+  [
+    'https://huggingface.co/api/datasets/o/r/tree/refs%2Fpr%2F1/pkg?recursive=true',
+    'https://huggingface.co/datasets/o/r/resolve/refs%2Fpr%2F1/pkg/root.usda',
+    [],
+    OWN,
+  ],
   ['https://huggingface.co/datasets/o/r/resolve/refs%2Fpr%2F1/a%2Fb.usda', HUB, [], REFUSED],
   ['https://huggingface.co/datasets/o%2Fr/x/resolve/main/a.usda', HUB, [], REFUSED],
   ['https://huggingface.co/datasets/o/r/resolve/refs%5cpr/a.usda', HUB, [], REFUSED],

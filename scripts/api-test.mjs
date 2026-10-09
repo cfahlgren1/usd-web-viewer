@@ -7,7 +7,10 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import http from 'node:http';
 
-const server = spawn(process.execPath, [new URL('./serve.mjs', import.meta.url).pathname], { env: { ...process.env, PORT: '0' }, stdio: ['ignore', 'pipe', 'inherit'] });
+const server = spawn(process.execPath, [new URL('./serve.mjs', import.meta.url).pathname], {
+  env: { ...process.env, PORT: '0' },
+  stdio: ['ignore', 'pipe', 'inherit'],
+});
 const BASE = await new Promise((resolve, reject) => {
   server.stdout.once('data', (line) => resolve(String(line).trim()));
   server.once('exit', (code) => reject(new Error(`scripts/serve.mjs exited with ${code}`)));
@@ -61,7 +64,8 @@ const DESCRIBE = `async (blob) => {
 test('headers never follow a redirect to another origin', async () => {
   // Three origins, as when a page loads from a CDN: the page's, the root's, and another that a layer on the
   // root's origin redirects to. First, before any Playwright route: routing changes how redirects are followed.
-  const quad = '#usda 1.0\ndef Mesh "M" {\n  int[] faceVertexCounts = [3]\n  int[] faceVertexIndices = [0, 1, 2]\n  point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n}';
+  const quad =
+    '#usda 1.0\ndef Mesh "M" {\n  int[] faceVertexCounts = [3]\n  int[] faceVertexIndices = [0, 1, 2]\n  point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]\n}';
   const other = await loggingServer((req, res, cors) => res.writeHead(200, cors).end(quad));
   const site = await loggingServer((req, res, cors) => {
     if (req.url === '/root.usda') return res.writeHead(200, cors).end('#usda 1.0\n(subLayers = [@./a.usda@])');
@@ -75,7 +79,10 @@ test('headers never follow a redirect to another origin', async () => {
   }, `${site.origin}/root.usda`);
   site.close();
   other.close();
-  assert.ok(site.log.some(([url, key, auth]) => url === '/a.usda' && key === 'SECRET2' && auth === 'Bearer SECRET'), `headers reach the root origin: ${JSON.stringify(site.log)}`);
+  assert.ok(
+    site.log.some(([url, key, auth]) => url === '/a.usda' && key === 'SECRET2' && auth === 'Bearer SECRET'),
+    `headers reach the root origin: ${JSON.stringify(site.log)}`,
+  );
   assert.ok(other.log.length > 0 && other.log.every(([, key, auth]) => key === null && auth === null), JSON.stringify(other.log));
   assert.equal(meshes, 1);
 });
@@ -90,20 +97,26 @@ test('headers reach the layers and textures on the root origin, and no other ori
   }, TEXTURED);
   const own = (await stats()).filter((r) => r.url.startsWith('/fixtures/'));
   assert.ok(own.some((r) => r.url.endsWith('.usda')) && own.some((r) => r.url.endsWith('.png')));
-  assert.ok(own.every((r) => r.auth === 'Bearer test-token'), JSON.stringify(own.map((r) => [r.url, r.auth])));
+  assert.ok(
+    own.every((r) => r.auth === 'Bearer test-token'),
+    JSON.stringify(own.map((r) => [r.url, r.auth])),
+  );
 
   // The root (served through a route) authors its texture on another origin of the same server.
   const root = `${BASE}/__fixture/cross-origin.usda`;
   const texture = `http://localhost:${new URL(BASE).port}/fixtures/quadrants.png`;
   await routeTextured(root, texture);
   await fetch(`${BASE}/__stats/reset`);
-  const counts = await page.evaluate(async ([url, origin]) => {
-    const { loadUsd } = await import('/packages/viewer/src/index.js');
-    const result = await loadUsd(url, { headers: { Authorization: 'Bearer test-token' }, allowedOrigins: [origin] });
-    const done = await result.complete;
-    result.dispose();
-    return done;
-  }, [root, new URL(texture).origin]);
+  const counts = await page.evaluate(
+    async ([url, origin]) => {
+      const { loadUsd } = await import('/packages/viewer/src/index.js');
+      const result = await loadUsd(url, { headers: { Authorization: 'Bearer test-token' }, allowedOrigins: [origin] });
+      const done = await result.complete;
+      result.dispose();
+      return done;
+    },
+    [root, new URL(texture).origin],
+  );
   const requests = (await stats()).filter((r) => r.url.endsWith('quadrants.png'));
   assert.deepEqual(counts, { textures: 1, failed: 0 });
   assert.ok(requests.length > 0 && requests.every((r) => r.auth === null), JSON.stringify(requests));
@@ -124,7 +137,10 @@ test('a texture outside allowedOrigins is never requested, through fetch or a cu
     }
     return { outcomes, seen };
   }, root);
-  assert.deepEqual((await stats()).filter((r) => r.url.endsWith('quadrants.png')), []);
+  assert.deepEqual(
+    (await stats()).filter((r) => r.url.endsWith('quadrants.png')),
+    [],
+  );
   assert.deepEqual(out.seen, [root]);
   for (const { counts, warning } of out.outcomes) {
     assert.deepEqual(counts, { textures: 0, failed: 1 });
@@ -133,21 +149,24 @@ test('a texture outside allowedOrigins is never requested, through fetch or a cu
 });
 
 test('a custom fetch serves every layer and texture, and a missing sublayer warns as with fetch', async () => {
-  const out = await page.evaluate(async ([textured, missing]) => {
-    const { loadUsd } = await import('/packages/viewer/src/index.js');
-    const seen = [];
-    const custom = (u, init) => (seen.push(u), fetch(u, init));
-    const result = await loadUsd(textured, { fetch: custom });
-    const counts = await result.complete;
-    result.dispose();
-    const warnings = [];
-    for (const options of [{}, { fetch: custom }]) {
-      const loaded = await loadUsd(missing, options);
-      loaded.dispose();
-      warnings.push(loaded.info.warnings.map((w) => w.code));
-    }
-    return { seen, counts, warnings };
-  }, [TEXTURED, '/fixtures/missing_sublayer.usda']);
+  const out = await page.evaluate(
+    async ([textured, missing]) => {
+      const { loadUsd } = await import('/packages/viewer/src/index.js');
+      const seen = [];
+      const custom = (u, init) => (seen.push(u), fetch(u, init));
+      const result = await loadUsd(textured, { fetch: custom });
+      const counts = await result.complete;
+      result.dispose();
+      const warnings = [];
+      for (const options of [{}, { fetch: custom }]) {
+        const loaded = await loadUsd(missing, options);
+        loaded.dispose();
+        warnings.push(loaded.info.warnings.map((w) => w.code));
+      }
+      return { seen, counts, warnings };
+    },
+    [TEXTURED, '/fixtures/missing_sublayer.usda'],
+  );
   assert.ok(out.seen.some((u) => u.endsWith('uv_set.usda')) && out.seen.some((u) => u.endsWith('quadrants.png')), JSON.stringify(out.seen));
   assert.deepEqual(out.counts, { textures: 1, failed: 0 });
   assert.deepEqual(out.warnings[0], out.warnings[1], 'same warnings either way');
@@ -165,7 +184,11 @@ test('textures past maxTextureBytes, over 16384 px a side or of unchecked format
     huge.set([8, 6], 24);
     const gif = new TextEncoder().encode('GIF89a\x10\x00\x10\x00\x00\x00\x00');
     const outcomes = [];
-    for (const [options, png] of [[{ maxTextureBytes: 100 }, null], [{}, huge], [{}, gif]]) {
+    for (const [options, png] of [
+      [{ maxTextureBytes: 100 }, null],
+      [{}, huge],
+      [{}, gif],
+    ]) {
       const fetchFn = (u, init) => (png && u.endsWith('.png') ? Promise.resolve(new Response(png)) : fetch(u, init));
       const result = await loadUsd(url, { ...options, fetch: fetchFn });
       outcomes.push({ counts: await result.complete, messages: result.info.warnings.filter((w) => w.code === 'texture-failed').map((w) => w.message) });
@@ -173,7 +196,14 @@ test('textures past maxTextureBytes, over 16384 px a side or of unchecked format
     }
     return outcomes;
   }, TEXTURED);
-  assert.deepEqual(out.map((o) => o.counts), [{ textures: 0, failed: 1 }, { textures: 0, failed: 1 }, { textures: 0, failed: 1 }]);
+  assert.deepEqual(
+    out.map((o) => o.counts),
+    [
+      { textures: 0, failed: 1 },
+      { textures: 0, failed: 1 },
+      { textures: 0, failed: 1 },
+    ],
+  );
   assert.match(out[0].messages[0], /maxTextureBytes/);
   assert.match(out[1].messages[0], /image too large: 20000x20000/);
   assert.match(out[2].messages[0], /unsupported image format/);
@@ -185,7 +215,11 @@ test('abort rejects with an aborted UsdLoadError, before or during the load', as
   await page.context().route('**/__pending.usda', (route) => (held = route));
   const outcomes = await page.evaluate(async (url) => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');
-    const outcome = (promise) => promise.then(() => 'resolved', (e) => `${e.name}:${e.code}`);
+    const outcome = (promise) =>
+      promise.then(
+        () => 'resolved',
+        (e) => `${e.name}:${e.code}`,
+      );
     const controller = new AbortController();
     const pending = loadUsd('/__pending.usda', { signal: controller.signal });
     setTimeout(() => controller.abort(), 50);
@@ -199,49 +233,65 @@ test('abort rejects with an aborted UsdLoadError, before or during the load', as
 test('lifecycle: a newer load wins; stopping a load stops all of it, while WASM compiles, as meshes stream in, and a custom fetch body', async () => {
   let held;
   await page.context().route('**/__hang.wasm', (route) => (held = route));
-  const out = await page.evaluate(async ([shapes, textured]) => {
-    const settle = (promise) => Promise.race([promise.then(() => 'resolved', (e) => e.code), new Promise((resolve) => setTimeout(() => resolve('hung'), 3000))]);
-    // A fresh copy of the module, its WASM compile never finishing.
-    const fresh = await import('/packages/viewer/src/index.js?compiling');
-    const compiling = new AbortController();
-    const whileCompiling = fresh.loadUsd(shapes, { signal: compiling.signal, wasmUrl: '/__hang.wasm' });
-    setTimeout(() => compiling.abort(), 50);
+  const out = await page.evaluate(
+    async ([shapes, textured]) => {
+      const settle = (promise) =>
+        Promise.race([
+          promise.then(
+            () => 'resolved',
+            (e) => e.code,
+          ),
+          new Promise((resolve) => setTimeout(() => resolve('hung'), 3000)),
+        ]);
+      // A fresh copy of the module, its WASM compile never finishing.
+      const fresh = await import('/packages/viewer/src/index.js?compiling');
+      const compiling = new AbortController();
+      const whileCompiling = fresh.loadUsd(shapes, { signal: compiling.signal, wasmUrl: '/__hang.wasm' });
+      setTimeout(() => compiling.abort(), 50);
 
-    const { createViewer, loadUsd } = await import('/packages/viewer/src/index.js');
-    const host = document.body.appendChild(document.createElement('div'));
-    host.style.cssText = 'width:200px;height:150px';
-    const viewer = createViewer(host);
-    const shown = () => viewer.scene.children.filter((c) => c.name === 'usd').length;
+      const { createViewer, loadUsd } = await import('/packages/viewer/src/index.js');
+      const host = document.body.appendChild(document.createElement('div'));
+      host.style.cssText = 'width:200px;height:150px';
+      const viewer = createViewer(host);
+      const shown = () => viewer.scene.children.filter((c) => c.name === 'usd').length;
 
-    // Overlapping loads: the older is discarded.
-    const first = viewer.load(shapes).then(() => 'resolved', (e) => e.code);
-    const second = await viewer.load(textured);
-    const overlapping = { first: await first, shown: shown(), secondShown: viewer.scene.children.includes(second.root) };
+      // Overlapping loads: the older is discarded.
+      const first = viewer.load(shapes).then(
+        () => 'resolved',
+        (e) => e.code,
+      );
+      const second = await viewer.load(textured);
+      const overlapping = { first: await first, shown: shown(), secondShown: viewer.scene.children.includes(second.root) };
 
-    let streaming;
-    const streamed = new Promise((resolve) => (streaming = resolve));
-    const cleared = viewer.load(shapes, { textures: 'none', onProgress: (p) => p.stage === 'geometry' && streaming() });
-    await streamed;
-    const before = shown();
-    viewer.clear();
-    const afterClear = shown();
+      let streaming;
+      const streamed = new Promise((resolve) => (streaming = resolve));
+      const cleared = viewer.load(shapes, { textures: 'none', onProgress: (p) => p.stage === 'geometry' && streaming() });
+      await streamed;
+      const before = shown();
+      viewer.clear();
+      const afterClear = shown();
 
-    // A custom fetch that ignores its signal: its body is cancelled anyway.
-    let cancelled = false;
-    const body = new ReadableStream({ pull: (c) => new Promise((resolve) => setTimeout(() => resolve(c.enqueue(new Uint8Array(16))), 10)), cancel: () => void (cancelled = true) });
-    const fetching = new AbortController();
-    const fetched = loadUsd('/endless.usda', { fetch: async () => new Response(body), signal: fetching.signal });
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    fetching.abort();
-    const outcomes = { compiling: await settle(whileCompiling), cleared: await settle(cleared), fetched: await settle(fetched) };
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    const later = shown();
-    viewer.dispose();
-    viewer.dispose();
-    const canvasRemoved = !host.querySelector('canvas');
-    host.remove();
-    return { overlapping, outcomes, shown: [before, afterClear, later], cancelled, canvasRemoved };
-  }, [SHAPES, TEXTURED]);
+      // A custom fetch that ignores its signal: its body is cancelled anyway.
+      let cancelled = false;
+      const body = new ReadableStream({
+        pull: (c) => new Promise((resolve) => setTimeout(() => resolve(c.enqueue(new Uint8Array(16))), 10)),
+        cancel: () => void (cancelled = true),
+      });
+      const fetching = new AbortController();
+      const fetched = loadUsd('/endless.usda', { fetch: async () => new Response(body), signal: fetching.signal });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      fetching.abort();
+      const outcomes = { compiling: await settle(whileCompiling), cleared: await settle(cleared), fetched: await settle(fetched) };
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      const later = shown();
+      viewer.dispose();
+      viewer.dispose();
+      const canvasRemoved = !host.querySelector('canvas');
+      host.remove();
+      return { overlapping, outcomes, shown: [before, afterClear, later], cancelled, canvasRemoved };
+    },
+    [SHAPES, TEXTURED],
+  );
   await held?.abort();
   await page.context().unroute('**/__hang.wasm');
   assert.deepEqual(
@@ -258,18 +308,21 @@ test('lifecycle: a newer load wins; stopping a load stops all of it, while WASM 
 });
 
 test('many instances of one mesh render as one InstancedMesh', async () => {
-  const out = await page.evaluate(async ([url, describe]) => {
-    const { createViewer } = await import('/packages/viewer/src/index.js');
-    const host = document.body.appendChild(document.createElement('div'));
-    host.style.cssText = 'width:200px;height:150px';
-    const viewer = createViewer(host);
-    const result = await viewer.load(url);
-    const meshes = result.root.children.map((m) => [m.isInstancedMesh ?? false, m.count ?? 1]);
-    const image = await (0, eval)(describe)(await viewer.toBlob());
-    viewer.dispose();
-    host.remove();
-    return { meshes, instances: result.info.meshes, drawn: image.drawn };
-  }, ['/fixtures/nested_instancers.usda', DESCRIBE]);
+  const out = await page.evaluate(
+    async ([url, describe]) => {
+      const { createViewer } = await import('/packages/viewer/src/index.js');
+      const host = document.body.appendChild(document.createElement('div'));
+      host.style.cssText = 'width:200px;height:150px';
+      const viewer = createViewer(host);
+      const result = await viewer.load(url);
+      const meshes = result.root.children.map((m) => [m.isInstancedMesh ?? false, m.count ?? 1]);
+      const image = await (0, eval)(describe)(await viewer.toBlob());
+      viewer.dispose();
+      host.remove();
+      return { meshes, instances: result.info.meshes, drawn: image.drawn };
+    },
+    ['/fixtures/nested_instancers.usda', DESCRIBE],
+  );
   assert.deepEqual(out, { meshes: [[true, 6]], instances: 6, drawn: true });
 });
 
@@ -289,13 +342,15 @@ const addViewer = (id, attributes, spacer = '0') =>
       el.id = id;
       el.style.height = '300px';
       (window.seen ??= {})[id] = [];
-      for (const type of ['load', 'error', 'context-lost']) el.addEventListener(type, (e) => window.seen[id].push(type === 'error' ? `error:${e.error.message}` : type));
+      for (const type of ['load', 'error', 'context-lost'])
+        el.addEventListener(type, (e) => window.seen[id].push(type === 'error' ? `error:${e.error.message}` : type));
       for (const [name, value] of Object.entries(attributes)) el.setAttribute(name, value);
       document.body.append(el);
     },
     [id, attributes, spacer],
   );
-const waitFor = (id, type, count = 1) => page.waitForFunction(([id, type, count]) => window.seen[id].filter((t) => t === type).length >= count, [id, type, count], { timeout: 10000 });
+const waitFor = (id, type, count = 1) =>
+  page.waitForFunction(([id, type, count]) => window.seen[id].filter((t) => t === type).length >= count, [id, type, count], { timeout: 10000 });
 
 test('<usd-viewer> reports a missing src as an ErrorEvent with a fetch UsdLoadError carrying the HTTP status', async () => {
   await page.goto(`${BASE}/examples/element.html?src=${encodeURIComponent('/fixtures/nope.usda')}`);
@@ -333,8 +388,20 @@ test('<usd-viewer> loads src and dispatches progress and load; it is labelled, z
   });
   assert.equal(info.triangles, SHAPES_TRIANGLES);
   assert.ok(events.length > 0, 'progress events');
-  assert.deepEqual(props, { role: 'img', label: 'USD model', busy: null, texturesAttr: 'none', touch: 'none', tabIndex: 0, hasResult: true, transparent: true });
-  assert.ok(events.some((e) => e.busy === 'true'), 'aria-busy while loading');
+  assert.deepEqual(props, {
+    role: 'img',
+    label: 'USD model',
+    busy: null,
+    texturesAttr: 'none',
+    touch: 'none',
+    tabIndex: 0,
+    hasResult: true,
+    transparent: true,
+  });
+  assert.ok(
+    events.some((e) => e.busy === 'true'),
+    'aria-busy while loading',
+  );
   // Keyboard: + zooms in, - zooms out; focus from the keyboard shows a ring.
   await page.keyboard.press('Tab');
   const distance = () => page.evaluate(() => document.getElementById('viewer').viewer.controls.getDistance());
@@ -369,9 +436,16 @@ test('<usd-viewer> lazy: nothing until it nears the viewport, eager at once, and
   await fetch(`${BASE}/__stats/reset`);
   await addViewer('far', { src: SHAPES, alt: 'shapes' }, '300vh');
   await page.waitForTimeout(500);
-  const before = await page.evaluate(() => ({ viewer: document.getElementById('far').viewer, canvases: document.getElementById('far').shadowRoot.querySelectorAll('canvas').length }));
+  const before = await page.evaluate(() => ({
+    viewer: document.getElementById('far').viewer,
+    canvases: document.getElementById('far').shadowRoot.querySelectorAll('canvas').length,
+  }));
   assert.deepEqual(before, { viewer: null, canvases: 0 });
-  assert.deepEqual((await stats()).filter((r) => /\.wasm$|worker\.js$|\.usda$/.test(r.url)), [], 'no WASM, worker or layer requested');
+  assert.deepEqual(
+    (await stats()).filter((r) => /\.wasm$|worker\.js$|\.usda$/.test(r.url)),
+    [],
+    'no WASM, worker or layer requested',
+  );
   await page.evaluate(() => document.getElementById('far').scrollIntoView());
   await waitFor('far', 'load');
   await addViewer('eager', { src: SHAPES, loading: 'eager', textures: 'none' }, '600vh');
@@ -426,7 +500,11 @@ test('<usd-viewer> context loss: context-lost, the poster, then the model loads 
   await waitFor('c', 'context-lost');
   const lost = await page.evaluate(() => {
     const el = document.getElementById('c');
-    return { result: el.result, faded: el.shadowRoot.querySelector('img').classList.contains('hidden'), meshes: el.viewer.scene.getObjectByName('usd') ? 1 : 0 };
+    return {
+      result: el.result,
+      faded: el.shadowRoot.querySelector('img').classList.contains('hidden'),
+      meshes: el.viewer.scene.getObjectByName('usd') ? 1 : 0,
+    };
   });
   assert.deepEqual(lost, { result: null, faded: false, meshes: 0 });
   await page.evaluate(() => window.lose.restoreContext());
@@ -451,7 +529,13 @@ test('toBlob captures a freshly rendered frame, as PNG or WebP, at the canvas si
     const full = await describe(await el.toBlob());
     const thumb = await describe(await el.toBlob({ type: 'image/webp', width: 64, height: 48 }));
     const wide = await describe(await el.viewer.toBlob({ width: 100 }));
-    const idle = await document.createElement('usd-viewer').toBlob().then(() => 'resolved', (e) => e.message);
+    const idle = await document
+      .createElement('usd-viewer')
+      .toBlob()
+      .then(
+        () => 'resolved',
+        (e) => e.message,
+      );
     return { full, thumb, wide, idle, canvas: [canvas.width, canvas.height] };
   }, DESCRIBE);
   assert.deepEqual(shots.full, { type: 'image/png', width: shots.canvas[0], height: shots.canvas[1], drawn: true });

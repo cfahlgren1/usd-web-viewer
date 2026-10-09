@@ -21,7 +21,14 @@ const STAGES = { layers: [0, 0.4], compose: [0.4, 0.5], geometry: [0.5, 0.8], te
 function stageFraction(progress) {
   const [start, end] = STAGES[progress.stage];
   // More layers may yet be found; a compose round is halfway into its stage.
-  const done = progress.stage === 'layers' ? progress.loaded / (progress.total + 1) : progress.stage === 'compose' ? 0.5 : progress.total ? progress.loaded / progress.total : 1;
+  const done =
+    progress.stage === 'layers'
+      ? progress.loaded / (progress.total + 1)
+      : progress.stage === 'compose'
+        ? 0.5
+        : progress.total
+          ? progress.loaded / progress.total
+          : 1;
   return start + (end - start) * done;
 }
 
@@ -76,9 +83,7 @@ export async function loadUsd(url, options = {}) {
   let worker;
   try {
     // Inline `new Worker(new URL(...))` is the pattern bundlers recognise and bundle.
-    worker = options.workerUrl
-      ? new Worker(options.workerUrl, { type: 'module' })
-      : new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+    worker = options.workerUrl ? new Worker(options.workerUrl, { type: 'module' }) : new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
   } catch (error) {
     throw new UsdLoadError('worker', `could not start the worker: ${error.message}`, { url: options.workerUrl && String(options.workerUrl), cause: error });
   }
@@ -193,7 +198,21 @@ export async function loadUsd(url, options = {}) {
     if (OUT_OF_MEMORY.test(message)) fail(new UsdLoadError('compose', `scene too large to load: ran out of memory: ${message}`, { url: absoluteUrl }));
     else fail(new UsdLoadError('worker', message, { url: absoluteUrl }));
   };
-  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures, maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxInstances, maxTriangles, allowedOrigins, headers, proxyFetch: !!options.fetch });
+  worker.postMessage({
+    url: absoluteUrl,
+    wasmModule: module,
+    maxTextureSize,
+    textures,
+    maxConcurrentFetches,
+    maxLayerBytes,
+    maxTextureBytes,
+    maxLayers,
+    maxInstances,
+    maxTriangles,
+    allowedOrigins,
+    headers,
+    proxyFetch: !!options.fetch,
+  });
 
   /** Runs one worker request through the caller's `fetch`; the body follows chunk by chunk. */
   async function proxyFetch({ id, url: target }) {
@@ -561,7 +580,8 @@ export function createViewer(target, options = {}) {
      * read in the same task, so it needs no `preserveDrawingBuffer`.
      */
     toBlob({ type = 'image/png', quality, width, height } = {}) {
-      if (disposed || renderer.getContext().isContextLost()) return Promise.reject(new Error('no frame to capture: the viewer is disposed or its WebGL context is lost'));
+      if (disposed || renderer.getContext().isContextLost())
+        return Promise.reject(new Error('no frame to capture: the viewer is disposed or its WebGL context is lost'));
       const size = renderer.getSize(new THREE.Vector2());
       const ratio = renderer.getPixelRatio();
       const setSize = (w, h, pixelRatio) => {
@@ -573,7 +593,9 @@ export function createViewer(target, options = {}) {
       const resized = width || height;
       if (resized) setSize(width || Math.round((height * size.x) / size.y), height || Math.round((width * size.y) / size.x), 1);
       renderer.render(scene, camera);
-      const blob = new Promise((resolve, reject) => canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('the canvas could not be encoded'))), type, quality));
+      const blob = new Promise((resolve, reject) =>
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('the canvas could not be encoded'))), type, quality),
+      );
       if (resized) {
         setSize(size.x, size.y, ratio);
         renderer.render(scene, camera);
@@ -618,7 +640,7 @@ export function frame(camera, controls, object) {
   if (box.isEmpty()) return;
   const center = box.getCenter(new THREE.Vector3());
   const radius = box.getSize(new THREE.Vector3()).length() / 2 || 1;
-  const distance = (radius / Math.sin(((camera.fov * Math.PI) / 180) / 2)) * 1.05;
+  const distance = (radius / Math.sin((camera.fov * Math.PI) / 180 / 2)) * 1.05;
   camera.position.copy(center).addScaledVector(new THREE.Vector3(1, 0.6, 1).normalize(), distance);
   camera.near = distance / 100;
   camera.far = distance * 100;
