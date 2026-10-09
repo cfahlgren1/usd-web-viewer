@@ -262,3 +262,14 @@ test('a material shared by meshes with different UV sets reads the named set on 
   assert.equal(withSt.material.emissiveMap.channel, 1);
   assert.equal(onlyCustom.material.emissiveMap.channel, 0);
 });
+
+test('geometry arrays are released once three.js has uploaded them', async () => {
+  const { root } = await load();
+  const { geometry } = root.children[0];
+  const attributes = [geometry.index, ...Object.values(geometry.attributes)];
+  // three.js calls this right after copying an attribute to the GPU.
+  for (const attribute of attributes) attribute.onUploadCallback();
+  assert.ok(attributes.every((attribute) => attribute.array === null));
+  // Framing still works from the precomputed bounds.
+  assert.ok(!new THREE.Box3().setFromObject(root).isEmpty());
+});

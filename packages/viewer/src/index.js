@@ -200,21 +200,10 @@ function buildScene(meta, arrays) {
     return variants.get(key);
   };
 
-  const geometries = meta.geometries.map((g, i) => {
-    const a = arrays[i];
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.BufferAttribute(a.positions, 3));
-    geometry.setAttribute('normal', new THREE.BufferAttribute(a.normals, 3));
-    // UV set k is three.js attribute `uv`, `uv1`, `uv2`, ... (a texture's `channel`).
-    a.uvs.forEach((uv, k) => geometry.setAttribute(k ? `uv${k}` : 'uv', new THREE.BufferAttribute(uv, 2)));
-    if (a.colors) geometry.setAttribute('color', new THREE.BufferAttribute(a.colors, 3));
-    geometry.setIndex(new THREE.BufferAttribute(a.indices, 1));
-    // Bounds come from the worker, so framing and culling never rescan positions.
-    geometry.boundingBox = new THREE.Box3().setFromArray(g.bounds);
-    geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
-    if (g.groups.length > 1) g.groups.forEach(([start, count], j) => geometry.addGroup(start, count, j));
-    return geometry;
-  });
+  // A plain loop, not a closure: closures here would keep `arrays` (and so
+  // every CPU-side copy) alive as long as the scene.
+  const geometries = [];
+  for (let i = 0; i < meta.geometries.length; i++) geometries.push(createGeometry(meta.geometries[i], arrays[i]));
 
   for (const inst of meta.instances) {
     const g = meta.geometries[inst.geometry];
@@ -274,6 +263,30 @@ function buildScene(meta, arrays) {
     warnings: [],
   };
   return { root, info, applyTexture, textureFailed, dispose };
+}
+
+function createGeometry(g, a) {
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(a.positions, 3));
+  geometry.setAttribute('normal', new THREE.BufferAttribute(a.normals, 3));
+  // UV set k is three.js attribute `uv`, `uv1`, `uv2`, ... (a texture's `channel`).
+  a.uvs.forEach((uv, k) => geometry.setAttribute(k ? `uv${k}` : 'uv', new THREE.BufferAttribute(uv, 2)));
+  if (a.colors) geometry.setAttribute('color', new THREE.BufferAttribute(a.colors, 3));
+  geometry.setIndex(new THREE.BufferAttribute(a.indices, 1));
+  // Once on the GPU the arrays are dead weight: bounds are precomputed, so
+  // framing and culling never read them. The cost: nothing to re-upload
+  // after a lost WebGL context, and no CPU raycasting against the mesh.
+  for (const attribute of [geometry.index, ...Object.values(geometry.attributes)]) attribute.onUpload(releaseArray);
+  // Bounds come from the worker, so framing and culling never rescan positions.
+  geometry.boundingBox = new THREE.Box3().setFromArray(g.bounds);
+  geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
+  if (g.groups.length > 1) g.groups.forEach(([start, count], j) => geometry.addGroup(start, count, j));
+  return geometry;
+}
+
+/** `onUpload` callback: drops the CPU copy of an attribute three.js just uploaded. */
+function releaseArray() {
+  this.array = null;
 }
 
 function countBy(list, key) {
