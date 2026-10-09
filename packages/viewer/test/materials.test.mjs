@@ -31,6 +31,16 @@ test("an image that cannot be read leaves the input's own value, not the texture
   assert.equal(blue.roughness, 0.5);
 });
 
+test('only r, g, b or a from an authored channel reaches the shader', () => {
+  const m = material({ roughness: { ...ref, channel: 'r_evil' }, metallic: { ...ref, channel: 'g' } });
+  attach(m, false);
+  const shader = { fragmentShader: '#include <roughnessmap_fragment>\n#include <metalnessmap_fragment>' };
+  m.onBeforeCompile(shader);
+  assert.ok(!shader.fragmentShader.includes('r_evil'));
+  assert.match(shader.fragmentShader, /\.rgb \* vec3/);
+  assert.match(shader.fragmentShader, /\.g \* /);
+});
+
 /** A PNG signature and IHDR chunk with the given bit depth and color type. */
 function pngHeader(bitDepth, colorType) {
   const b = Buffer.alloc(33);

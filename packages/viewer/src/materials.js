@@ -72,7 +72,8 @@ function prepare(material) {
 /** `texel.<channel> * scale + bias` as GLSL, sized to the slot (1 or 3 components). */
 function remap(base, size, ref) {
   const f = (v) => v.toFixed(6);
-  const channel = ref.channel === 'rgb' || ref.channel === 'rgba' ? 'rgb' : ref.channel;
+  // The channel is an output name from the file: only r, g, b or a reach the shader.
+  const channel = ['r', 'g', 'b', 'a'].includes(ref.channel) ? ref.channel : 'rgb';
   if (channel === 'rgb') {
     const expr = `(${base}.rgb * vec3(${ref.scale.slice(0, 3).map(f)}) + vec3(${ref.bias.slice(0, 3).map(f)}))`;
     return size === 3 ? expr : `${expr}.r`;
