@@ -46,7 +46,10 @@ fn inspect(root: &str) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
         rounds += 1;
-        match loader.compose(root)? {
+        let tc = Instant::now();
+        let composed = loader.compose(root)?;
+        println!("  compose round {rounds}: {:.1} ms", tc.elapsed().as_secs_f64() * 1000.0);
+        match composed {
             Composed::Scene(scene) => break scene,
             Composed::Missing(missing) => queue.extend(missing),
         }

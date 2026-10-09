@@ -9,7 +9,8 @@ pub struct Dependency {
     /// Named by a sublayer, reference or payload (a layer), rather than by an
     /// asset-valued attribute (a texture, an MDL module).
     pub arc: bool,
-    /// Authored inside a variant, so only needed when that variant is selected.
+    /// Authored inside a variant that this layer does not select, so only
+    /// needed if a stronger layer selects it.
     pub in_variant: bool,
 }
 
@@ -31,7 +32,7 @@ pub fn layer_dependencies(data: &dyn AbstractData, anchor: &str) -> Vec<Dependen
     };
 
     for spec in data.spec_paths() {
-        let in_variant = spec.as_str().contains('{');
+        let in_variant = !selected_here(data, spec.as_str());
         let field = |name: &str| data.try_field(&spec, name).ok().flatten();
 
         if let Some(value) = field("subLayers")
@@ -77,6 +78,36 @@ pub fn layer_dependencies(data: &dyn AbstractData, anchor: &str) -> Vec<Dependen
         }
     }
     out
+}
+
+/// Whether every variant on the way to `spec` (`/A{set=sel}B{set2=sel2}`) is
+/// the one the same layer selects. Stronger layers can still select another
+/// variant; composition then reports what is missing.
+fn selected_here(data: &dyn AbstractData, spec: &str) -> bool {
+    let mut rest = spec;
+    let mut prefix = String::new();
+    while let Some(open) = rest.find('{') {
+        let Some(close) = rest[open..].find('}').map(|c| open + c) else {
+            return false;
+        };
+        prefix.push_str(&rest[..open]);
+        let Some((set, choice)) = rest[open + 1..close].split_once('=') else {
+            return false;
+        };
+        let Ok(owner) = sdf::Path::new(&prefix) else {
+            return false;
+        };
+        let selection = match data.try_field(&owner, "variantSelection").ok().flatten().as_deref() {
+            Some(Value::VariantSelectionMap(map)) => map.get(set).cloned(),
+            _ => None,
+        };
+        if selection.as_deref() != Some(choice) {
+            return false;
+        }
+        prefix.push_str(&rest[open..=close]);
+        rest = &rest[close + 1..];
+    }
+    true
 }
 
 /// Items a list op adds; deleted items add no opinion.
