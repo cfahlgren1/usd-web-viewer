@@ -4,3 +4,5 @@ node_modules
 /dist/
 .DS_Store
 bench/results/raw/
+bench/crossbench/raw/
+bench/crossbench/results.json
