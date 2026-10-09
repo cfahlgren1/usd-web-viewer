@@ -219,7 +219,11 @@ export function limiter(max) {
 
 /** A layer URL as fetch would spell it, so an authored `a b.usd` matches a listed `a%20b.usd`. */
 function urlKey(url) {
-  return URL.canParse(url) ? new URL(url).href : url;
+  try {
+    return new URL(url).href;
+  } catch {
+    return url;
+  }
 }
 
 /**

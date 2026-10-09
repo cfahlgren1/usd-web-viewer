@@ -59,9 +59,9 @@ export async function loadUsd(url, options = {}) {
   } catch (error) {
     throw new UsdLoadError('worker', `could not start the worker: ${error.message}`, { url: options.workerUrl && String(options.workerUrl), cause: error });
   }
-  // Ends the caller's fetches (custom `fetch` requests) when the load stops.
+  // Ends the caller's fetches (custom `fetch` requests) when the load stops,
+  // aborted or not.
   const requests = new AbortController();
-  const requestSignal = signal ? AbortSignal.any([signal, requests.signal]) : requests.signal;
   // Bodies of custom-fetch responses the worker is reading, by request id.
   const bodies = new Map();
 
@@ -165,7 +165,7 @@ export async function loadUsd(url, options = {}) {
   /** Runs one worker request through the caller's `fetch`; the body follows chunk by chunk. */
   async function proxyFetch({ id, url: target }) {
     try {
-      const init = sameOrigin(target, absoluteUrl) && headers ? { headers, signal: requestSignal } : { signal: requestSignal };
+      const init = sameOrigin(target, absoluteUrl) && headers ? { headers, signal: requests.signal } : { signal: requests.signal };
       const response = await options.fetch(target, init);
       if (response.ok) bodies.set(id, (response.body ?? new Blob().stream()).getReader());
       else response.body?.cancel();
@@ -232,7 +232,11 @@ function buildScene(meta) {
 
   // Geometries stream in one at a time; each brings in the meshes that draw it.
   const geometries = [];
-  const instancesOf = Map.groupBy(meta.instances, (inst) => inst.geometry);
+  const instancesOf = new Map();
+  for (const inst of meta.instances) {
+    if (!instancesOf.has(inst.geometry)) instancesOf.set(inst.geometry, []);
+    instancesOf.get(inst.geometry).push(inst);
+  }
   const addGeometry = (index, g, a) => {
     if (!g) return;
     const geometry = createGeometry(g, a);
@@ -415,7 +419,9 @@ export function createViewer(target, options = {}) {
       if (disposed) throw new UsdLoadError('aborted', 'the viewer was disposed', { url });
       pending?.abort();
       const controller = (pending = new AbortController());
-      const signal = loadOptions.signal ? AbortSignal.any([loadOptions.signal, controller.signal]) : controller.signal;
+      const { signal: callerSignal } = loadOptions;
+      if (callerSignal?.aborted) controller.abort(callerSignal.reason);
+      callerSignal?.addEventListener('abort', () => controller.abort(callerSignal.reason), { once: true, signal: controller.signal });
       // Meshes show as they stream in: the new stage replaces the old one as
       // soon as its first mesh arrives, framed then and again when complete.
       let streaming = null;
@@ -434,7 +440,7 @@ export function createViewer(target, options = {}) {
         loadOptions.onProgress?.(progress);
       };
       try {
-        const result = await loadUsd(url, { ...loadOptions, signal, onProgress, [SHOW]: show });
+        const result = await loadUsd(url, { ...loadOptions, signal: controller.signal, onProgress, [SHOW]: show });
         // Superseded (or the viewer disposed) as geometry arrived: drop it.
         if (controller.signal.aborted || disposed) {
           result.dispose();

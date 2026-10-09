@@ -10,6 +10,10 @@ import { composeStage, fetchLimited, limiter, loadFailure, readGeometries, takeP
 import { UsdLoadError } from '../src/errors.js';
 import { hubPackageLayers } from '../src/hub-prefetch.js';
 
+// Missing from the oldest supported browsers (Safari 16.4).
+delete Map.groupBy;
+delete AbortSignal.any;
+delete URL.canParse;
 initSync({ module: readFileSync(new URL('../wasm/usd_wasm_bg.wasm', import.meta.url)) });
 
 const QUAD = `def Mesh "M" {

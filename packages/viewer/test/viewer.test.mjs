@@ -31,6 +31,10 @@ class FakeWorker {
   }
 }
 
+// Missing from the oldest supported browsers (Safari 16.4).
+delete Map.groupBy;
+delete AbortSignal.any;
+delete URL.canParse;
 globalThis.location = { href: 'https://example.test/' };
 globalThis.Worker = FakeWorker;
 globalThis.fetch = async () => new Response(new Uint8Array());

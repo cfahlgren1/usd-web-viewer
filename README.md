@@ -101,6 +101,8 @@ Geometry shows first and textures stream in after. The worker is then terminated
 
 ## Supported
 
+Browsers: Chrome / Edge 111+, Safari 16.4+, Firefox 115+.
+
 | ✅ | ⚠️ not yet |
 |---|---|
 | `.usd` / `.usda` / `.usdc` / `.usdz` | `black` wrap mode (clamped), `.hdr` / EXR textures |
