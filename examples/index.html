@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>usd-web-viewer</title>
+    <style>
+      html, body { margin: 0; height: 100%; font: 14px system-ui, sans-serif; }
+      #viewer { position: absolute; inset: 0; }
+      form { position: absolute; top: 12px; left: 12px; right: 12px; display: flex; gap: 8px; z-index: 1; }
+      input { flex: 1; padding: 6px 8px; }
+      #status { position: absolute; bottom: 12px; left: 12px; background: #fffd; padding: 6px 8px; white-space: pre; z-index: 1; }
+    </style>
+    <script type="importmap">
+      { "imports": { "three": "/node_modules/three/build/three.module.js", "three/addons/": "/node_modules/three/examples/jsm/" } }
+    </script>
+  </head>
+  <body>
+    <div id="viewer"></div>
+    <form id="form">
+      <input id="url" placeholder="USD root layer URL (e.g. a huggingface.co/datasets/.../resolve/main/... link)" />
+      <button>Load</button>
+    </form>
+    <div id="status"></div>
+    <script type="module">
+      import { createViewer } from '/packages/viewer/src/index.js';
+
+      const status = document.getElementById('status');
+      const input = document.getElementById('url');
+      const viewer = await createViewer(document.getElementById('viewer'));
+
+      async function load(url) {
+        history.replaceState(null, '', `?url=${encodeURIComponent(url)}`);
+        status.textContent = `loading ${url}`;
+        const t0 = performance.now();
+        try {
+          const result = await viewer.load(url);
+          window.lastResult = result;
+          const s = result.info.stats;
+          status.textContent =
+            `${result.info.meshes} meshes, ${result.info.triangles.toLocaleString()} triangles, ${result.info.materials} materials\n` +
+            `geometry in ${(performance.now() - t0).toFixed(0)} ms (layers ${s.layers}, ${(s.layerBytes / 1e6).toFixed(1)} MB, ${s.rounds} compose rounds, WASM ${(s.wasmMemoryBytes / 1e6).toFixed(0)} MB)`;
+          await result.textures;
+          status.textContent += `\ntextures in ${(performance.now() - t0).toFixed(0)} ms`;
+        } catch (error) {
+          status.textContent = String(error.message || error);
+        }
+      }
+
+      document.getElementById('form').onsubmit = (e) => {
+        e.preventDefault();
+        load(input.value.trim());
+      };
+      const initial = new URLSearchParams(location.search).get('url');
+      if (initial) {
+        input.value = initial;
+        load(initial);
+      }
+    </script>
+  </body>
+</html>

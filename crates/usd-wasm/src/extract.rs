@@ -101,7 +101,11 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
         if !own.invisible && token_attr(&prim, "visibility").as_deref() == Some("invisible") {
             own.invisible = true;
         }
-        if let Some(purpose) = token_attr(&prim, "purpose") {
+        // Only an authored purpose overrides the inherited one; the schema
+        // fallback (`default`) on every prim must not.
+        if prim.attribute("purpose").has_authored_value()?
+            && let Some(purpose) = token_attr(&prim, "purpose")
+        {
             own.hidden_purpose = purpose == "guide" || purpose == "proxy";
         }
         state.insert(path.clone(), own);

@@ -1,0 +1,18 @@
+{
+  "name": "usd-web-viewer",
+  "version": "0.1.0",
+  "description": "OpenUSD viewer for the web: pure-Rust USD composition (openusd) in WASM, rendered with three.js",
+  "license": "MIT",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./worker": "./src/worker.js",
+    "./wasm/usd_wasm_bg.wasm": "./wasm/usd_wasm_bg.wasm"
+  },
+  "files": ["src", "wasm/usd_wasm.js", "wasm/usd_wasm_bg.wasm"],
+  "sideEffects": false,
+  "peerDependencies": {
+    "three": ">=0.160.0"
+  }
+}

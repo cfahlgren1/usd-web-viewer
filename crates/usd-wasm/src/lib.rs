@@ -63,7 +63,10 @@ impl Loader {
     pub fn compose(&self, root: &str) -> openusd::Result<Composed> {
         let resolver = self.resolver();
         let missing = resolver.missing.clone();
-        let stage = usd::Stage::builder().resolver(resolver).open(root)?;
+        let stage = usd::Stage::builder()
+            .resolver(resolver)
+            .schema_registry(openusd_schemas::schema_registry())
+            .open(root)?;
         // Composition opens references and payloads lazily: walk the whole
         // stage first so every layer it needs is asked for before extracting.
         stage.traverse(usd::PrimPredicate::DEFAULT_PROXIES, |_| {})?;
