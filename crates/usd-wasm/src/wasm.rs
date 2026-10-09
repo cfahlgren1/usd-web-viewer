@@ -141,31 +141,38 @@ impl UsdScene {
         self.scene.sources.clear();
     }
 
-    pub fn positions(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.geometry().positions)
+    pub fn positions(&mut self) -> Result<Vec<f32>, JsError> {
+        Ok(std::mem::take(&mut self.geometry()?.positions))
     }
 
-    pub fn normals(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.geometry().normals)
+    pub fn normals(&mut self) -> Result<Vec<f32>, JsError> {
+        Ok(std::mem::take(&mut self.geometry()?.normals))
     }
 
     /// UV set `set` (in the order of the geometry's `uvSets`).
-    pub fn uvs(&mut self, set: usize) -> Vec<f32> {
-        std::mem::take(&mut self.geometry().uvs[set].1)
+    pub fn uvs(&mut self, set: usize) -> Result<Vec<f32>, JsError> {
+        let geometry = self.geometry()?;
+        let count = geometry.uvs.len();
+        let (_, uvs) = geometry.uvs.get_mut(set).ok_or_else(|| JsError::new(&format!("no UV set {set}: the geometry has {count}")))?;
+        Ok(std::mem::take(uvs))
     }
 
-    pub fn colors(&mut self) -> Vec<f32> {
-        std::mem::take(&mut self.geometry().colors)
+    pub fn colors(&mut self) -> Result<Vec<f32>, JsError> {
+        Ok(std::mem::take(&mut self.geometry()?.colors))
     }
 
-    pub fn indices(&mut self) -> Vec<u32> {
-        std::mem::take(&mut self.geometry().indices)
+    pub fn indices(&mut self) -> Result<Vec<u32>, JsError> {
+        Ok(std::mem::take(&mut self.geometry()?.indices))
     }
 
     /// Indices as 16-bit, for geometries with fewer than 65536 vertices.
-    pub fn indices16(&mut self) -> Vec<u16> {
-        let indices = std::mem::take(&mut self.geometry().indices);
-        indices.into_iter().map(|i| i as u16).collect()
+    pub fn indices16(&mut self) -> Result<Vec<u16>, JsError> {
+        let indices = std::mem::take(&mut self.geometry()?.indices);
+        indices
+            .into_iter()
+            .map(u16::try_from)
+            .collect::<Result<_, _>>()
+            .map_err(|_| JsError::new("an index does not fit in 16 bits: use indices() for 65536 vertices or more"))
     }
 
     /// A texture that lives inside a USDZ package, if `path` names one there.
@@ -184,7 +191,7 @@ impl UsdScene {
         }
     }
 
-    fn geometry(&mut self) -> &mut crate::extract::Geometry {
-        self.current.as_mut().expect("read a geometry first")
+    fn geometry(&mut self) -> Result<&mut crate::extract::Geometry, JsError> {
+        self.current.as_mut().ok_or_else(|| JsError::new("no geometry to read: call read() first"))
     }
 }

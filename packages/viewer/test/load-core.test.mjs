@@ -289,6 +289,18 @@ test('a stage with nothing to draw says so, after naming what it could not draw'
   assert.deepEqual(await read(QUAD), []);
 });
 
+test('reading geometry out of order or out of range throws instead of trapping', async () => {
+  const s = server({ 'https://h/root.usda': `#usda 1.0\n${QUAD}` });
+  const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
+  assert.throws(() => scene.positions(), { message: /call read\(\) first/ });
+  assert.throws(() => scene.read(7), { message: /no geometry 7: the scene has 1/ });
+  assert.ok(scene.read(0));
+  assert.throws(() => scene.uvs(3), { message: /no UV set 3/ });
+  // Still usable: none of these trapped.
+  assert.equal(scene.positions().length, 12);
+  scene.free();
+});
+
 test('running out of WASM memory fails as a scene too large to load; a panic gives its message', () => {
   const GiB = 2 ** 30;
   const oom = new Error('failed to decode field "default" at /W/body.normals: failed to read vec: out of memory');

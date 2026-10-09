@@ -165,7 +165,10 @@ impl Scene {
     /// Reads the triangle data of `sources[index]`; `None` when the mesh has
     /// nothing drawable.
     pub fn read_geometry(&self, index: usize) -> openusd::Result<Option<Geometry>> {
-        let source = &self.sources[index];
+        let Some(source) = self.sources.get(index) else {
+            let message = format!("no geometry {index}: the scene has {}", self.sources.len());
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, message).into());
+        };
         if let Some(ty) = source.prim.type_name()?
             && implicit::is_implicit(ty.as_str())
         {
