@@ -18,7 +18,7 @@ import { UsdLoadError } from './errors.js';
  * @param {string} o.rootUrl  absolute
  * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
  * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
- * @param {number} [o.maxLayerBytes=1 GiB]  total size of the distinct layers held for composition
+ * @param {number} [o.maxLayerBytes=768 MiB]  total size of the distinct layers held for composition
  * @param {Promise<{ layers: { url: string, size: number }[], eager: boolean }>} [o.preload]  layers likely
  *   to be needed: fetched ahead at lower priority, right away if `eager` or else once the root names a
  *   dependency, and used only if composition asks for them
@@ -31,7 +31,7 @@ export async function composeStage({
   rootUrl,
   prefetchVariants = false,
   maxConcurrentFetches = 16,
-  maxLayerBytes = 2 ** 30,
+  maxLayerBytes = 768 * 2 ** 20,
   preload,
   onProgress = () => {},
 }) {

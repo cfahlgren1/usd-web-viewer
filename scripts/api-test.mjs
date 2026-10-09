@@ -197,6 +197,29 @@ test('a custom fetch serves the Hub listing and its prefetches, and abort cancel
   assert.deepEqual(out, { outcome: 'aborted', held: ['a.usda', 'unused.usda'], aborted: true });
 });
 
+test('textures past maxTextureBytes or 16384 px a side fail as warnings, not the load', async () => {
+  const out = await page.evaluate(async () => {
+    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    // A PNG header claiming 20000 x 20000 px.
+    const huge = new Uint8Array(33);
+    huge.set([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82]);
+    new DataView(huge.buffer).setUint32(16, 20000);
+    new DataView(huge.buffer).setUint32(20, 20000);
+    huge.set([8, 6], 24);
+    const outcomes = [];
+    for (const [options, png] of [[{ maxTextureBytes: 100 }, null], [{}, huge]]) {
+      const fetchFn = (u, init) => (png && u.endsWith('.png') ? Promise.resolve(new Response(png)) : fetch(u, init));
+      const result = await loadUsd('/conformance/fixtures/uv_set.usda', { ...options, fetch: fetchFn });
+      outcomes.push({ counts: await result.complete, messages: result.info.warnings.filter((w) => w.code === 'texture-failed').map((w) => w.message) });
+      result.dispose();
+    }
+    return outcomes;
+  });
+  assert.deepEqual(out.map((o) => o.counts), [{ textures: 0, failed: 1 }, { textures: 0, failed: 1 }]);
+  assert.match(out[0].messages[0], /maxTextureBytes/);
+  assert.match(out[1].messages[0], /image too large: 20000x20000/);
+});
+
 test('warnings name grey fallback materials and unresolved layers', async () => {
   const warnings = await page.evaluate(async (url) => {
     const { loadUsd } = await import('/packages/viewer/src/index.js');

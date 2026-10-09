@@ -40,7 +40,7 @@ async function compile(url) {
  * @returns {Promise<import('./index.js').LoadResult>}
  */
 export async function loadUsd(url, options = {}) {
-  const { maxTextureSize = 1024, textures: textureMode = 'preview', maxConcurrentFetches, maxLayerBytes } = options;
+  const { maxTextureSize = 1024, textures: textureMode = 'preview', maxConcurrentFetches, maxLayerBytes, maxTextureBytes } = options;
   const { onProgress, signal, headers } = options;
   if (maxConcurrentFetches !== undefined && !(Number.isInteger(maxConcurrentFetches) && maxConcurrentFetches > 0)) {
     throw new RangeError(`maxConcurrentFetches must be a positive integer, got ${maxConcurrentFetches}`);
@@ -160,7 +160,7 @@ export async function loadUsd(url, options = {}) {
     event.preventDefault?.();
     fail(new UsdLoadError('worker', event.message || 'the worker failed', { url: absoluteUrl }));
   };
-  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, maxConcurrentFetches, maxLayerBytes, headers, proxyFetch: !!options.fetch });
+  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, maxConcurrentFetches, maxLayerBytes, maxTextureBytes, headers, proxyFetch: !!options.fetch });
 
   /** Runs one worker request through the caller's `fetch`; the body follows chunk by chunk. */
   async function proxyFetch({ id, url: target }) {

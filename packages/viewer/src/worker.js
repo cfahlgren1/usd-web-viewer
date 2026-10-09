@@ -8,6 +8,9 @@ import { composeStage, fetchLimited, imageInfo, limiter, loadFailure, readGeomet
 // Textures in flight at once (fetch and decode): decoding a large image
 // briefly holds it at full size, so wide parallelism spikes memory.
 const TEXTURE_CONCURRENCY = 4;
+// Longest side of an image read at all: larger ones are refused from their
+// header, before decoding (WebGL's own limit is commonly 16384 too).
+const MAX_IMAGE_SIZE = 16384;
 
 // Requests answered by the page, for a caller-supplied `fetch`. The page sends
 // the body one chunk per pull, so byte budgets apply as it arrives and
@@ -56,18 +59,20 @@ self.onmessage = async ({ data }) => {
     return;
   }
   if (data.type === 'chunk') return receiveChunk(data);
-  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes = 2 ** 30, headers, proxyFetch } = data;
+  const { url, wasmModule, maxTextureSize = 1024, textures = 'preview', maxConcurrentFetches = 16, maxLayerBytes, maxTextureBytes = 512 * 2 ** 20, headers, proxyFetch } = data;
   // Every request, layer or texture, goes through here. The caller's headers
   // (credentials, typically) go only to the root's origin; a custom fetch on
   // the page applies the same rule.
   const request = proxyFetch ? proxiedFetch : (target) => fetch(target, { headers: sameOrigin(target, url) ? headers : undefined });
   const fetchBytes = (target, budget) => fetchLimited(target, budget, { fetchFn: request });
-  // Images stay a Blob (the browser may keep it off the JS heap) until decoded.
-  const fetchBlob = async (target) => {
-    const response = await request(target);
-    if (!response.ok) throw new Error(`HTTP ${response.status} for ${target}`);
-    return response.blob();
+  // One budget for every texture body, charged as its bytes arrive. Bytes of
+  // a body cut short stay charged: they were downloaded.
+  let textureBytes = 0;
+  const chargeTexture = (bytes) => {
+    textureBytes += bytes;
+    if (textureBytes > maxTextureBytes) throw new Error(`textures exceed maxTextureBytes (${maxTextureBytes} bytes)`);
   };
+  const fetchBlob = async (target) => new Blob([await fetchLimited(target, chargeTexture, { fetchFn: request })]);
   const progress = (p) => self.postMessage({ type: 'progress', progress: p });
 
   let wasmMemory;
@@ -139,6 +144,7 @@ self.onmessage = async ({ data }) => {
 async function decodeTexture(blob, maxSize) {
   const head = new Uint8Array(await blob.slice(0, 65536).arrayBuffer());
   const info = imageInfo(head);
+  if (info && Math.max(info.width, info.height) > MAX_IMAGE_SIZE) throw new Error(`image too large: ${info.width}x${info.height} (at most ${MAX_IMAGE_SIZE} px a side)`);
   return { bitmap: await decodeBitmap(blob, info, maxSize), color: info?.color ?? true };
 }
 

@@ -29,14 +29,16 @@ export interface LoadOptions {
   workerUrl?: string | URL | undefined;
   /** Requests in flight at once, a positive integer (anything else throws a RangeError). Default 16 (textures: at most 4 fetched and decoded at once). */
   maxConcurrentFetches?: number | undefined;
-  /** Total bytes of USD layers to fetch before failing with a `fetch` error. Default 1 GiB. */
+  /** Total bytes of USD layers to fetch before failing with a `fetch` error. Default 768 MiB. */
   maxLayerBytes?: number | undefined;
+  /** Total bytes of texture files to fetch, counted as they download; textures past it fail with a `texture-failed` warning. Default 512 MiB. Images larger than 16384 px a side are always refused. */
+  maxTextureBytes?: number | undefined;
 }
 
 /**
  * - `prim-unsupported`: visible geometry other than meshes and the implicit `Cube` / `Sphere` / `Cylinder` / `Cone` / `Capsule` / `Plane` (e.g. `BasisCurves`, `Points`, `Volume`, Gaussian splats) left out.
  * - `nothing-drawable`: no visible mesh had anything to draw.
- * - `texture-failed`: an image could not be read; its inputs show their own (authored or default) values.
+ * - `texture-failed`: an image could not be fetched or read, or was refused (past `maxTextureBytes`, or larger than 16384 px a side); its inputs show their own (authored or default) values.
  */
 export type WarningCode = 'layer-missing' | 'layer-unreadable' | 'prim-unsupported' | 'nothing-drawable' | 'material-fallback' | 'texture-failed' | 'composition';
 
