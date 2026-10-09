@@ -16,7 +16,6 @@ import { UsdLoadError } from './errors.js';
  *   arrives throws once all layers together pass `maxLayerBytes`; a body never passed
  *   through it is charged whole when it returns.
  * @param {string} o.rootUrl  absolute
- * @param {boolean} [o.prefetchVariants]  also fetch layers named only inside variants
  * @param {number} [o.maxConcurrentFetches=16]  layer requests in flight at once
  * @param {number} [o.maxLayerBytes=768 MiB]  total size of the distinct layers held for composition
  * @param {number} [o.maxLayers=1024]  distinct layer files requested (files read from inside a `.usdz` package are not requested, so not counted)
@@ -33,7 +32,6 @@ export async function composeStage({
   UsdLoader,
   fetchBytes,
   rootUrl,
-  prefetchVariants = false,
   maxConcurrentFetches = 16,
   maxLayerBytes = 768 * 2 ** 20,
   maxLayers = 1024,
@@ -177,7 +175,7 @@ export async function composeStage({
         stats.parseMs += performance.now() - t1;
       }
       progress();
-      for (const d of deps) if (d[0] === 'L' || (prefetchVariants && d[0] === 'V')) fetchLayer(d.slice(1));
+      for (const dep of deps) fetchLayer(dep);
     })();
     started.set(path, job);
     pending.push(job);

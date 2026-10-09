@@ -20,7 +20,7 @@ fn inspect(root: &str) -> Result<(), Box<dyn std::error::Error>> {
     let t0 = Instant::now();
     let mut loader = Loader::new();
     let mut queue = vec![root.to_owned()];
-    let (mut layers, mut bytes, mut variant_only) = (0, 0usize, 0);
+    let (mut layers, mut bytes) = (0, 0usize);
     let mut rounds = 0;
     let scene = loop {
         while let Some(path) = queue.pop() {
@@ -34,16 +34,7 @@ fn inspect(root: &str) -> Result<(), Box<dyn std::error::Error>> {
             };
             layers += 1;
             bytes += data.len();
-            for dep in loader.add_layer(&path, data)? {
-                if !dep.arc || loader.has(&dep.path) {
-                    continue;
-                }
-                if dep.in_variant {
-                    variant_only += 1;
-                    continue;
-                }
-                queue.push(dep.path);
-            }
+            queue.extend(loader.add_layer(&path, data)?);
         }
         rounds += 1;
         let tc = Instant::now();
@@ -58,7 +49,7 @@ fn inspect(root: &str) -> Result<(), Box<dyn std::error::Error>> {
     let s = &scene.stats;
     let verts: usize = scene.geometries.iter().map(|g| g.positions.len() / 3).sum();
     println!(
-        "{root}\n  layers {layers} ({:.1} MB), compose rounds {rounds}, variant-only arcs deferred {variant_only}\n  prims {} meshes {} (unique geometries {}) tris {} verts {} | skipped invisible {} purpose {} empty {}\n  upAxis {} metersPerUnit {} materials {} | {:.0} ms",
+        "{root}\n  layers {layers} ({:.1} MB), compose rounds {rounds}\n  prims {} meshes {} (unique geometries {}) tris {} verts {} | skipped invisible {} purpose {} empty {}\n  upAxis {} metersPerUnit {} materials {} | {:.0} ms",
         bytes as f64 / 1e6,
         s.prims,
         s.meshes,

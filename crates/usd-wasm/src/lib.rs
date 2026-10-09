@@ -20,7 +20,6 @@ pub mod resolver;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 
-pub use deps::Dependency;
 pub use extract::Scene;
 use resolver::{Files, MemoryResolver};
 
@@ -48,9 +47,9 @@ impl Loader {
         resolver::lock(&self.files).bytes.contains_key(path)
     }
 
-    /// Stores a layer under its identifier and returns the asset paths it
-    /// authors, so the host can prefetch them in parallel.
-    pub fn add_layer(&mut self, path: &str, bytes: Vec<u8>) -> openusd::Result<Vec<Dependency>> {
+    /// Stores a layer under its identifier and returns the layers it names
+    /// outside unselected variants, so the host can prefetch them in parallel.
+    pub fn add_layer(&mut self, path: &str, bytes: Vec<u8>) -> openusd::Result<Vec<String>> {
         if bytes.starts_with(b"PK\x03\x04") {
             resolver::check_package(&bytes)?;
         }
@@ -60,9 +59,9 @@ impl Loader {
         let mut deps = deps::layer_dependencies(layer.data(), &real_path);
         // Files inside a package we hold need no fetching.
         let files = resolver::lock(&self.files);
-        deps.retain(|d| resolver::split_packaged(&d.path).is_none_or(|(package, _)| !files.bytes.contains_key(package)));
+        deps.retain(|d| resolver::split_packaged(d).is_none_or(|(package, _)| !files.bytes.contains_key(package)));
         // Arcs to formats nothing here reads (MaterialX) are not worth fetching.
-        deps.retain(|d| !d.arc || resolver::is_layer_path(&d.path));
+        deps.retain(|d| resolver::is_layer_path(d));
         Ok(deps)
     }
 

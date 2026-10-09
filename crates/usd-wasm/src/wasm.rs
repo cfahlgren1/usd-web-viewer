@@ -58,23 +58,11 @@ impl UsdLoader {
         self.inner.has(path)
     }
 
-    /// Stores a layer and returns the asset paths it authors, each prefixed
-    /// with a kind: `L` a layer arc, `V` a layer arc inside a variant, `A` any
-    /// other asset.
+    /// Stores a layer and returns the layers it names outside unselected
+    /// variants (see [`Loader::add_layer`]).
     #[wasm_bindgen(js_name = addLayer)]
     pub fn add_layer(&mut self, path: &str, bytes: Vec<u8>) -> Result<Vec<String>, JsError> {
-        let deps = self.inner.add_layer(path, bytes).map_err(js_error)?;
-        Ok(deps
-            .into_iter()
-            .map(|d| {
-                let kind = match (d.arc, d.in_variant) {
-                    (true, false) => 'L',
-                    (true, true) => 'V',
-                    (false, _) => 'A',
-                };
-                format!("{kind}{}", d.path)
-            })
-            .collect())
+        self.inner.add_layer(path, bytes).map_err(js_error)
     }
 
     #[wasm_bindgen(js_name = markUnavailable)]
