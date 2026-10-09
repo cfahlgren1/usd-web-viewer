@@ -1,6 +1,6 @@
 # usd-web-viewer
 
-View OpenUSD files in the browser. Real USD composition (sublayers, references, payloads, variants) in a **594 KB** WASM module, rendered with three.js. MIT, no `SharedArrayBuffer`, no COOP/COEP headers, loads straight from Hugging Face Hub URLs.
+View OpenUSD files in the browser. Real USD composition (sublayers, references, payloads, variants) in a **601 KB** WASM module, rendered with three.js. MIT, no `SharedArrayBuffer`, no COOP/COEP headers, loads straight from Hugging Face Hub URLs.
 
 | LG laptop | Robotiq gripper | Standard Bots arm | NVIDIA IV pole | NVIDIA chair | imagine.io railing |
 |:-:|:-:|:-:|:-:|:-:|:-:|
@@ -19,10 +19,11 @@ Drop-in element (works as is in Vite and other bundlers; see [`examples/vite`](e
 
 <usd-viewer
   src="https://huggingface.co/datasets/Robotiq-Official/simready-assets/resolve/main/Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda"
+  poster="robotiq.png"
   alt="Robotiq 2F-85 gripper"></usd-viewer>
 ```
 
-Attributes: `src`, `textures`, `max-texture-size`, `alt`, `loading` (`lazy` by default), `poster`, `reveal`. Events: `progress`, `load`, `error`, `context-lost`.
+Attributes: `src`, `textures`, `max-texture-size`, `alt`, `loading` (`lazy` by default), `poster`, `reveal`. Events: `progress`, `load`, `error`, `context-lost`. `el.toBlob()` captures a PNG or WebP of the current view.
 
 Or drive it from JavaScript:
 
@@ -57,19 +58,23 @@ Errors are `UsdLoadError`s with a `code`; anything that could not be shown faith
 
 ## Compared with other browser USD viewers
 
-Six real [SimReady](https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers) packages from the Hub.
+Fourteen public files from the Hub in one run: eight single-file assets (36 to 3.5M triangles, 0.1 to 250 MB) and six multi-file [SimReady](https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers) packages.
 
-| | **usd-web-viewer** | [Needle](https://www.npmjs.com/package/@needle-tools/usd) | [three.js `USDLoader`](https://github.com/mrdoob/three.js/tree/r186/examples/jsm/loaders/usd) | [tinyusdz](https://github.com/lighttransport/tinyusdz) | GLB (pre-converted) |
-|---|---|---|---|---|---|
-| Renders the 6 packages | **6/6** | 5/6 | 1/6 | 2/6 | 6/6 |
-| WASM download (brotli) | **594 KB** | 6.0 MB | – | 1.4 MB | – |
-| Peak tab memory | **164–612 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
-| WASM heap | **2–75 MB** | ~700 MB | – | 18–64 MB | – |
-| IV pole fully loaded | **0.7 s**² | 11.8 s | ✗ | ✗ | 0.1 s |
-| Needs COOP/COEP | **no** | yes | no | no | no |
-| License | **MIT** | PolyForm Noncommercial | MIT | Apache-2.0 / MIT | – |
+| | **usd-web-viewer** | [Needle](https://www.npmjs.com/package/@needle-tools/usd) | [openusd-wasm](https://www.npmjs.com/package/@openusd-wasm/three-loader) | [tinyusdz](https://github.com/lighttransport/tinyusdz) | [three.js `USDLoader`](https://github.com/mrdoob/three.js/tree/r186/examples/jsm/loaders/usd) | [cinevva](https://github.com/cinevva-engine/usdjs) |
+|---|---|---|---|---|---|---|
+| Renders correctly (single-file / SimReady) | **8/8 · 6/6** | 2/8 · 3/6 | 4/8 · 4/6 | 3/8 · 2/6 | 3/8 · 1/6 | 4/8 · 1/6 |
+| Download (brotli) | **606 KB** | 4.9 MB | 1.8 MB | 1.2 MB | 20 KB | 82 KB |
+| Time to fully loaded¹ | **1×** | 6.0× | 4.2× | 9.1× | 4.7× | 17.5× |
+| Peak tab memory¹ | **1×** | 5.6× | 5.2× | 1.5× | 0.8× | 0.9× |
+| WASM heap | **2 MB** minimum | ~690 MB | ~680 MB | 17 MB | – | – |
+| Needs COOP/COEP | **no** | yes | yes | no | no | no |
+| License | **MIT** | PolyForm Noncommercial | MIT² | Apache-2.0 / MIT | MIT | MIT |
 
-¹ only on the assets it renders. ² default `textures: 'preview'`: color plus packed occlusion/roughness/metallic maps (144 MB of 4K PNGs, data maps decoded at 512 px); `'full'` adds normal maps: 0.9 s, 218 MB, the set Needle loads. Headless Chromium, software rendering, localhost, median of 3 cold runs. Full tables and screenshots: [`bench/results`](bench/results/README.md).
+| usd-web-viewer | Needle | openusd-wasm | tinyusdz | three.js | cinevva | GLB (offline) |
+|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| <img src="bench/results/crossbench/panda__usd-wasm.png" width="96"> | <img src="bench/results/crossbench/panda__needle.png" width="96"> | <img src="bench/results/crossbench/panda__openusd-wasm.png" width="96"> | <img src="bench/results/crossbench/panda__tinyusdz.png" width="96"> | <img src="bench/results/crossbench/panda__three.png" width="96"> | <img src="bench/results/crossbench/panda__cinevva.png" width="96"> | <img src="bench/results/crossbench/panda__gltf.png" width="96"> |
+
+¹ geometric mean of library ÷ ours over the files both render correctly; below 1× is better than ours. three.js wins on small untextured single files: it parses on the main thread with no worker or WASM start-up. A GLB converted offline loads in about a third of our time. ² wraps Pixar OpenUSD; source repository not public. Headless Chromium, software rendering, localhost, median of 3 cold runs, default `textures: 'preview'`. Full tables, renders and file licenses: [`bench/results/crossbench.md`](bench/results/crossbench.md).
 
 ## Matches Pixar OpenUSD
 
@@ -77,9 +82,10 @@ A Pixar `usd-core` oracle and our WASM build dump the same JSON per package (mes
 
 | Set | Match |
 |---|---|
+| Every package in [nvidia/simready-assets](https://huggingface.co/datasets/nvidia/simready-assets) | **2,503/2,503** |
 | 6 benchmark assets | **6/6** |
 | usd-wg/assets material scenes | **10/10** |
-| Edge-case fixtures (instancers, colors, UV sets, missing files) | **9/9** |
+| Edge-case fixtures (instancers, colors, UV sets, missing files, implicit shapes) | **11/11** |
 | Random Hub sample (nvidia, LG, Robotiq, Standard Bots, agibot, imagine.io) | **186/187** |
 
 The one miss is a 1.2e-5 unit offset on four lid meshes. Details: [`conformance/results`](conformance/results/README.md).
@@ -112,7 +118,8 @@ Browsers: Chrome / Edge 111+, Safari 16.4+, Firefox 115+.
 | `opacityThreshold` cutouts, texture alpha, `UsdTransform2d`, wrap modes, per-texture UV sets | MaterialX (grey fallback) |
 | `displayColor` (constant or per vertex / face), `UsdPrimvarReader` diffuse | Skinning, animation, subdivision |
 | MDL `OmniPBR` / glTF `pbr.mdl` parameters, grey fallback | UDIM sets beyond the first tile (`<UDIM>` loads tile 1001 only) |
-| Visibility, purpose, `GeomSubset` materials | |
+| Visibility, purpose, `GeomSubset` materials | Lights, cameras (fixed studio lighting) |
+| `Cube`, `Sphere`, `Cylinder`, `Cone`, `Capsule`, `Plane` | Curves, points, volumes, Gaussian splats (listed in `info.warnings`) |
 
 <details><summary>Build, test and benchmark</summary>
 
@@ -131,6 +138,10 @@ node conformance/run.mjs --usdwg                   # usd-wg/assets material scen
 ```
 
 </details>
+
+## Security
+
+Files are treated as untrusted: parsing is memory-safe Rust in a worker, every request goes through one policy (cookies only for the root file's repo), and every load is capped. See [`SECURITY.md`](SECURITY.md).
 
 ## Credits
 
