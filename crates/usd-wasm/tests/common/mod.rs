@@ -1,5 +1,8 @@
 //! Composes test stages through the same Loader the browser uses.
 
+// Each test binary uses part of it.
+#![allow(dead_code)]
+
 use std::collections::BTreeSet;
 
 use usd_wasm::{Composed, Loader, Scene};
