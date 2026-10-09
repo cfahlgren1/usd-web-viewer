@@ -11,10 +11,12 @@ export interface UsdViewerEventMap extends Omit<HTMLElementEventMap, 'progress' 
 }
 
 /**
- * `<usd-viewer src textures max-texture-size alt touch-action>`.
+ * `<usd-viewer src textures max-texture-size alt touch-action loading poster reveal>`.
  * Before it is defined, give it a size: `usd-viewer:not(:defined) { display: block; min-height: 200px }`.
+ * The shadow parts `viewer`, `poster` and `reveal` (the button) can be styled with `::part()`.
  */
 export class UsdViewerElement extends HTMLElement {
+  /** Nothing is created (no worker, WASM or WebGL context) without one. */
   src: string;
   /** Reads `preview` when the attribute is missing or not a TextureMode. */
   textures: TextureMode;
@@ -23,6 +25,13 @@ export class UsdViewerElement extends HTMLElement {
   alt: string;
   /** Applied to the canvas. Default `pan-y`, so the page scrolls on touch screens. */
   touchAction: string;
+  /** `lazy` (default): the viewer (worker, WASM, WebGL context) starts once the element is within half a viewport of the screen. `eager`: right away. */
+  loading: 'lazy' | 'eager';
+  /** An image shown until the model's first geometry is drawn, then cross-faded out; shown again while there is no viewer. */
+  poster: string;
+  /** `auto` (default). `interaction`: nothing loads until the reveal button over the poster is clicked, tapped or activated from the keyboard. */
+  reveal: 'auto' | 'interaction';
+  /** Null until a viewer starts (see `loading` and `reveal`). */
   readonly viewer: Viewer | null;
   readonly result: LoadResult | null;
   addEventListener<K extends keyof UsdViewerEventMap>(type: K, listener: (this: UsdViewerElement, event: UsdViewerEventMap[K]) => void, options?: boolean | AddEventListenerOptions): void;

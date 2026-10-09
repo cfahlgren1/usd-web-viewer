@@ -422,6 +422,76 @@ test('<usd-viewer> loads src and dispatches progress and load', async () => {
   assert.deepEqual(lifecycle, { kept: true, disposed: true });
 });
 
+/** element.html without a src: the element module is loaded, nothing else. */
+async function emptyElementPage() {
+  await page.goto(`${BASE}/examples/element.html?src=`);
+  await page.evaluate(() => document.getElementById('viewer').remove());
+}
+
+/** Appends a <usd-viewer> with `attributes` after `spacer` of page height; resolves its events into window.events[id]. */
+const addViewer = (id, attributes, spacer = '0') =>
+  page.evaluate(
+    ([id, attributes, spacer]) => {
+      const gap = document.body.appendChild(document.createElement('div'));
+      gap.style.height = spacer;
+      const el = document.createElement('usd-viewer');
+      el.id = id;
+      el.style.height = '300px';
+      (window.seen ??= {})[id] = [];
+      for (const type of ['load', 'error', 'context-lost']) el.addEventListener(type, (e) => window.seen[id].push(type === 'error' ? `error:${e.error.message}` : type));
+      for (const [name, value] of Object.entries(attributes)) el.setAttribute(name, value);
+      document.body.append(el);
+    },
+    [id, attributes, spacer],
+  );
+const seenBy = (id) => page.evaluate((id) => window.seen[id], id);
+const waitFor = (id, type) => page.waitForFunction(([id, type]) => window.seen[id].includes(type), [id, type], { timeout: 60000 });
+
+test('<usd-viewer> lazy: nothing is created until it nears the viewport; eager starts at once', async () => {
+  await emptyElementPage();
+  await fetch(`${BASE}/__stats/reset`);
+  await addViewer('far', { src: LAPTOP, alt: 'laptop' }, '300vh');
+  await page.waitForTimeout(1000);
+  const before = await page.evaluate(() => ({ viewer: document.getElementById('far').viewer, canvases: document.getElementById('far').shadowRoot.querySelectorAll('canvas').length }));
+  assert.deepEqual(before, { viewer: null, canvases: 0 });
+  assert.deepEqual((await stats()).filter((r) => /\.wasm$|worker\.js$|\.usd$/.test(r.url)), [], 'no WASM, worker or layer requested');
+  await page.evaluate(() => document.getElementById('far').scrollIntoView());
+  await waitFor('far', 'load');
+  await addViewer('eager', { src: LAPTOP, loading: 'eager', textures: 'none' }, '300vh');
+  await waitFor('eager', 'load');
+  assert.deepEqual(await page.evaluate(() => ['far', 'eager'].map((id) => !!document.getElementById(id).viewer)), [true, true]);
+});
+
+test('<usd-viewer> poster: shown until the first geometry is drawn, then faded out', async () => {
+  await emptyElementPage();
+  await addViewer('p', { src: LAPTOP, poster: '/conformance/fixtures/quadrants.png', alt: 'laptop', textures: 'none' });
+  const poster = () => page.evaluate(() => {
+    const img = document.getElementById('p').shadowRoot.querySelector('img');
+    return { hidden: img.hidden, faded: img.classList.contains('hidden'), alt: img.alt, src: img.getAttribute('src') };
+  });
+  assert.deepEqual(await poster(), { hidden: false, faded: false, alt: 'laptop', src: '/conformance/fixtures/quadrants.png' });
+  await waitFor('p', 'load');
+  await page.waitForTimeout(100);
+  assert.deepEqual(await poster(), { hidden: false, faded: true, alt: '', src: '/conformance/fixtures/quadrants.png' });
+});
+
+test('<usd-viewer reveal="interaction">: loads only once its button is activated, from the keyboard too', async () => {
+  await emptyElementPage();
+  await addViewer('r', { src: LAPTOP, reveal: 'interaction', alt: 'laptop', textures: 'none' });
+  await page.waitForTimeout(500);
+  const state = () => page.evaluate(() => {
+    const el = document.getElementById('r');
+    const button = el.shadowRoot.querySelector('button');
+    return { viewer: !!el.viewer, button: !button.hidden, label: button.getAttribute('aria-label') };
+  });
+  assert.deepEqual(await state(), { viewer: false, button: true, label: 'View in 3D: laptop' });
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Enter');
+  await waitFor('r', 'load');
+  assert.deepEqual(await state(), { viewer: true, button: false, label: 'View in 3D: laptop' });
+  assert.equal(await page.evaluate(() => document.getElementById('r').shadowRoot.activeElement?.tagName), 'CANVAS');
+});
+
 let failed = 0;
 for (const [name, fn] of tests) {
   try {

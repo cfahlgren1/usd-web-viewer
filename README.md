@@ -22,7 +22,7 @@ Drop-in element (works as is in Vite and other bundlers; see [`examples/vite`](e
   alt="Robotiq 2F-85 gripper"></usd-viewer>
 ```
 
-Attributes: `src`, `textures`, `max-texture-size`, `alt`. Events: `progress`, `load`, `error`.
+Attributes: `src`, `textures`, `max-texture-size`, `alt`, `loading` (`lazy` by default), `poster`, `reveal`. Events: `progress`, `load`, `error`.
 
 Or drive it from JavaScript:
 
