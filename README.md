@@ -40,7 +40,7 @@ All options, errors and warnings are typed in [`index.d.ts`](packages/viewer/src
 
 ## Why
 
-About half the size of tinyusdz, with the same composition support as Pixar-based viewers on SimReady assets.
+About half the size of tinyusdz, with the same composition support as Pixar-based viewers, measured on [14 public USD files from the Hub](https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/blob/main/crossbench.md) including SimReady packages from [nvidia](https://huggingface.co/datasets/nvidia/simready-assets), [LG](https://huggingface.co/datasets/LGElectronics/simready-assets) and [Robotiq](https://huggingface.co/datasets/Robotiq-Official/simready-assets).
 
 | | Renders the 14 test files | Download | Load time | Memory |
 |---|---|--:|--:|--:|
@@ -50,7 +50,7 @@ About half the size of tinyusdz, with the same composition support as Pixar-base
 | tinyusdz | `█████░░░░░░░░░` 5 | 1.2 MB | 9.1× slower | 1.5× more |
 | three.js USDLoader | `████░░░░░░░░░░` 4 | 20 KB | 4.7× slower | 0.8× (less) |
 
-<sub><i>14 public Hub files (8 single-file assets, 6 multi-file SimReady packages) in headless Chromium with software WebGL, served from localhost; median of 3 cold loads. Download is WASM + JS, brotli. Load time and memory are relative to usd-web-viewer on the files both render. Measured October 2026; <a href="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/blob/main/crossbench.md">full results</a>.</i></sub>
+<sub><i>Headless Chromium with software WebGL, served from localhost; median of 3 cold loads. Download is WASM + JS, brotli. Load time and memory are relative to usd-web-viewer on the files both render. Measured October 2026; <a href="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/blob/main/crossbench.md">full results</a>.</i></sub>
 
 <details>
 <summary>Why it's smaller than Pixar-based builds</summary>
