@@ -83,7 +83,7 @@ self.onmessage = async ({ data }) => {
       onProgress: progress,
     });
     const geometries = takeGeometries(scene, meta);
-    const packaged = takePackagedTextures(scene, meta);
+    const packaged = takePackagedTextures(scene, meta, { textures });
     scene.free();
     stats.initMs = tInit - t0;
     stats.totalMs = performance.now() - t0;
@@ -103,7 +103,9 @@ self.onmessage = async ({ data }) => {
       jobs.map(({ path, size }) =>
         throttle(async () => {
           try {
-            const blob = packaged.has(path) ? new Blob([packaged.get(path)]) : await fetchBlob(path);
+            const entry = packaged.get(path);
+            if (entry instanceof Error) throw entry;
+            const blob = entry ? new Blob([entry]) : await fetchBlob(path);
             bytes += blob.size;
             const { bitmap, color } = await decodeTexture(blob, size);
             self.postMessage({ type: 'texture', path, bitmap, color }, [bitmap]);

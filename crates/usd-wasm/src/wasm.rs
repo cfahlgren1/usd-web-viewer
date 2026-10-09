@@ -68,25 +68,11 @@ impl UsdLoader {
     #[wasm_bindgen(js_name = takeScene)]
     pub fn take_scene(&mut self) -> Result<UsdScene, JsError> {
         let scene = self.scene.take().ok_or_else(|| JsError::new("compose has not produced a scene"))?;
-        // Textures inside a USDZ cannot be fetched by URL: pull them out
-        // before the package bytes are dropped.
-        let mut packaged = std::collections::HashMap::new();
-        for m in &scene.materials {
-            for (_, t) in &m.maps {
-                if resolver::split_packaged(&t.path).is_none() {
-                    continue;
-                }
-                match self.inner.packaged_file(&t.path) {
-                    Ok(bytes) => {
-                        packaged.insert(t.path.clone(), bytes);
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => return Err(js_error(e)),
-                }
-            }
-        }
+        // Textures inside a USDZ cannot be fetched by URL: keep their packages,
+        // to read only the images the texture mode loads, each once.
+        let packages = self.inner.take_texture_packages(&scene);
         self.inner.clear();
-        Ok(UsdScene { scene, packaged })
+        Ok(UsdScene { scene, packages })
     }
 }
 
@@ -100,7 +86,7 @@ impl Default for UsdLoader {
 #[wasm_bindgen]
 pub struct UsdScene {
     scene: Scene,
-    packaged: std::collections::HashMap<String, Vec<u8>>,
+    packages: std::collections::HashMap<String, Vec<u8>>,
 }
 
 #[wasm_bindgen]
@@ -131,10 +117,20 @@ impl UsdScene {
         std::mem::take(&mut self.scene.geometries[geometry].indices)
     }
 
-    /// A texture that lives inside a USDZ package, if `path` names one.
+    /// A texture that lives inside a USDZ package, if `path` names one there.
     #[wasm_bindgen(js_name = packagedFile)]
-    pub fn packaged_file(&mut self, path: &str) -> Option<Vec<u8>> {
-        self.packaged.remove(path)
+    pub fn packaged_file(&self, path: &str) -> Result<Option<Vec<u8>>, JsError> {
+        let Some((package, inner)) = resolver::split_packaged(path) else {
+            return Ok(None);
+        };
+        let Some(bytes) = self.packages.get(package) else {
+            return Ok(None);
+        };
+        match resolver::read_packaged(bytes, inner, resolver::MAX_PACKAGED_FILE_BYTES) {
+            Ok(file) => Ok(Some(file)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(js_error(e)),
+        }
     }
 
     /// Indices as 16-bit, for geometries with fewer than 65536 vertices.

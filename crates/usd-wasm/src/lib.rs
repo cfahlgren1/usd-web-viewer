@@ -4,7 +4,7 @@
 //! loader reports missing, and finally composes and extracts a [`Scene`].
 
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 
 use openusd::{sdf, usd};
@@ -102,9 +102,19 @@ impl Loader {
         Ok(Composed::Scene(scene))
     }
 
-    /// A file inside a stored USDZ package (`/h/pkg.usdz[tex.png]`), e.g. a texture.
-    pub fn packaged_file(&self, path: &str) -> std::io::Result<Vec<u8>> {
-        resolver::lock(&self.files).read_packaged(path)
+    /// Moves out the USDZ packages `scene`'s textures live in, by package path,
+    /// so their images can still be read once the layers are dropped.
+    pub fn take_texture_packages(&mut self, scene: &Scene) -> HashMap<String, Vec<u8>> {
+        let mut files = resolver::lock(&self.files);
+        let mut packages = HashMap::new();
+        for (_, texture) in scene.materials.iter().flat_map(|m| &m.maps) {
+            if let Some((package, _)) = resolver::split_packaged(&texture.path)
+                && let Some(bytes) = files.bytes.remove(package)
+            {
+                packages.insert(package.to_owned(), bytes);
+            }
+        }
+        packages
     }
 
     /// Drops every stored layer.

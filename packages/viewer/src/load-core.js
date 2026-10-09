@@ -235,13 +235,21 @@ export function takeGeometries(scene, meta) {
   }));
 }
 
-/** Textures stored inside a USDZ package, by path: they cannot be fetched by URL. */
-export function takePackagedTextures(scene, meta) {
+/**
+ * Images stored inside a USDZ package (they cannot be fetched by URL) that the
+ * texture mode loads, each read once, by path. One that cannot be read maps
+ * to its error, so it fails as that texture rather than the whole load.
+ */
+export function takePackagedTextures(scene, meta, { textures = 'preview' } = {}) {
   const out = new Map();
-  for (const { path } of textureJobs(meta, { textures: 'full' })) {
+  for (const { path } of textureJobs(meta, { textures })) {
     if (!path.includes('[')) continue;
-    const bytes = scene.packagedFile(path);
-    if (bytes) out.set(path, bytes);
+    try {
+      const bytes = scene.packagedFile(path);
+      if (bytes) out.set(path, bytes);
+    } catch (error) {
+      out.set(path, error);
+    }
   }
   return out;
 }

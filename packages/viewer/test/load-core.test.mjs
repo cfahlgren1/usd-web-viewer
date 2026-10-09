@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { initSync, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited } from '../src/load-core.js';
+import { composeStage, fetchLimited, takePackagedTextures } from '../src/load-core.js';
 
 initSync({ module: readFileSync(new URL('../wasm/usd_wasm_bg.wasm', import.meta.url)) });
 
@@ -32,39 +32,48 @@ function server(files, { delayMs = 0 } = {}) {
   return s;
 }
 
-/** A one-entry zip with stored (uncompressed) data and a chosen declared size. */
-function storedZip(name, data, declaredSize = data.length) {
-  const nameBytes = Buffer.from(name);
-  const crc = zlib.crc32(data);
-  const local = Buffer.alloc(30);
-  local.writeUInt32LE(0x04034b50, 0);
-  local.writeUInt16LE(20, 4);
-  local.writeUInt32LE(crc, 14);
-  local.writeUInt32LE(data.length, 18);
-  local.writeUInt32LE(declaredSize, 22);
-  local.writeUInt16LE(nameBytes.length, 26);
-  const central = Buffer.alloc(46);
-  central.writeUInt32LE(0x02014b50, 0);
-  central.writeUInt16LE(20, 4);
-  central.writeUInt16LE(20, 6);
-  central.writeUInt32LE(crc, 16);
-  central.writeUInt32LE(data.length, 20);
-  central.writeUInt32LE(declaredSize, 24);
-  central.writeUInt16LE(nameBytes.length, 28);
-  const centralOffset = local.length + nameBytes.length + data.length;
+/** A zip of stored (uncompressed) entries, each optionally declaring a size it does not have. */
+function storedZip(entries) {
+  const locals = [];
+  const centrals = [];
+  let offset = 0;
+  for (const { name, data, declaredSize = data.length } of entries) {
+    const nameBytes = Buffer.from(name);
+    const crc = zlib.crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4);
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(declaredSize, 22);
+    local.writeUInt16LE(nameBytes.length, 26);
+    const central = Buffer.alloc(46);
+    central.writeUInt32LE(0x02014b50, 0);
+    central.writeUInt16LE(20, 4);
+    central.writeUInt16LE(20, 6);
+    central.writeUInt32LE(crc, 16);
+    central.writeUInt32LE(data.length, 20);
+    central.writeUInt32LE(declaredSize, 24);
+    central.writeUInt16LE(nameBytes.length, 28);
+    central.writeUInt32LE(offset, 42);
+    locals.push(local, nameBytes, data);
+    centrals.push(central, nameBytes);
+    offset += local.length + nameBytes.length + data.length;
+  }
+  const centralSize = centrals.reduce((n, b) => n + b.length, 0);
   const end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(1, 8);
-  end.writeUInt16LE(1, 10);
-  end.writeUInt32LE(central.length + nameBytes.length, 12);
-  end.writeUInt32LE(centralOffset, 16);
-  return new Uint8Array(Buffer.concat([local, nameBytes, data, central, nameBytes, end]));
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  return new Uint8Array(Buffer.concat([...locals, ...centrals, end]));
 }
 
 test('a package entry that lies about its size is read without trusting the header', async () => {
   const s = server({
     'https://h/root.usda': '#usda 1.0\ndef "A" (references = @./p.usdz[m.usda]@) {}',
-    'https://h/p.usdz': storedZip('m.usda', Buffer.from(`#usda 1.0\n(defaultPrim = "M")\n${QUAD}`), 0xfffffff0),
+    'https://h/p.usdz': storedZip([{ name: 'm.usda', data: Buffer.from(`#usda 1.0\n(defaultPrim = "M")\n${QUAD}`), declaredSize: 0xfffffff0 }]),
   });
   const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
   scene.free();
@@ -202,4 +211,47 @@ test('relative layers resolve against the requested URL, not where it redirected
   const { scene } = await composeStage({ UsdLoader, fetchBytes: fetchLimited, rootUrl: `${base}/a/root.usda` });
   scene.free();
   assert.deepEqual(requested, ['/a/root.usda', '/cdn/blob1', '/a/sub.usda']);
+});
+
+test('a packaged image shared by many materials is extracted once, and only when its texture mode loads it', async () => {
+  // As in the review: 1,030 materials each sample one 1 MiB image twice.
+  const materials = Array.from(
+    { length: 1030 },
+    (_, i) => `def Mesh "M${i}" (prepend apiSchemas = ["MaterialBindingAPI"]) {
+  int[] faceVertexCounts = [3]
+  int[] faceVertexIndices = [0, 1, 2]
+  point3f[] points = [(0, 0, 0), (1, 0, 0), (0, 1, 0)]
+  rel material:binding = </Mat${i}>
+}
+def Material "Mat${i}" {
+  token outputs:surface.connect = </Mat${i}/P.outputs:surface>
+  def Shader "P" {
+    uniform token info:id = "UsdPreviewSurface"
+    color3f inputs:diffuseColor.connect = </Mat${i}/T.outputs:rgb>
+    float inputs:roughness.connect = </Mat${i}/T.outputs:r>
+    token outputs:surface
+  }
+  def Shader "T" {
+    uniform token info:id = "UsdUVTexture"
+    asset inputs:file = @tex.png@
+    float3 outputs:rgb
+    float outputs:r
+  }
+}`,
+  );
+  const usdz = storedZip([
+    { name: 'root.usda', data: Buffer.from(`#usda 1.0\n${materials.join('\n')}`) },
+    { name: 'tex.png', data: Buffer.alloc(1 << 20) },
+  ]);
+  for (const [textures, reads] of [['none', 0], ['preview', 1]]) {
+    const s = server({ 'https://h/shared.usdz': usdz });
+    const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/shared.usdz' });
+    const read = [];
+    const packagedFile = scene.packagedFile.bind(scene);
+    scene.packagedFile = (path) => (read.push(path), packagedFile(path));
+    const packaged = takePackagedTextures(scene, meta, { textures });
+    scene.free();
+    assert.equal(read.length, reads, textures);
+    if (reads) assert.equal(packaged.get('https://h/shared.usdz[tex.png]').byteLength, 1 << 20);
+  }
 });
