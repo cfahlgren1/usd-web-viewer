@@ -10,7 +10,7 @@ usd-web-viewer loads untrusted, user-uploaded USD files in the browser. This is 
   - on huggingface.co, only `resolve` file URLs and tree listings;
   - cookies and caller `headers` only for the root file's origin (for Hub URLs, the root's repo);
   - every other request sent with `credentials: 'omit'` and `no-referrer`;
-  - `allowedOrigins` narrows or widens the allowed hosts.
+  - `allowedOrigins` adds more allowed hosts; the root's origin (and, for a Hub root, the Hub) is always allowed.
 - **Bounded resources.** Each load is capped. Hitting a cap fails the load or skips the item with a warning, never hangs the page.
 
   | Option | Default |
