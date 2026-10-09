@@ -1,8 +1,9 @@
 //! Walks a composed stage and flattens what a viewer draws: triangle meshes
 //! with world transforms and simple PBR materials.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use openusd::gf::Matrix4d;
 use openusd::sdf::{self, Value};
 use openusd::usd::{self, PrimPredicate, Stage};
 use openusd_schemas::geom::XformCache;
@@ -71,6 +72,16 @@ struct Inherited {
     invisible: bool,
     /// The nearest authored purpose is `guide` or `proxy`.
     hidden_purpose: bool,
+    /// Index into the prototypes: under a PointInstancer prototype, which is
+    /// drawn only at that instancer's placements.
+    prototype: Option<u32>,
+}
+
+/// A PointInstancer prototype and where instancers place it: each instance's
+/// index and its prototype-to-world transform.
+struct Prototype {
+    root: sdf::Path,
+    placements: Vec<(usize, Matrix4d)>,
 }
 
 pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
@@ -93,6 +104,15 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
     let mut geometry_by_source: HashMap<String, u32> = HashMap::new();
     let mut materials = material::Cache::default();
 
+    let mut prototypes: Vec<Prototype> = Vec::new();
+    for path in &paths {
+        let prim = stage.prim(path)?;
+        if prim.type_name()?.as_deref() == Some("PointInstancer") {
+            let world = xforms.local_to_world_transform(&prim).unwrap_or(Matrix4d::IDENTITY);
+            add_placements(&prim, world, &mut prototypes)?;
+        }
+    }
+
     for path in paths {
         let prim = stage.prim(&path)?;
         let parent = path
@@ -109,6 +129,9 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
             && let Some(purpose) = token_attr(&prim, "purpose")
         {
             own.hidden_purpose = purpose == "guide" || purpose == "proxy";
+        }
+        if let Some(index) = prototypes.iter().position(|p| p.root == path) {
+            own.prototype = Some(index as u32);
         }
         state.insert(path.clone(), own);
 
@@ -168,21 +191,94 @@ pub fn extract(stage: &Stage) -> openusd::Result<Scene> {
             instance_materials.push(index);
         }
 
-        let matrix = xforms
-            .local_to_world_transform(&prim)
-            .map(|m| m.0)
-            .unwrap_or(openusd::gf::Matrix4d::IDENTITY.0);
-        scene.stats.meshes += 1;
-        scene.stats.triangles += scene.geometries[geometry as usize].indices.len() / 3;
-        scene.instances.push(Instance {
-            path: path.as_str().to_owned(),
-            geometry,
-            matrix,
-            materials: instance_materials,
-            double_sided: matches!(prim.attribute("doubleSided").get::<bool>(), Ok(Some(true))),
-        });
+        let placed = match own.prototype {
+            None => vec![(
+                path.as_str().to_owned(),
+                xforms.local_to_world_transform(&prim).unwrap_or(Matrix4d::IDENTITY),
+            )],
+            Some(index) => {
+                let prototype = &prototypes[index as usize];
+                let above_root = stage.prim(prototype.root.parent().unwrap_or_else(sdf::Path::abs_root))?;
+                let (to_root, _) = xforms
+                    .compute_relative_transform(&prim, &above_root)
+                    .unwrap_or((Matrix4d::IDENTITY, false));
+                prototype
+                    .placements
+                    .iter()
+                    .map(|&(i, placement)| (format!("{}[{i}]", path.as_str()), to_root * placement))
+                    .collect()
+            }
+        };
+        let double_sided = matches!(prim.attribute("doubleSided").get::<bool>(), Ok(Some(true)));
+        let triangles = scene.geometries[geometry as usize].indices.len() / 3;
+        for (path, matrix) in placed {
+            scene.stats.meshes += 1;
+            scene.stats.triangles += triangles;
+            scene.instances.push(Instance {
+                path,
+                geometry,
+                matrix: matrix.0,
+                materials: instance_materials.clone(),
+                double_sided,
+            });
+        }
     }
     Ok(scene)
+}
+
+/// Records where a PointInstancer places each of its prototypes:
+/// `scale * orientation * translate(position)` under the instancer's own
+/// transform, leaving out `invisibleIds` and `inactiveIds`.
+fn add_placements(prim: &usd::Prim, world: Matrix4d, out: &mut Vec<Prototype>) -> openusd::Result<()> {
+    let targets = prim.relationship("prototypes").targets()?;
+    let Some(proto_indices) = ints(prim.attribute("protoIndices").get::<Value>()?) else {
+        return Ok(());
+    };
+    let Some(positions) = prim.attribute("positions").get::<Value>()?.as_ref().and_then(vec3s) else {
+        return Ok(());
+    };
+    let orientations: Vec<[f64; 4]> = match prim.attribute("orientations").get::<Value>()? {
+        Some(Value::QuathVec(q)) => q.iter().map(|q| [q.w, q.x, q.y, q.z].map(|v| v.to_f32() as f64)).collect(),
+        _ => match prim.attribute("orientationsf").get::<Value>()? {
+            Some(Value::QuatfVec(q)) => q.iter().map(|&q| q.into()).collect(),
+            _ => Vec::new(),
+        },
+    };
+    let scales = prim.attribute("scales").get::<Value>()?.as_ref().and_then(vec3s).unwrap_or_default();
+    let ids = match prim.attribute("ids").get::<Value>()? {
+        Some(Value::Int64Vec(ids)) => ids,
+        _ => Vec::new(),
+    };
+    let mut hidden: HashSet<i64> = match prim.attribute("invisibleIds").get::<Value>()? {
+        Some(Value::Int64Vec(ids)) => ids.into_iter().collect(),
+        _ => HashSet::new(),
+    };
+    if let Some(Value::Int64ListOp(op)) = prim.get_metadata::<Value>("inactiveIds")? {
+        hidden.extend(op.compose_over(&[]));
+    }
+
+    for (i, &proto) in proto_indices.iter().enumerate() {
+        let (Some(root), Some(&position)) = (targets.get(proto as usize), positions.get(i)) else {
+            continue;
+        };
+        if hidden.contains(&ids.get(i).copied().unwrap_or(i as i64)) {
+            continue;
+        }
+        let orientation = orientations.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]);
+        let scale = scales.get(i).copied().unwrap_or([1.0; 3]);
+        let placement = Matrix4d::scale(scale.map(f64::from))
+            * Matrix4d::from_quat(orientation)
+            * Matrix4d::translation(position.map(f64::from))
+            * world;
+        match out.iter_mut().find(|p| &p.root == root) {
+            Some(prototype) => prototype.placements.push((i, placement)),
+            None => out.push(Prototype {
+                root: root.clone(),
+                placements: vec![(i, placement)],
+            }),
+        }
+    }
+    Ok(())
 }
 
 /// The material bound to `path` for preview rendering, or a fallback built from

@@ -101,3 +101,68 @@ fn normals_attribute_without_interpolation_is_per_vertex() {
     assert_eq!(n[1], [0, 1, 0]);
     assert_eq!(n[0], [0, 0, 1]);
 }
+
+const QUAD: &str = r#"
+            int[] faceVertexCounts = [4]
+            int[] faceVertexIndices = [0, 1, 2, 3]
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]
+"#;
+
+fn translation(m: &[f64; 16]) -> [i64; 3] {
+    [m[12], m[13], m[14]].map(|v| v.round() as i64)
+}
+
+#[test]
+fn point_instancer_draws_prototypes_at_each_instance() {
+    let s = scene(&format!(
+        r#"#usda 1.0
+def Xform "W"
+{{
+    double3 xformOp:translate = (0, 0, 10)
+    uniform token[] xformOpOrder = ["xformOp:translate"]
+
+    def PointInstancer "I"
+    {{
+        point3f[] positions = [(1, 0, 0), (2, 0, 0), (3, 0, 0), (4, 0, 0)]
+        quath[] orientations = [(1, 0, 0, 0), (0.7071068, 0, 0, 0.7071068), (1, 0, 0, 0), (1, 0, 0, 0)]
+        float3[] scales = [(1, 1, 1), (2, 2, 2), (1, 1, 1), (1, 1, 1)]
+        int[] protoIndices = [0, 0, 1, 1]
+        int64[] invisibleIds = [3]
+        rel prototypes = [</W/I/Protos/A>, </W/I/Protos/B>]
+
+        def Scope "Protos"
+        {{
+            def Xform "A"
+            {{
+                double3 xformOp:translate = (0, 5, 0)
+                uniform token[] xformOpOrder = ["xformOp:translate"]
+                def Mesh "M"
+                {{ {QUAD} }}
+            }}
+            def Mesh "B"
+            {{ {QUAD} }}
+        }}
+    }}
+}}
+"#
+    ));
+    let placed: Vec<(&str, u32, [i64; 3])> = s
+        .instances
+        .iter()
+        .map(|i| (i.path.as_str(), i.geometry, translation(&i.matrix)))
+        .collect();
+    let (a, b) = (placed[0].1, placed[2].1);
+    assert_ne!(a, b);
+    assert_eq!(
+        placed,
+        vec![
+            ("/W/I/Protos/A/M[0]", a, [1, 5, 10]),
+            // Scaled by 2 and turned 90 degrees about Z: the prototype's (0, 5) offset lands at (-10, 0).
+            ("/W/I/Protos/A/M[1]", a, [-8, 0, 10]),
+            ("/W/I/Protos/B[2]", b, [3, 0, 10]),
+        ]
+    );
+    assert_eq!(s.geometries.len(), 2, "instances share prototype geometry");
+    assert_eq!(s.stats.meshes, 3);
+    assert_eq!(s.stats.triangles, 6);
+}
