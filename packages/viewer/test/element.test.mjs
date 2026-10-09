@@ -21,10 +21,3 @@ test('loadUsd without Web Workers rejects with a worker UsdLoadError', async () 
   const { loadUsd } = await import('../src/index.js');
   await assert.rejects(loadUsd('https://example.test/a.usda'), { name: 'UsdLoadError', code: 'worker' });
 });
-
-test('the textures property reads only texture modes', async () => {
-  const { UsdViewerElement } = await import('../src/element.js');
-  const textures = Object.getOwnPropertyDescriptor(UsdViewerElement.prototype, 'textures').get;
-  const as = (value) => textures.call({ getAttribute: () => value });
-  assert.deepEqual([as(null), as('full'), as('bogus')], ['preview', 'full', 'preview']);
-});

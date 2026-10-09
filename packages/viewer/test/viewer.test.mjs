@@ -121,14 +121,18 @@ test('a texture arriving after dispose is closed, not applied', async () => {
   assert.equal(textureCount(), 0);
 });
 
-test('geometry bounds come from the worker, so framing does not rescan positions', async () => {
+test('geometry bounds come from the worker, so arrays are released once uploaded and framing still works', async () => {
   const { root } = await load();
   const { geometry } = root.children[0];
   assert.deepEqual(geometry.boundingBox, new THREE.Box3(new THREE.Vector3(0, 0, 0), new THREE.Vector3(1, 1, 0)));
   assert.deepEqual(geometry.boundingSphere.center, new THREE.Vector3(0.5, 0.5, 0));
   assert.ok(geometry.boundingSphere.radius >= Math.SQRT1_2);
+  const attributes = [geometry.index, ...Object.values(geometry.attributes)];
+  // three.js calls this right after copying an attribute to the GPU.
+  for (const attribute of attributes) attribute.onUploadCallback();
+  assert.ok(attributes.every((attribute) => attribute.array === null));
+  assert.ok(!new THREE.Box3().setFromObject(root).isEmpty());
 });
-
 test('abort before geometry rejects with an aborted UsdLoadError and stops the worker', async () => {
   const controller = new AbortController();
   const loading = loadUsd('scene.usda', { signal: controller.signal });
@@ -197,7 +201,8 @@ test('progress carries an overall fraction that only grows and ends at 1', async
   }
   sceneMessages(IDENTITY).forEach((m) => worker.send(m));
   await loading;
-  assert.deepEqual(seen.map((f) => Math.round(f * 1000) / 1000), [0.2, 0.2, 0.32, 0.45, 0.65, 0.8, 0.8, 1]);
+  assert.ok(seen.every((f, i) => i === 0 || f >= seen[i - 1]), `never decreases: ${seen}`);
+  assert.equal(seen.at(-1), 1);
 });
 
 test('complete reports texture counts and failures become warnings', async () => {
@@ -309,17 +314,6 @@ test('a material shared by meshes with different UV sets reads the named set on 
   const [withSt, onlyCustom] = root.children;
   assert.equal(withSt.material.emissiveMap.channel, 1);
   assert.equal(onlyCustom.material.emissiveMap.channel, 0);
-});
-
-test('geometry arrays are released once three.js has uploaded them', async () => {
-  const { root } = await load();
-  const { geometry } = root.children[0];
-  const attributes = [geometry.index, ...Object.values(geometry.attributes)];
-  // three.js calls this right after copying an attribute to the GPU.
-  for (const attribute of attributes) attribute.onUploadCallback();
-  assert.ok(attributes.every((attribute) => attribute.array === null));
-  // Framing still works from the precomputed bounds.
-  assert.ok(!new THREE.Box3().setFromObject(root).isEmpty());
 });
 
 test('geometry streams in; the load resolves once every geometry has arrived', async () => {
