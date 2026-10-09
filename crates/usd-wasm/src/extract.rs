@@ -401,6 +401,12 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
 
     // Triangle fans, ordered by subset so each subset is one contiguous range.
     let subsets = read_subsets(prim, counts.len())?;
+    let mut hole = vec![false; counts.len()];
+    for i in ints(prim.attribute("holeIndices").get::<Value>()?).unwrap_or_default() {
+        if let Some(h) = hole.get_mut(i as usize) {
+            *h = true;
+        }
+    }
     let mut face_start = Vec::with_capacity(counts.len());
     let mut offset = 0u32;
     for &count in &counts {
@@ -419,7 +425,7 @@ fn read_mesh(prim: &usd::Prim) -> openusd::Result<Option<Geometry>> {
         let start = indices.len() as u32;
         for face in faces {
             let n = counts[face];
-            if n < 3 {
+            if n < 3 || hole[face] {
                 continue;
             }
             let base = face_start[face];
