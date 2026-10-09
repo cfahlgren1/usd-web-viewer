@@ -1,0 +1,7 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 160,
+  "singleQuote": true,
+  "sortPackageJson": false,
+  "ignorePatterns": ["**/package-lock.json", "examples/vite/dist"]
+}
