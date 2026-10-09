@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { initSync, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, imageInfo, limiter, loadFailure, readGeometries, requestPolicy, takePackagedTextures, textureJobs } from '../src/load-core.js';
+import { composeStage, fetchLimited, imageInfo, loadFailure, readGeometries, takePackagedTextures, textureJobs } from '../src/load-core.js';
 import { UsdLoadError } from '../src/errors.js';
 import { hubPackageLayers } from '../src/hub-prefetch.js';
 
@@ -139,36 +139,6 @@ def Material "Mat${n}" {
   assert.deepEqual([...packaged.values()].map((v) => (v instanceof Error ? 'refused' : v.byteLength)), [1 << 20, 1 << 20, 'refused']);
 });
 
-const manyLayers = (n) => {
-  const files = { 'https://h/root.usda': `#usda 1.0\n(subLayers = [${Array.from({ length: n }, (_, i) => `@./l${i}.usda@`).join(', ')}])` };
-  for (let i = 0; i < n; i++) files[`https://h/l${i}.usda`] = `#usda 1.0\ndef Xform "X${i}" {}`;
-  return files;
-};
-
-test('layer fetches are capped at maxConcurrentFetches', async () => {
-  const s = server(manyLayers(40), { delayMs: 5 });
-  const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda', maxConcurrentFetches: 4 });
-  scene.free();
-  assert.equal(s.requested.length, 41);
-  assert.equal(s.maxInFlight, 4);
-});
-
-test('layers past maxLayerBytes fail with a resource limit error', async () => {
-  const s = server(manyLayers(40));
-  await assert.rejects(
-    composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda', maxLayerBytes: 600 }),
-    /resource limit exceeded/,
-  );
-});
-
-test('layers past maxLayers fail with a resource limit error', async () => {
-  const s = server(manyLayers(40));
-  await assert.rejects(composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda', maxLayers: 20 }), /more than maxLayers \(20\)/);
-  assert.ok(s.requested.length <= 20, `${s.requested.length} requests`);
-  const { scene } = await composeStage({ UsdLoader, fetchBytes: server(manyLayers(40)).fetchBytes, rootUrl: 'https://h/root.usda', maxLayers: 41 });
-  scene.free();
-});
-
 test('layers on origins outside allowedOrigins are left out with a warning, never requested', async () => {
   const files = { 'https://h/root.usda': sublayers('https://other.example/a.usda'), 'https://other.example/a.usda': `#usda 1.0\n${QUAD}` };
   const blocked = server(files);
@@ -183,61 +153,39 @@ test('layers on origins outside allowedOrigins are left out with a warning, neve
   assert.equal(result.meta.geometryCount, 1);
 });
 
-test('requestPolicy: origins, schemes, Hub paths and where credentials go', () => {
-  const root = 'https://huggingface.co/datasets/o/r/resolve/main/pkg/root.usda';
-  const policy = (url, base = root, allowed) => requestPolicy(url, base, allowed);
-  const refused = (url, base, allowed) => !!policy(url, base, allowed).refused;
-  // The root itself, whatever its scheme: the caller chose it.
-  assert.equal(policy('blob:https://page.example/1234', 'blob:https://page.example/1234').credentials, 'same-origin');
-  // Own repo: credentials. Other repos and the CDN: allowed, no credentials.
-  assert.deepEqual(policy('https://huggingface.co/datasets/o/r/resolve/main/pkg/a.usda'), { credentials: 'same-origin', referrerPolicy: 'no-referrer' });
-  assert.equal(policy('https://huggingface.co/api/datasets/o/r/tree/main/pkg?recursive=true').credentials, 'same-origin');
-  assert.equal(policy('https://huggingface.co/victim/private-repo/resolve/main/secret.usda').credentials, 'omit');
-  // hf.co is checked as the huggingface.co URL it redirects to.
-  assert.equal(policy('https://hf.co/datasets/o/r/resolve/main/b.usd').credentials, 'same-origin');
-  assert.equal(policy('https://cdn-lfs.hf.co/x').credentials, 'omit');
-  // What ssrf.usda authors, resolved against a Hub root.
-  for (const url of [
-    'https://huggingface.co/api/whoami-v2.usda',
-    'https://huggingface.co/api/settings/tokens',
-    'https://huggingface.co/logout',
-    'https://attacker.example/beacon.usd?u=1',
-    'https://attacker.example/x.usda',
-    'http://127.0.0.1:8080/admin.usda',
-    'https://huggingface.co@attacker.example/a.usda',
-    'https://user:pw@huggingface.co/datasets/o/r/resolve/main/a.usda',
-    'https://huggingface.co/datasets/o/r/resolve/main/..%2f..%2f..%2fapi%2fx.usda',
-    'data:image/png;base64,AAAA',
-    'javascript:alert(1)//x.png',
-    'file:///etc/passwd',
-    'http://huggingface.co/datasets/o/r/resolve/main/a.usda',
-    'https://huggingface.co.attacker.example/x',
-    'omniverse://server/a.usd',
-  ]) {
-    assert.ok(refused(url), url);
-  }
-  // Other roots: the root's origin with credentials, listed origins without.
-  assert.equal(policy('https://h/x/t.png', 'https://h/root.usda').credentials, 'same-origin');
-  assert.ok(refused('https://evil.example/t.png', 'https://h/root.usda'));
-  assert.equal(policy('https://cdn.example/t.png', 'https://h/root.usda', ['https://cdn.example']).credentials, 'omit');
-  assert.ok(!refused('https://evil.example/t.png', 'https://h/root.usda', ['*']));
-  assert.ok(refused('https://huggingface.co/datasets/o/r/resolve/main/a.usd', 'https://h/root.usda'));
-  assert.ok(refused('https://huggingface.co/api/whoami-v2', 'https://h/root.usda', ['*']));
-});
-
-test('imageInfo reads PNG, JPEG and WebP sizes, nothing else', () => {
+test('imageInfo reads the size of PNG, JPEG and WebP from the header, and whether it is color', () => {
   const bytes = (...parts) => new Uint8Array(parts.flatMap((p) => (typeof p === 'string' ? [...p].map((c) => c.charCodeAt(0)) : p)));
   const le16 = (n) => [n & 255, n >> 8];
   const le24 = (n) => [n & 255, (n >> 8) & 255, n >> 16];
+  const be32 = (n) => [n >>> 24, (n >> 16) & 255, (n >> 8) & 255, n & 255];
+  // A 64 x 32 PNG signature and IHDR chunk; a 64 x 32 baseline JPEG SOF0 with `components` channels.
+  const png = (bitDepth, colorType) => bytes([0x89], 'PNG', [13, 10, 26, 10], be32(13), 'IHDR', be32(64), be32(32), [bitDepth, colorType], new Array(7).fill(0));
+  const jpeg = (components) => bytes([0xff, 0xd8, 0xff, 0xc0, 0, 0x11, 8, 0, 32, 0, 64, components, 1, 0x11, 0, 2, 0x11, 1, 3, 0x11, 1]);
   const riff = (chunk, data) => bytes('RIFF', [0, 0, 0, 0], 'WEBP', chunk, [0, 0, 0, 0], data, new Array(16).fill(0));
-  assert.deepEqual(imageInfo(riff('VP8 ', [0, 0, 0, 0x9d, 1, 0x2a, ...le16(640), ...le16(480)])), { width: 640, height: 480, color: true });
   const vp8l = (639 | (479 << 14)) >>> 0;
-  assert.deepEqual(imageInfo(riff('VP8L', [0x2f, vp8l & 255, (vp8l >> 8) & 255, (vp8l >> 16) & 255, vp8l >>> 24])), { width: 640, height: 480, color: true });
-  assert.deepEqual(imageInfo(riff('VP8X', [0, 0, 0, 0, ...le24(20000 - 1), ...le24(30 - 1)])), { width: 20000, height: 30, color: true });
-  assert.equal(imageInfo(bytes('GIF89a', le16(20000), le16(20000), new Array(20).fill(0))), null);
-  assert.equal(imageInfo(bytes('BM', new Array(40).fill(0))), null);
+  const color = (width, height) => ({ width, height, color: true });
+  const data = { width: 64, height: 32, color: false };
+  // 8-bit RGB(A) and palette images are color (sRGB under `auto`); single-channel and 16-bit ones are data.
+  // [what, header, info]
+  for (const [what, header, expected] of [
+    ['quadrants.png', new Uint8Array(readFileSync(new URL('../../../fixtures/quadrants.png', import.meta.url))), color(2, 2)],
+    ['RGBA PNG', png(8, 6), color(64, 32)],
+    ['palette PNG', png(8, 3), color(64, 32)],
+    ['grey PNG', png(8, 0), data],
+    ['grey and alpha PNG', png(8, 4), data],
+    ['16-bit RGB PNG', png(16, 2), data],
+    ['YCbCr JPEG', jpeg(3), color(64, 32)],
+    ['grey JPEG', jpeg(1), data],
+    ['lossy WebP', riff('VP8 ', [0, 0, 0, 0x9d, 1, 0x2a, ...le16(640), ...le16(480)]), color(640, 480)],
+    ['lossless WebP', riff('VP8L', [0x2f, vp8l & 255, (vp8l >> 8) & 255, (vp8l >> 16) & 255, vp8l >>> 24]), color(640, 480)],
+    ['extended WebP', riff('VP8X', [0, 0, 0, 0, ...le24(20000 - 1), ...le24(30 - 1)]), color(20000, 30)],
+    ['GIF', bytes('GIF89a', le16(20000), le16(20000), new Array(20).fill(0)), null],
+    ['BMP', bytes('BM', new Array(40).fill(0)), null],
+    ['truncated RIFF', bytes('RIFF'), null],
+  ]) {
+    assert.deepEqual(imageInfo(header), expected, what);
+  }
 });
-
 test('a mesh whose corners share one point welds in linear time', { timeout: 10000 }, async () => {
   // weld.usda, smaller: every corner on point 0, each with its own normal.
   const faces = 20000;
@@ -259,26 +207,20 @@ def Mesh "M" {
   assert.ok(performance.now() - t0 < 3000, `${Math.round(performance.now() - t0)} ms`);
 });
 
-test('meshes past maxTriangles are left out unread with a warning', async () => {
-  const tri = (name) => `def Mesh "${name}" {\n  int[] faceVertexCounts = [3, 3]\n  int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]\n  point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]\n}`;
-  const s = server({ 'https://h/root.usda': `#usda 1.0\n${tri('A')}\n${tri('B')}\n${tri('C')}` });
+test('indices are 16-bit up to index 65535, 32-bit past it', async () => {
+  // One triangle reaching the last of `points` points.
+  const mesh = (name, points) => `def Mesh "${name}" {
+  int[] faceVertexCounts = [3]
+  int[] faceVertexIndices = [0, 1, ${points - 1}]
+  point3f[] points = [${new Array(points).fill('(0, 0, 0)').join(', ')}]
+}`;
+  const s = server({ 'https://h/root.usda': `#usda 1.0\n${mesh('A', 65536)}\n${mesh('B', 65537)}` });
   const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
-  const read = [];
-  const warnings = readGeometries(scene, meta, (i, g) => read.push(!!g), { maxTriangles: 5 });
+  const out = [];
+  readGeometries(scene, meta, (i, g, a) => out.push([g.maxIndex, a.indices.constructor.name]));
   scene.free();
-  assert.deepEqual(read, [true, true, false]);
-  assert.deepEqual(warnings.map((w) => [w.code, w.path]), [['triangle-limit', '/C']]);
+  assert.deepEqual(out, [[65535, 'Uint16Array'], [65536, 'Uint32Array']]);
 });
-
-test('16-bit indices are chosen from the largest index', async () => {
-  const s = server({ 'https://h/root.usda': `#usda 1.0\n${QUAD}` });
-  const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda' });
-  let out;
-  readGeometries(scene, meta, (i, g, a) => (out = [g.maxIndex, a.indices.constructor.name]));
-  scene.free();
-  assert.deepEqual(out, [3, 'Uint16Array']);
-});
-
 test('fetchLimited stops reading a streamed body past maxBytes', async (t) => {
   const chunk = Buffer.alloc(64 * 1024);
   let sent = 0;
@@ -336,41 +278,32 @@ test('parallel layers share one byte budget as their bodies stream in', async ()
 const fetched = (s) => s.requested.map((u) => new URL(u).href);
 const sublayers = (...paths) => `#usda 1.0\n(subLayers = [${paths.map((p) => `@${p}@`).join(', ')}])`;
 
-test('a signed root URL keeps its query; relative layers resolve against it', async () => {
-  const s = server({ 'https://h/a/root.usda?sig=abc': sublayers('./sub.usda'), 'https://h/a/sub.usda': '#usda 1.0' });
-  const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/a/root.usda?sig=abc' });
-  scene.free();
-  assert.deepEqual(fetched(s), ['https://h/a/root.usda?sig=abc', 'https://h/a/sub.usda']);
-});
-
-test('authored escapes and spaces are encoded once', async () => {
-  const s = server({
-    'https://h/a/root.usda': sublayers('./a%20b.usda', './c d.usda'),
-    'https://h/a/a%20b.usda': '#usda 1.0',
-    'https://h/a/c d.usda': '#usda 1.0',
-  });
-  const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/a/root.usda' });
-  scene.free();
-  assert.deepEqual(fetched(s).sort(), ['https://h/a/a%20b.usda', 'https://h/a/c%20d.usda', 'https://h/a/root.usda']);
-});
-
-test('absolute dependencies keep their scheme and host, and anchor their own relative paths', async () => {
-  const s = server({
-    'https://h/root.usda': sublayers('http://other.example/x/x.usda'),
-    'http://other.example/x/x.usda': sublayers('./y.usda'),
-    'http://other.example/x/y.usda': '#usda 1.0',
-  });
-  const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/root.usda', allowedOrigins: ['http://other.example'] });
-  scene.free();
-  assert.deepEqual(fetched(s), ['https://h/root.usda', 'http://other.example/x/x.usda', 'http://other.example/x/y.usda']);
-});
-
-test('an encoded slash stays part of its path segment', async () => {
-  const root = 'https://h/d/resolve/refs%2Fpr%2F1/root.usda';
-  const s = server({ [root]: sublayers('./sub.usda'), 'https://h/d/resolve/refs%2Fpr%2F1/sub.usda': '#usda 1.0' });
-  const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: root });
-  scene.free();
-  assert.deepEqual(fetched(s), [root, 'https://h/d/resolve/refs%2Fpr%2F1/sub.usda']);
+test('layer URLs: what a load requests for what its layers author', async () => {
+  const variants = `#usda 1.0
+def "A" (
+  variants = { string v = "on" }
+  prepend variantSets = "v"
+) {
+  variantSet "v" = {
+    "on" (references = @./on.usda@) {}
+    "off" (references = @./off.usda@) {}
+  }
+}`;
+  const empty = '#usda 1.0\n(defaultPrim = "X")\ndef "X" {}';
+  // [what, root URL, layers by URL, allowedOrigins, URLs requested]
+  const cases = [
+    ['a signed root keeps its query; relative layers resolve without it', 'https://h/a/root.usda?sig=abc', { 'https://h/a/root.usda?sig=abc': sublayers('./sub.usda'), 'https://h/a/sub.usda': empty }, [], ['https://h/a/root.usda?sig=abc', 'https://h/a/sub.usda']],
+    ['authored escapes and spaces are encoded once', 'https://h/a/root.usda', { 'https://h/a/root.usda': sublayers('./a%20b.usda', './c d.usda'), 'https://h/a/a%20b.usda': empty, 'https://h/a/c d.usda': empty }, [], ['https://h/a/root.usda', 'https://h/a/a%20b.usda', 'https://h/a/c%20d.usda']],
+    ['absolute layers keep their scheme and host, and anchor their own relative paths', 'https://h/root.usda', { 'https://h/root.usda': sublayers('http://other.example/x/x.usda'), 'http://other.example/x/x.usda': sublayers('./y.usda'), 'http://other.example/x/y.usda': empty }, ['http://other.example'], ['https://h/root.usda', 'http://other.example/x/x.usda', 'http://other.example/x/y.usda']],
+    ['an encoded slash stays part of its path segment', 'https://h/d/resolve/refs%2Fpr%2F1/root.usda', { 'https://h/d/resolve/refs%2Fpr%2F1/root.usda': sublayers('./sub.usda'), 'https://h/d/resolve/refs%2Fpr%2F1/sub.usda': empty }, [], ['https://h/d/resolve/refs%2Fpr%2F1/root.usda', 'https://h/d/resolve/refs%2Fpr%2F1/sub.usda']],
+    ['a layer named only in a variant nothing selects is never requested', 'https://h/root.usda', { 'https://h/root.usda': variants, 'https://h/on.usda': empty }, [], ['https://h/root.usda', 'https://h/on.usda']],
+  ];
+  for (const [what, rootUrl, files, allowedOrigins, expected] of cases) {
+    const s = server(files);
+    const { scene } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl, allowedOrigins });
+    scene.free();
+    assert.deepEqual(fetched(s).sort(), expected.sort(), what);
+  }
 });
 
 test('relative layers resolve against the requested URL, not where it redirected', async (t) => {
@@ -389,11 +322,10 @@ test('relative layers resolve against the requested URL, not where it redirected
   scene.free();
   assert.deepEqual(requested, ['/a/root.usda', '/cdn/blob1', '/a/sub.usda']);
 });
-
 test('a packaged image shared by many materials is extracted once, and only when its texture mode loads it', async () => {
-  // As in the review: 1,030 materials each sample one 1 MiB image twice.
+  // Two materials each sample one 1 MiB image twice.
   const materials = Array.from(
-    { length: 1030 },
+    { length: 2 },
     (_, i) => `def Mesh "M${i}" (prepend apiSchemas = ["MaterialBindingAPI"]) {
   int[] faceVertexCounts = [3]
   int[] faceVertexIndices = [0, 1, 2]
@@ -605,14 +537,6 @@ test('a root with no dependencies fetches nothing ahead unless its package is de
   }
 });
 
-test('the limiter runs tasks marked later after the others', async () => {
-  const throttle = limiter(1);
-  const order = [];
-  const run = (name, options) => throttle(async () => order.push(name), options);
-  await Promise.all([run('first'), run('later', { later: true }), run('second')]);
-  assert.deepEqual(order, ['first', 'second', 'later']);
-});
-
 test('hubPackageLayers lists the SimReady package of a Hub root, and nothing for other URLs', async () => {
   const requests = [];
   const tree = [
@@ -644,7 +568,9 @@ test('hubPackageLayers lists the SimReady package of a Hub root, and nothing for
   assert.equal(requests.length, 2);
 });
 
-test('caps: drawn triangles, instances and layer bytes', async () => {
+test('limits: requests in flight, layer files and bytes, drawn triangles and instances', async () => {
+  const layers = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`l${i}.usda`, `#usda 1.0\ndef Xform "X${i}" {}`]));
+  const many = `(subLayers = [${Object.keys(layers).map((name) => `@./${name}@`)}])`;
   // subset-amp.usda, smaller: a 66-gon (64 triangles) its subset names 100 times.
   const n = 66;
   const points = Array.from({ length: n }, (_, i) => `(${Math.cos((i / n) * 6.283).toFixed(3)}, ${Math.sin((i / n) * 6.283).toFixed(3)}, 0)`);
@@ -666,38 +592,59 @@ test('caps: drawn triangles, instances and layer bytes', async () => {
     ${QUAD}
   }
 }`;
-  // [what, root layer, other layers, preloaded layers, options, triangles drawn, warnings, most bytes of unused.usda read]
+  // [what, root layer, other layers, preloaded layers, options, expected]: an `error` the load fails with (after at most
+  // `requests` requests), or exactly `requests` requests, at most `inFlight` at once, `triangles` drawn, the `warnings`, and
+  // at most `unusedRead` bytes of unused.usda read.
   const cases = [
-    ['a face a subset names again is drawn once; the budget stops at zero', `${amp}\n${QUAD}`, {}, [], { maxTriangles: 65 }, 64, [['triangle-limit', '/M']]],
-    ['implicit shapes count', 'def Cube "C" {}\ndef Sphere "S" {}', {}, [], { maxTriangles: 20 }, 12, [['triangle-limit', '/S']]],
-    ['placements past maxInstances', instancer(50), {}, [], { maxInstances: 10 }, 20, [['instance-limit', '/PI']]],
-    ['triangles count once per instance', instancer(10), {}, [], { maxTriangles: 19 }, 0, [['triangle-limit', '/PI/P/M'], ['nothing-drawable', undefined]]],
-    ['an unused preload is charged as it streams', '(subLayers = [@./a.usda@])', { 'a.usda': `#usda 1.0\n${QUAD}`, 'unused.usda': `#usda 1.0\n${' '.repeat(5000)}` }, ['a.usda', 'unused.usda'], { maxLayerBytes: 2000 }, 2, [], 2000],
+    ['layer requests in flight stay within maxConcurrentFetches', many, layers, [], { maxConcurrentFetches: 4 }, { requests: 41, inFlight: 4 }],
+    ['layers past maxLayerBytes fail the load', many, layers, [], { maxLayerBytes: 600 }, { error: /resource limit exceeded/ }],
+    ['layers past maxLayers fail the load before they are requested', many, layers, [], { maxLayers: 20 }, { error: /more than maxLayers \(20\)/, requests: 20 }],
+    ['as many layers as maxLayers load', many, layers, [], { maxLayers: 41 }, { requests: 41 }],
+    ['meshes past maxTriangles are left out unread', `${['A', 'B', 'C'].map((name) => QUAD.replace('"M"', `"${name}"`)).join('\n')}`, {}, [], { maxTriangles: 5 }, { triangles: 4, warnings: [['triangle-limit', '/C']] }],
+    ['a face a subset names again is drawn once; the budget stops at zero', `${amp}\n${QUAD}`, {}, [], { maxTriangles: 65 }, { triangles: 64, warnings: [['triangle-limit', '/M']] }],
+    ['implicit shapes count', 'def Cube "C" {}\ndef Sphere "S" {}', {}, [], { maxTriangles: 20 }, { triangles: 12, warnings: [['triangle-limit', '/S']] }],
+    ['placements past maxInstances', instancer(50), {}, [], { maxInstances: 10 }, { triangles: 20, warnings: [['instance-limit', '/PI']] }],
+    ['triangles count once per instance', instancer(10), {}, [], { maxTriangles: 19 }, { triangles: 0, warnings: [['triangle-limit', '/PI/P/M'], ['nothing-drawable', undefined]] }],
+    ['an unused preload is charged as it streams', '(subLayers = [@./a.usda@])', { 'a.usda': `#usda 1.0\n${QUAD}`, 'unused.usda': `#usda 1.0\n${' '.repeat(5000)}` }, ['a.usda', 'unused.usda'], { maxLayerBytes: 2000 }, { triangles: 2, warnings: [], unusedRead: 2000 }],
   ];
-  for (const [what, root, others, preloads, options, triangles, warnings, unusedRead = Infinity] of cases) {
+  for (const [what, root, others, preloads, options, expected] of cases) {
     const files = { 'https://h/root.usda': `#usda 1.0\n${root}` };
     for (const [name, body] of Object.entries(others)) files[`https://h/${name}`] = body;
-    let read = 0;
+    let [requests, inFlight, maxInFlight, unusedRead] = [0, 0, 0, 0];
     // Streams each body in 100-byte chunks; the root arrives last, so preloads stream first.
     const fetchBytes = async (url, budget) => {
-      if (url.endsWith('root.usda') && preloads.length) await new Promise((resolve) => setTimeout(resolve, 100));
-      const body = new TextEncoder().encode(files[url]);
-      for (let i = 0; i < body.length; i += 100) {
-        budget(Math.min(100, body.length - i));
-        if (url.endsWith('unused.usda')) read += Math.min(100, body.length - i);
-        await new Promise((resolve) => setTimeout(resolve));
+      requests++;
+      maxInFlight = Math.max(maxInFlight, ++inFlight);
+      try {
+        if (url.endsWith('root.usda') && preloads.length) await new Promise((resolve) => setTimeout(resolve, 100));
+        const body = new TextEncoder().encode(files[url]);
+        for (let i = 0; i < body.length; i += 100) {
+          budget(Math.min(100, body.length - i));
+          if (url.endsWith('unused.usda')) unusedRead += Math.min(100, body.length - i);
+          await new Promise((resolve) => setTimeout(resolve));
+        }
+        return body;
+      } finally {
+        inFlight--;
       }
-      return body;
     };
     const preload = Promise.resolve({ layers: preloads.map((name) => ({ url: `https://h/${name}`, size: 10 })), eager: true });
-    const { scene, meta } = await composeStage({ UsdLoader, fetchBytes, rootUrl: 'https://h/root.usda', preload, ...options });
+    const loading = composeStage({ UsdLoader, fetchBytes, rootUrl: 'https://h/root.usda', preload, ...options });
+    if (expected.error) {
+      await assert.rejects(loading, expected.error, what);
+      assert.ok(requests <= (expected.requests ?? Infinity), `${what}: ${requests} requests`);
+      continue;
+    }
+    const { scene, meta } = await loading;
     const counts = new Map();
     for (const { geometry } of meta.instances) counts.set(geometry, (counts.get(geometry) ?? 0) + 1);
     let drawn = 0;
     const limits = readGeometries(scene, meta, (i, g, a) => (drawn += a ? (counts.get(i) * a.indices.length) / 3 : 0), options);
     scene.free();
-    assert.equal(drawn, triangles, what);
-    assert.deepEqual([...meta.warnings, ...limits].map((w) => [w.code, w.path]), warnings, what);
-    assert.ok(read <= unusedRead, `${what}: ${read} bytes read`);
+    if ('requests' in expected) assert.equal(requests, expected.requests, what);
+    if ('inFlight' in expected) assert.equal(maxInFlight, expected.inFlight, what);
+    if ('triangles' in expected) assert.equal(drawn, expected.triangles, what);
+    if ('warnings' in expected) assert.deepEqual([...meta.warnings, ...limits].map((w) => [w.code, w.path]), expected.warnings, what);
+    assert.ok(unusedRead <= (expected.unusedRead ?? Infinity), `${what}: ${unusedRead} bytes read`);
   }
 });

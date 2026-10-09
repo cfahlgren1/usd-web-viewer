@@ -51,6 +51,7 @@ const CASES = [
   ['https://huggingface.co/logout', HUB, [], REFUSED],
   ['https://huggingface.co/datasets/o/r/blob/main/a.usda', HUB, [], REFUSED],
   ['https://huggingface.co/api/whoami-v2', SITE, ['*'], REFUSED],
+  ['https://huggingface.co/api/whoami-v2.usda', HUB, [], REFUSED],
 
   // Endpoints and pages shaped like repo files: a reserved first segment is never a model's owner.
   ['https://huggingface.co/api/whoami-v2/resolve/x', HUB, ['*'], REFUSED],
@@ -103,7 +104,8 @@ const CASES = [
   ['https://huggingface.co:8443/datasets/o/r/resolve/main/a.usda', HUB, [], OMIT],
   ['http://huggingface.co/datasets/o/r/resolve/main/a.usda', HUB, ['*'], REFUSED],
 
-  // Local and metadata addresses: only the root's own origin or an explicit allow.
+  // Other hosts, local and metadata addresses: only the root's own origin or an explicit allow.
+  ['https://attacker.example/beacon.usd?u=1', HUB, [], REFUSED],
   ['http://localhost/a.usda', HUB, [], REFUSED],
   ['http://127.0.0.1:8080/admin.usda', HUB, [], REFUSED],
   ['http://[::1]/a.usda', HUB, [], REFUSED],
