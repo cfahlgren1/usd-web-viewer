@@ -334,14 +334,16 @@ test('<usd-viewer> loads src and dispatches progress and load', async () => {
   await page.waitForFunction(() => window.loaded, null, { timeout: 60000 });
   const { info, events, props } = await page.evaluate(() => {
     const el = document.getElementById('viewer');
+    const busy = el.getAttribute('aria-busy');
     el.textures = 'none';
     el.touchAction = 'none';
     return {
       info: window.loaded,
       events: window.events,
       props: {
-        role: el.getAttribute('role'),
-        label: el.getAttribute('aria-label'),
+        role: el.viewer.renderer.domElement.getAttribute('role'),
+        label: el.viewer.renderer.domElement.getAttribute('aria-label'),
+        busy,
         texturesAttr: el.getAttribute('textures'),
         touch: el.viewer.renderer.domElement.style.touchAction,
         tabIndex: el.viewer.renderer.domElement.tabIndex,
@@ -352,9 +354,24 @@ test('<usd-viewer> loads src and dispatches progress and load', async () => {
   });
   assert.equal(info.triangles, 134228);
   assert.ok(events.length > 0, 'progress events');
-  assert.deepEqual(props, { role: 'img', label: 'USD model', texturesAttr: 'none', touch: 'none', tabIndex: 0, hasResult: true, transparent: true });
+  assert.deepEqual(props, { role: 'img', label: 'USD model', busy: null, texturesAttr: 'none', touch: 'none', tabIndex: 0, hasResult: true, transparent: true });
+  assert.ok(events.some((e) => e.busy === 'true'), 'aria-busy while loading');
+  // Keyboard: + zooms in, - zooms out; focus from the keyboard shows a ring.
+  await page.keyboard.press('Tab');
+  const distance = () => page.evaluate(() => document.getElementById('viewer').viewer.controls.getDistance());
+  const before = await distance();
+  await page.keyboard.press('+');
+  const closer = await distance();
+  await page.keyboard.press('-');
+  await page.keyboard.press('-');
+  const farther = await distance();
+  assert.ok(closer < before && farther > before, `${before} -> ${closer} -> ${farther}`);
+  const ring = await page.evaluate(() => {
+    const canvas = document.getElementById('viewer').viewer.renderer.domElement;
+    return { focused: canvas.matches(':focus-visible'), outline: getComputedStyle(canvas).outlineStyle };
+  });
+  assert.deepEqual(ring, { focused: true, outline: 'solid' });
   await page.waitForTimeout(1500);
-  await page.screenshot({ path: '/tmp/usd-viewer-element.png' });
   // Moving the element keeps its viewer; removing it disposes the viewer.
   const lifecycle = await page.evaluate(async () => {
     const el = document.getElementById('viewer');

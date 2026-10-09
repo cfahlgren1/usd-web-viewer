@@ -36,7 +36,7 @@ export class UsdViewerElement extends Base {
     // Moved within the document: the viewer survived the brief disconnect.
     if (this.#viewer) return;
     const root = this.shadowRoot ?? this.attachShadow({ mode: 'open' });
-    root.innerHTML = '<style>:host{display:block;position:relative;width:100%;height:100%;min-height:200px}div{position:absolute;inset:0}canvas{outline:none}</style><div></div>';
+    root.innerHTML = '<style>:host{display:block;position:relative;width:100%;height:100%;min-height:200px}div{position:absolute;inset:0}canvas{outline:none}canvas:focus-visible{outline:2px solid;outline-offset:-2px}</style><div></div>';
     try {
       this.#viewer = createViewer(root.querySelector('div'));
     } catch (error) {
@@ -52,6 +52,7 @@ export class UsdViewerElement extends Base {
     queueMicrotask(() => {
       if (this.isConnected || !this.#viewer) return;
       this.#abort?.abort();
+      this.removeAttribute('aria-busy');
       this.#viewer.dispose();
       this.#viewer = null;
       this.#result = null;
@@ -65,27 +66,26 @@ export class UsdViewerElement extends Base {
   }
 
   #applyAccessibility() {
-    const alt = this.getAttribute('alt');
-    if (alt) {
-      this.setAttribute('role', 'img');
-      this.setAttribute('aria-label', alt);
-    } else {
-      this.removeAttribute('role');
-      this.removeAttribute('aria-label');
-    }
+    // On the canvas, which takes focus and the keys; not on the host, whose
+    // children an `img` role would hide.
+    const canvas = this.#viewer.renderer.domElement;
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', this.getAttribute('alt') || '3D model');
     // OrbitControls sets `none`; `pan-y` lets the page scroll on touch screens.
-    this.#viewer.renderer.domElement.style.touchAction = this.getAttribute('touch-action') || 'pan-y';
+    canvas.style.touchAction = this.getAttribute('touch-action') || 'pan-y';
   }
 
   async #load() {
     const src = this.getAttribute('src');
     this.#abort?.abort();
+    this.removeAttribute('aria-busy');
     if (!src) {
       this.#result = null;
       this.#viewer.clear();
       return;
     }
     const abort = (this.#abort = new AbortController());
+    this.setAttribute('aria-busy', 'true');
     try {
       const result = await this.#viewer.load(src, {
         textures: ['none', 'preview', 'full'].includes(this.getAttribute('textures')) ? this.getAttribute('textures') : 'preview',
@@ -97,6 +97,8 @@ export class UsdViewerElement extends Base {
       this.dispatchEvent(new CustomEvent('load', { detail: result.info }));
     } catch (error) {
       if (error?.code !== 'aborted') this.#fail(error);
+    } finally {
+      if (this.#abort === abort) this.removeAttribute('aria-busy');
     }
   }
 

@@ -367,9 +367,17 @@ export function createViewer(target, options = {}) {
   camera.position.set(2, 1.5, 2);
   const controls = new OrbitControls(camera, canvas);
   controls.enableDamping = true;
-  // Focusable, with arrow keys panning the camera.
+  // Focusable, with arrow keys panning the camera and + / - zooming.
   canvas.tabIndex = 0;
   controls.listenToKeyEvents(canvas);
+  const zoomKey = (event) => {
+    const scale = { '+': 0.8, '=': 0.8, '-': 1.25, _: 1.25 }[event.key];
+    if (!scale || !controls.enabled || !controls.enableZoom || event.ctrlKey || event.metaKey || event.altKey) return;
+    event.preventDefault();
+    camera.position.sub(controls.target).multiplyScalar(scale).add(controls.target);
+    controls.update();
+  };
+  canvas.addEventListener('keydown', zoomKey);
 
   let frameRequested = false;
   let disposed = false;
@@ -475,6 +483,7 @@ export function createViewer(target, options = {}) {
       if (current) current.dispose();
       current = null;
       observer.disconnect();
+      canvas.removeEventListener('keydown', zoomKey);
       controls.dispose();
       environment.dispose();
       renderer.dispose();

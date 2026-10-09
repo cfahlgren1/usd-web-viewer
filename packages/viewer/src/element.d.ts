@@ -18,7 +18,7 @@ export class UsdViewerElement extends HTMLElement {
   src: string;
   textures: TextureMode;
   maxTextureSize: number;
-  /** Accessible description; sets `role="img"` and `aria-label`. */
+  /** Accessible description: the `aria-label` of the canvas (`role="img"`), `3D model` when absent. The element is `aria-busy` while loading; the focused canvas pans with the arrow keys and zooms with + / -. */
   alt: string;
   /** Applied to the canvas. Default `pan-y`, so the page scrolls on touch screens. */
   touchAction: string;

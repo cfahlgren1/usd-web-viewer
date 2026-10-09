@@ -18,7 +18,7 @@
       const status = document.getElementById('status');
       window.events = [];
       viewer.addEventListener('progress', (e) => {
-        window.events.push(e.detail);
+        window.events.push({ ...e.detail, busy: viewer.getAttribute('aria-busy') });
         status.textContent = e.detail.stage === 'compose' ? `compose round ${e.detail.round}` : `${e.detail.stage} ${e.detail.loaded}/${e.detail.total}`;
       });
       viewer.addEventListener('load', (e) => {
