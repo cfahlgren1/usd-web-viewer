@@ -70,6 +70,8 @@ export async function composeStage({ UsdLoader, fetchBytes, rootUrl, prefetchVar
     if (!missing.length) break;
     if (stats.rounds > 16) throw new Error(`composition still missing layers: ${missing.join(', ')}`);
     onProgress('missing', { missing });
+    // The list also names layers the failed attempt consumed; fetch them again.
+    for (const path of missing) started.delete(path);
     await Promise.all(missing.map(fetchLayer));
   }
   const scene = loader.takeScene();

@@ -9,12 +9,12 @@ use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use openusd::ar::{self, Asset, ResolvedPath};
 
-/// File bytes keyed by virtual path, shared between the loader and resolver.
-pub type Files = Rc<RefCell<HashMap<String, Arc<Vec<u8>>>>>;
+/// Layer bytes shared between the loader and its resolvers.
+pub type Files = Arc<Mutex<Store>>;
 
 /// Extensions composition reads as layers. Anything else (textures, MDL) is
 /// an opaque asset that resolves without being present.
@@ -69,11 +69,27 @@ fn normalize(path: &str) -> String {
     format!("/{}", parts.join("/"))
 }
 
-/// Resolves virtual paths against [`Files`], recording every layer that was
-/// asked for but is not there yet so the caller can fetch it and recompose.
+/// Fetched layers by virtual path.
+#[derive(Default)]
+pub struct Store {
+    /// Bytes not yet handed to a composing stage.
+    pub bytes: HashMap<String, Vec<u8>>,
+    /// Layers a composing stage took ownership of: present for this stage,
+    /// gone for any later one.
+    pub taken: Vec<String>,
+}
+
+/// Resolves virtual paths against the [`Store`], recording every layer that
+/// was asked for but is not there yet so the caller can fetch it and recompose.
 pub struct MemoryResolver {
     pub files: Files,
     pub missing: Rc<RefCell<BTreeSet<String>>>,
+    /// Move bytes into the stage instead of copying them, so a layer is held
+    /// once (by the stage) rather than twice while composing.
+    pub take: bool,
+    /// A layer copied rather than taken the first time it is opened: opening a
+    /// stage reads its root layer twice.
+    pub keep: RefCell<Option<String>>,
 }
 
 impl ar::Resolver for MemoryResolver {
@@ -86,7 +102,11 @@ impl ar::Resolver for MemoryResolver {
         if asset_path.is_empty() {
             return None;
         }
-        if !is_layer_path(asset_path) || self.files.borrow().contains_key(asset_path) {
+        let present = {
+            let files = lock(&self.files);
+            files.bytes.contains_key(asset_path) || (self.take && files.taken.iter().any(|t| t == asset_path))
+        };
+        if !is_layer_path(asset_path) || present {
             return Some(ResolvedPath::new(asset_path));
         }
         self.missing.borrow_mut().insert(asset_path.to_owned());
@@ -98,12 +118,23 @@ impl ar::Resolver for MemoryResolver {
     }
 
     fn open_asset(&self, resolved_path: &ResolvedPath) -> io::Result<Box<dyn Asset>> {
-        let key = resolved_path.to_string_lossy();
-        let bytes = self.files.borrow().get(key.as_ref()).cloned();
-        match bytes {
-            Some(bytes) => Ok(Box::new(SharedBytes { bytes, pos: 0 })),
-            None => Err(io::Error::new(io::ErrorKind::NotFound, key.into_owned())),
+        let key = resolved_path.to_string_lossy().into_owned();
+        let first_root_read = self.keep.borrow().as_deref() == Some(key.as_str());
+        if first_root_read {
+            self.keep.replace(None);
         }
+        let take = self.take && !first_root_read;
+        let size = match lock(&self.files).bytes.get(&key) {
+            Some(bytes) => bytes.len() as u64,
+            None => return Err(io::Error::new(io::ErrorKind::NotFound, key)),
+        };
+        Ok(Box::new(StoredAsset {
+            files: self.files.clone(),
+            key,
+            size,
+            pos: 0,
+            take,
+        }))
     }
 
     fn get_modification_timestamp(&self, _: &str, _: &ResolvedPath) -> Option<std::time::SystemTime> {
@@ -115,28 +146,40 @@ impl ar::Resolver for MemoryResolver {
     }
 }
 
-/// A read cursor over shared bytes, so opening a layer does not copy the map entry.
-struct SharedBytes {
-    bytes: Arc<Vec<u8>>,
-    pos: u64,
+pub(crate) fn lock(files: &Files) -> MutexGuard<'_, Store> {
+    files.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-impl Read for SharedBytes {
+/// A layer in the [`Store`], read in place. A full read in take mode moves
+/// the buffer out of the store instead of copying it: format sniffing opens a
+/// layer more than once, so ownership moves only when it is read whole.
+struct StoredAsset {
+    files: Files,
+    key: String,
+    size: u64,
+    pos: u64,
+    take: bool,
+}
+
+impl Read for StoredAsset {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let start = (self.pos as usize).min(self.bytes.len());
-        let n = buf.len().min(self.bytes.len() - start);
-        buf[..n].copy_from_slice(&self.bytes[start..start + n]);
+        let files = lock(&self.files);
+        let Some(bytes) = files.bytes.get(&self.key) else {
+            return Err(io::Error::new(io::ErrorKind::NotFound, self.key.clone()));
+        };
+        let start = (self.pos as usize).min(bytes.len());
+        let n = buf.len().min(bytes.len() - start);
+        buf[..n].copy_from_slice(&bytes[start..start + n]);
         self.pos += n as u64;
         Ok(n)
     }
 }
 
-impl Seek for SharedBytes {
+impl Seek for StoredAsset {
     fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-        let len = self.bytes.len() as i64;
         let next = match pos {
             SeekFrom::Start(n) => n as i64,
-            SeekFrom::End(n) => len + n,
+            SeekFrom::End(n) => self.size as i64 + n,
             SeekFrom::Current(n) => self.pos as i64 + n,
         };
         if next < 0 {
@@ -147,9 +190,29 @@ impl Seek for SharedBytes {
     }
 }
 
-impl Asset for SharedBytes {
+impl Asset for StoredAsset {
     fn size(&self) -> io::Result<u64> {
-        Ok(self.bytes.len() as u64)
+        Ok(self.size)
+    }
+
+    fn read_all(&mut self) -> io::Result<Vec<u8>> {
+        if self.pos != 0 {
+            let mut rest = Vec::new();
+            self.read_to_end(&mut rest)?;
+            return Ok(rest);
+        }
+        let mut files = lock(&self.files);
+        let bytes = if self.take {
+            let bytes = files.bytes.remove(&self.key);
+            if bytes.is_some() {
+                files.taken.push(self.key.clone());
+            }
+            bytes
+        } else {
+            files.bytes.get(&self.key).cloned()
+        };
+        self.pos = self.size;
+        bytes.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, self.key.clone()))
     }
 }
 

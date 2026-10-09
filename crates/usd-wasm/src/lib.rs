@@ -6,7 +6,6 @@
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
-use std::sync::Arc;
 
 use openusd::{sdf, usd};
 
@@ -41,14 +40,14 @@ impl Loader {
     }
 
     pub fn has(&self, path: &str) -> bool {
-        self.files.borrow().contains_key(path)
+        resolver::lock(&self.files).bytes.contains_key(path)
     }
 
     /// Stores a layer under its virtual path and returns the asset paths it
     /// authors, so the host can prefetch them in parallel.
     pub fn add_layer(&mut self, path: &str, bytes: Vec<u8>) -> openusd::Result<Vec<Dependency>> {
-        self.files.borrow_mut().insert(path.to_owned(), Arc::new(bytes));
-        let layer = sdf::Layer::open_with(self.resolver(), path)?;
+        resolver::lock(&self.files).bytes.insert(path.to_owned(), bytes);
+        let layer = sdf::Layer::open_with(self.resolver(false, None), path)?;
         Ok(deps::layer_dependencies(layer.data(), path))
     }
 
@@ -59,9 +58,11 @@ impl Loader {
 
     /// Composes the stage rooted at `root`. When composition asks for layers
     /// that were never added, returns them instead so the host can fetch them
-    /// and call again.
+    /// and call again. The stage takes ownership of the layer bytes, so the
+    /// returned list also names the layers this attempt consumed: the host
+    /// adds those again too (normally from its HTTP cache).
     pub fn compose(&self, root: &str) -> openusd::Result<Composed> {
-        let resolver = self.resolver();
+        let resolver = self.resolver(true, Some(root));
         let missing = resolver.missing.clone();
         let stage = usd::Stage::builder()
             .resolver(resolver)
@@ -70,13 +71,15 @@ impl Loader {
         // Composition opens references and payloads lazily: walk the whole
         // stage first so every layer it needs is asked for before extracting.
         stage.traverse(usd::PrimPredicate::DEFAULT_PROXIES, |_| {})?;
-        let missing: Vec<String> = missing
+        let mut missing: Vec<String> = missing
             .borrow()
             .iter()
             .filter(|m| !self.unavailable.contains(*m))
             .cloned()
             .collect();
+        let taken = std::mem::take(&mut resolver::lock(&self.files).taken);
         if !missing.is_empty() {
+            missing.extend(taken);
             return Ok(Composed::Missing(missing));
         }
         Ok(Composed::Scene(extract::extract(&stage)?))
@@ -84,13 +87,15 @@ impl Loader {
 
     /// Drops every stored layer.
     pub fn clear(&mut self) {
-        self.files.borrow_mut().clear();
+        resolver::lock(&self.files).bytes.clear();
     }
 
-    fn resolver(&self) -> MemoryResolver {
+    fn resolver(&self, take: bool, keep: Option<&str>) -> MemoryResolver {
         MemoryResolver {
             files: self.files.clone(),
             missing: Rc::new(RefCell::new(BTreeSet::new())),
+            take,
+            keep: RefCell::new(keep.map(str::to_owned)),
         }
     }
 }
