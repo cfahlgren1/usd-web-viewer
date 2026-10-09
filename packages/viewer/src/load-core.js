@@ -351,8 +351,9 @@ export function imageInfo(b) {
   return null;
 }
 
-const HUB_HOST = /^(huggingface\.co|hf\.co)$/;
-const HUB_CDN = /\.hf\.co$/;
+// A trailing dot names the same host (`huggingface.co.`), so it matches too.
+const HUB_HOST = /^(huggingface\.co|hf\.co)\.?$/;
+const HUB_CDN = /\.hf\.co\.?$/;
 // Paths of Hub repo files and of the tree listing the prefetch reads: the
 // only Hub URLs a load requests, never `/api/*` endpoints or account pages.
 const HUB_FILE = /^\/(?:(datasets|spaces)\/)?([^/]+)\/([^/]+)\/resolve\//;
