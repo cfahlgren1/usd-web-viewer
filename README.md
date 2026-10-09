@@ -37,7 +37,7 @@ scene.add(root);   // THREE.Group, Y-up, metres
 | Option | Default | |
 |---|---|---|
 | `maxTextureSize` | `1024` | Long-side cap; textures are decoded straight to this size in the worker |
-| `normalMaps` | `true` | Fetch and apply normal maps (they stream in last; `false` saves bandwidth on assets with large normal maps) |
+| `textures` | `'preview'` | `'preview'`: base color up to `maxTextureSize`, roughness / metallic / occlusion (and opacity / emissive) maps up to 512 px, no normal maps. `'full'`: every map, normals included, up to `maxTextureSize`. See [preview vs full](bench/results/README.md#texture-modes-preview-vs-full) |
 | `prefetchVariants` | `false` | Fetch layers inside variants the layer doesn't select |
 | `onTexture` | – | Called after each texture is applied |
 | `wasmUrl` | bundled | Serve the `.wasm` from your own CDN |
@@ -50,13 +50,13 @@ Six real [SimReady](https://huggingface.co/datasets/cfahlgren1/simready-usd-web-
 |---|---|---|---|---|---|
 | Renders the 6 packages | **6/6** | 5/6 | 1/6 | 2/6 | 6/6 |
 | WASM download (brotli) | **531 KB** | 6.0 MB | – | 1.4 MB | – |
-| Peak tab memory | **169–578 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
+| Peak tab memory | **168–534 MB** | 1.1–4.9 GB | 280 MB¹ | 290–450 MB¹ | 117–213 MB |
 | WASM heap | **2–91 MB** | ~700 MB | – | 18–64 MB | – |
-| IV pole fully loaded | **1.2 s**² | 11.8 s | ✗ | ✗ | 0.1 s |
+| IV pole fully loaded | **0.8 s**² | 11.8 s | ✗ | ✗ | 0.1 s |
 | Needs COOP/COEP | **no** | yes | no | no | no |
 | License | **MIT** | PolyForm Noncommercial | MIT | Apache-2.0 / MIT | – |
 
-¹ only on the assets it renders. ² all 15 textures (color, packed occlusion/roughness/metallic, normal), 218 MB of 4K PNGs; Needle loads the same set. Headless Chromium, software rendering, localhost, median of 3 cold runs. Full tables and screenshots: [`bench/results`](bench/results/README.md).
+¹ only on the assets it renders. ² default `textures: 'preview'`: color plus packed occlusion/roughness/metallic maps (144 MB of 4K PNGs, data maps decoded at 512 px); `'full'` adds normal maps: 1.2 s, 218 MB, the set Needle loads. Headless Chromium, software rendering, localhost, median of 3 cold runs. Full tables and screenshots: [`bench/results`](bench/results/README.md).
 
 ## Matches Pixar OpenUSD
 

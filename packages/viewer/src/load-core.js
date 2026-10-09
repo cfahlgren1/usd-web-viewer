@@ -103,7 +103,7 @@ export function takeGeometries(scene, meta) {
 /** Textures stored inside a USDZ package, by path: they cannot be fetched by URL. */
 export function takePackagedTextures(scene, meta) {
   const out = new Map();
-  for (const path of texturePaths(meta)) {
+  for (const { path } of textureJobs(meta, { textures: 'full' })) {
     if (!path.includes('[')) continue;
     const bytes = scene.packagedFile(path);
     if (bytes) out.set(path, bytes);
@@ -111,9 +111,31 @@ export function takePackagedTextures(scene, meta) {
   return out;
 }
 
-/** Distinct texture files the materials sample: base colors first, normal maps last. */
-export function texturePaths(meta, { normalMaps = true } = {}) {
-  const tiers = [['diffuseColor'], ['opacity', 'emissiveColor', 'roughness', 'metallic', 'occlusion'], normalMaps ? ['normal'] : []];
-  const paths = tiers.flatMap((inputs) => meta.materials.flatMap((m) => inputs.filter((i) => m.maps[i]).map((i) => m.maps[i].path)));
-  return [...new Set(paths)];
+/** Long-side cap for data maps (roughness, metallic, occlusion, ...) in `preview` mode. */
+const PREVIEW_DATA_SIZE = 512;
+
+/**
+ * The texture files to load and the size to decode each to, base colors first.
+ * `preview`: base color up to `maxSize`, other maps up to 512 px, no normal
+ * maps. `full`: every map, including normals, up to `maxSize`.
+ */
+export function textureJobs(meta, { textures = 'preview', maxSize = 1024 } = {}) {
+  const full = textures === 'full';
+  const dataSize = full ? maxSize : Math.min(maxSize, PREVIEW_DATA_SIZE);
+  const tiers = [
+    [['diffuseColor'], maxSize],
+    [['opacity', 'emissiveColor', 'roughness', 'metallic', 'occlusion'], dataSize],
+    [full ? ['normal'] : [], maxSize],
+  ];
+  const jobs = new Map();
+  for (const [inputs, size] of tiers) {
+    for (const m of meta.materials) {
+      for (const input of inputs) {
+        const path = m.maps[input]?.path;
+        // A file shared by several inputs is decoded once, at the largest size asked.
+        if (path) jobs.set(path, Math.max(jobs.get(path) ?? 0, size));
+      }
+    }
+  }
+  return [...jobs].map(([path, size]) => ({ path, size }));
 }

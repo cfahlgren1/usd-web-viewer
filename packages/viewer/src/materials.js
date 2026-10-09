@@ -82,12 +82,12 @@ function remap(base, size, ref) {
  * Attaches a decoded image to every input of `material` that samples `path`.
  * `textureFor(ref, colorSpace)` returns a configured three.js texture.
  */
-export function attachTexture(material, path, textureFor, { normalMaps = true } = {}) {
+export function attachTexture(material, path, textureFor) {
   const usd = material.userData.usd;
   let changed = false;
   for (const [input, ref] of Object.entries(usd.maps)) {
     const slot = SLOTS[input];
-    if (ref.path !== path || !slot || (!normalMaps && input === 'normal')) continue;
+    if (ref.path !== path || !slot) continue;
     const texture = textureFor(ref, colorSpace(ref, slot), usd.uvChannels[ref.uvSet] ?? 0);
     material[slot.map] = texture;
     material.userData.patches[input] = { channel: ref.channel, scale: ref.scale, bias: ref.bias };

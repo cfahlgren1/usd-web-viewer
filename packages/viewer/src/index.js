@@ -24,14 +24,14 @@ function compileWasm(url = WASM_URL) {
  * @param {string} url  root layer URL (relative URLs resolve against the page)
  * @param {object} [options]
  * @param {number} [options.maxTextureSize=1024]  long-side cap for decoded textures
- * @param {boolean} [options.normalMaps=true]  load normal maps
+ * @param {'preview' | 'full'} [options.textures='preview']  `preview`: base color up to maxTextureSize, other maps up to 512 px, no normal maps; `full`: every map up to maxTextureSize
  * @param {boolean} [options.prefetchVariants=false]  fetch layers named inside variants before composing
  * @param {() => void} [options.onTexture]  called after each texture is applied
  * @param {string | URL} [options.wasmUrl]  override where the WASM binary lives
  * @returns {Promise<{ root: THREE.Group, info: object, textures: Promise<void>, dispose: () => void }>}
  */
 export async function loadUsd(url, options = {}) {
-  const { maxTextureSize = 1024, normalMaps = true, prefetchVariants = false, onTexture = () => {} } = options;
+  const { maxTextureSize = 1024, textures: textureMode = 'preview', prefetchVariants = false, onTexture = () => {} } = options;
   const absoluteUrl = new URL(url, location.href).href;
   const module = await compileWasm(options.wasmUrl);
   const worker = new Worker(WORKER_URL, { type: 'module' });
@@ -44,7 +44,7 @@ export async function loadUsd(url, options = {}) {
   worker.onmessage = ({ data }) => {
     switch (data.type) {
       case 'scene':
-        built = buildScene(data.meta, data.geometries, normalMaps);
+        built = buildScene(data.meta, data.geometries);
         built.info.stats = data.stats;
         resolveScene(built);
         break;
@@ -73,13 +73,13 @@ export async function loadUsd(url, options = {}) {
     rejectScene(new Error(event.message || 'worker failed to start'));
     resolveTextures();
   };
-  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, normalMaps, prefetchVariants });
+  worker.postMessage({ url: absoluteUrl, wasmModule: module, maxTextureSize, textures: textureMode, prefetchVariants });
 
   const scene = await scenePromise;
   return { root: scene.root, info: scene.info, textures, dispose: scene.dispose };
 }
 
-function buildScene(meta, arrays, normalMaps) {
+function buildScene(meta, arrays) {
   const root = new THREE.Group();
   root.name = 'usd';
   // three.js is Y-up in meters.
@@ -136,7 +136,7 @@ function buildScene(meta, arrays, normalMaps) {
     base.anisotropy = 4;
     textures.set(path, base);
     const textureFor = (ref, colorSpace, uvChannel) => configureTexture(base, ref, colorSpace, uvChannel);
-    for (const material of allMaterials()) attachTexture(material, path, textureFor, { normalMaps });
+    for (const material of allMaterials()) attachTexture(material, path, textureFor);
   };
   const textureFailed = (path) => allMaterials().forEach((material) => applyFallback(material, path));
 
