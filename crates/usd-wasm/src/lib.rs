@@ -30,6 +30,42 @@ pub struct Loader {
     unavailable: HashSet<String>,
 }
 
+/// Walks the whole stage, turning off `instanceable` on instances whose
+/// prototype composes to nothing so their subtree is drawn in place. openusd
+/// gives an instance made instanceable only through an ancestor's reference
+/// (common in robot assets) an empty prototype, where USD draws its meshes.
+/// One inside another instance cannot be authored: the enclosing instance is
+/// turned off first, and the next walk reaches it.
+fn uninstance_empty_prototypes(stage: &usd::Stage) -> openusd::Result<()> {
+    loop {
+        let mut paths = Vec::new();
+        stage.traverse(usd::PrimPredicate::DEFAULT_PROXIES, |path| {
+            paths.push(path.clone())
+        })?;
+        let mut empty = BTreeSet::new();
+        for path in paths {
+            let prim = stage.prim(path.clone())?;
+            let Some(prototype) = prim.prototype()? else {
+                continue;
+            };
+            if stage.prim(prototype)?.is_valid()? {
+                continue;
+            }
+            let mut editable = path;
+            while stage.prim(editable.clone())?.is_instance_proxy()? {
+                editable = editable.parent().unwrap_or_else(sdf::Path::abs_root);
+            }
+            empty.insert(editable);
+        }
+        if empty.is_empty() {
+            return Ok(());
+        }
+        for path in empty {
+            stage.override_prim(path)?.set_instanceable(false)?;
+        }
+    }
+}
+
 /// What [`Loader::compose`] produced: a planned scene (triangle data still to
 /// read, see [`Scene::read_geometry`] and [`Scene::read_all`]), or the layers
 /// it still needs.
@@ -91,7 +127,7 @@ impl Loader {
             .open(root)?;
         // Composition opens references and payloads lazily: walk the whole
         // stage first so every layer it needs is asked for before extracting.
-        stage.traverse(usd::PrimPredicate::DEFAULT_PROXIES, |_| {})?;
+        uninstance_empty_prototypes(&stage)?;
         let mut missing: Vec<String> = missing
             .borrow()
             .iter()

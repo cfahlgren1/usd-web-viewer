@@ -12,8 +12,8 @@ const MAX_BYTES = 64 * 2 ** 20;
  * the directory with a SimReady packaging manifest among the root's parent
  * and grandparent, else everything under the root's own directory. `eager`
  * when a manifest declares the package, so its layers are worth requesting
- * before the root is read. No layers, without a request, for any other URL,
- * and none if the listing fails: the load then discovers layers as usual.
+ * before the root is read. No layers, without a request, for a root at the
+ * top of its repo or any other URL, and none if the listing fails: the load then discovers layers as usual.
  *
  * @param {string} rootUrl
  * @param {(url: string) => Promise<Response>} request  the load's fetch, with its headers
@@ -25,6 +25,8 @@ export async function hubPackageLayers(rootUrl, request) {
   if (!match) return none;
   const [, origin, prefix, repo, revision, path] = match;
   const parent = path.split('/').slice(0, -1);
+  // A root at the top of a repo would list, and preload, the whole repo.
+  if (!parent.length) return none;
   const listed = parent.length > 1 ? parent.slice(0, -1) : parent;
   try {
     const response = await request(`${origin}/api/${prefix || 'models/'}${repo}/tree/${revision}/${listed.join('/')}?recursive=true`);
