@@ -9,7 +9,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       # The toolchain rust-toolchain.toml pins.
       - run: rustup target add wasm32-unknown-unknown && rustup component add clippy rustfmt
       - uses: taiki-e/install-action@v2
@@ -46,7 +46,7 @@ jobs:
   three-min:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
       - run: rustup target add wasm32-unknown-unknown
       - uses: taiki-e/install-action@v2
         with:
