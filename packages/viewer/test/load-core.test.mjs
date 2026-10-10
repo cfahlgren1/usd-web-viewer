@@ -672,8 +672,9 @@ test('hubPackageLayers lists the SimReady package of a Hub root, and nothing for
   );
   const none = { layers: [], eager: false };
   assert.deepEqual(await hubPackageLayers('https://example.com/datasets/o/r/resolve/main/pkg/usd/root.usd', request), none);
-  assert.deepEqual(await hubPackageLayers('https://huggingface.co/datasets/o/r/resolve/main/x.usd', async () => new Response(null, { status: 401 })), none);
+  assert.deepEqual(await hubPackageLayers('https://huggingface.co/datasets/o/r/resolve/main/x.usd', request), none);
   assert.equal(requests.length, 2);
+  assert.deepEqual(await hubPackageLayers('https://huggingface.co/datasets/o/r/resolve/main/pkg/x.usd', async () => new Response(null, { status: 401 })), none);
 });
 
 test('limits: requests in flight, layer files and bytes, drawn triangles and instances', async () => {
