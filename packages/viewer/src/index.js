@@ -647,8 +647,12 @@ function frameBox(camera, controls, box) {
   if (box.isEmpty()) return;
   const center = box.getCenter(new THREE.Vector3());
   const radius = box.getSize(new THREE.Vector3()).length() / 2 || 1;
-  const distance = (radius / Math.sin((camera.fov * Math.PI) / 180 / 2)) * 1.05;
+  // `fov` is vertical: on a view narrower than it is tall, fit the horizontal angle.
+  const vertical = (camera.fov * Math.PI) / 180;
+  const horizontal = 2 * Math.atan(Math.tan(vertical / 2) * camera.aspect);
+  const distance = (radius / Math.sin(Math.min(vertical, horizontal) / 2)) * 1.05;
   camera.position.copy(center).addScaledVector(new THREE.Vector3(1, 0.6, 1).normalize(), distance);
+  camera.lookAt(center);
   camera.near = distance / 100;
   camera.far = distance * 100;
   camera.updateProjectionMatrix();
