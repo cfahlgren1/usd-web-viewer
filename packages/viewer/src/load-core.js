@@ -319,10 +319,18 @@ function urlKey(url) {
  * Fetches a body, passing each chunk's size to `budget` as it arrives and
  * giving up (cancelling the body) when `budget` throws. An HTTP error throws a
  * `fetch` UsdLoadError carrying the status. `fetchFn` is the global fetch or a
- * stand-in with the same contract.
+ * stand-in with the same contract. Rate limiting (429) and server errors
+ * (5xx) are retried with backoff, as the Hub answers bursts with 429.
  */
-export async function fetchLimited(url, budget, { fetchFn = fetch } = {}) {
-  const response = await fetchFn(url);
+export async function fetchLimited(url, budget, { fetchFn = fetch, retries = 3, retryDelayMs = 500 } = {}) {
+  let response = await fetchFn(url);
+  for (let attempt = 0; attempt < retries && (response.status === 429 || response.status >= 500); attempt++) {
+    response.body?.cancel().catch(() => {});
+    const retryAfterMs = Number(response.headers?.get('retry-after')) * 1000;
+    const delay = retryAfterMs > 0 ? Math.min(retryAfterMs, 10_000) : retryDelayMs * 2 ** attempt * (1 + Math.random());
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    response = await fetchFn(url);
+  }
   if (!response.ok) throw new UsdLoadError('fetch', `HTTP ${response.status} for ${url}`, { url, status: response.status });
   if (!response.body) return new Uint8Array();
   const reader = response.body.getReader();
