@@ -84,7 +84,7 @@ export interface LoadOptions {
  * - `nothing-drawable`: no visible mesh had anything to draw.
  * - `layer-missing`: a layer could not be fetched, or the request policy refused it (see `allowedOrigins`).
  * - `layer-unreadable`: a layer was fetched but could not be parsed; composition goes on without it.
- * - `material-fallback`: materials with neither UsdPreviewSurface nor readable MDL parameters (e.g. MaterialX only), shown grey.
+ * - `material-fallback`: materials with neither UsdPreviewSurface nor a supported MDL material (OmniPBR, glTF), e.g. MaterialX only or custom MDL modules, shown grey.
  * - `composition`: what composition reported, e.g. an unresolved reference (the first 5, then a count).
  * - `texture-failed`: an image could not be fetched or read, or was refused (by the request policy, past `maxTextureBytes`, larger than 16384 px a side, or not PNG, JPEG or WebP); its inputs show their own (authored or default) values.
  * - `triangle-limit`: meshes left out past `maxTriangles`.

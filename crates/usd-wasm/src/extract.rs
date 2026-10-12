@@ -609,7 +609,7 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
         scene.warnings.push(Warning {
             code: "material-fallback",
             message: format!(
-                "{} material(s) have no UsdPreviewSurface or readable MDL and show as grey",
+                "{} material(s) have no UsdPreviewSurface or supported MDL material and show as grey",
                 fallback.len()
             ),
             path: Some((*first).to_owned()),
