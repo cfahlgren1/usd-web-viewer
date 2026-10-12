@@ -40,7 +40,7 @@ globalThis.Worker = FakeWorker;
 globalThis.fetch = async () => new Response(new Uint8Array());
 WebAssembly.compileStreaming = async () => ({});
 WebAssembly.compile = async () => ({});
-const { loadUsd } = await import('../src/index.js');
+const { frame, loadUsd } = await import('../src/index.js');
 
 const TEXTURE = {
   path: 'https://example.test/t.png',
@@ -418,4 +418,18 @@ test('instances of one geometry with the same materials draw as one InstancedMes
   batch.addEventListener('dispose', () => (freed = true));
   dispose();
   assert.equal(freed, true);
+});
+
+test('frame keeps the whole model on screen in a tall, narrow view', () => {
+  const camera = new THREE.PerspectiveCamera(45, 0.46); // a phone held upright
+  const box = new THREE.Mesh(new THREE.BoxGeometry(2, 0.5, 0.5)); // wide, like a pair of glasses
+  frame(camera, null, box);
+  camera.updateMatrixWorld();
+  const corners = new THREE.Box3().setFromObject(box);
+  for (const x of [corners.min.x, corners.max.x])
+    for (const y of [corners.min.y, corners.max.y])
+      for (const z of [corners.min.z, corners.max.z]) {
+        const p = new THREE.Vector3(x, y, z).project(camera);
+        assert.ok(Math.abs(p.x) <= 1 && Math.abs(p.y) <= 1, `corner (${x}, ${y}, ${z}) lands at (${p.x.toFixed(2)}, ${p.y.toFixed(2)})`);
+      }
 });
