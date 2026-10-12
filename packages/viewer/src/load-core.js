@@ -401,11 +401,12 @@ export function imageInfo(b) {
 // A trailing dot names the same host (`huggingface.co.`), so it matches too.
 const HUB_HOST = /^(huggingface\.co|hf\.co)\.?$/;
 const HUB_CDN = /\.hf\.co\.?$/;
-// Paths of Hub repo files and of the tree listing the prefetch reads: the
-// only Hub URLs a load requests, never `/api/*` endpoints or account pages.
-// The last group is the revision.
+// Paths of Hub repo files, of the tree listing the prefetch reads and of the
+// revision lookup that pins a load to one commit: the only Hub URLs a load
+// requests, never other `/api/*` endpoints or account pages. The last group is
+// the revision.
 const HUB_FILE = /^\/(?:(datasets|spaces)\/)?([\w.-]+)\/([\w.-]+)\/resolve\/([^/]*)/;
-const HUB_TREE = /^\/api\/(datasets|models|spaces)\/([\w.-]+)\/([\w.-]+)\/tree\/([^/]*)/;
+const HUB_TREE = /^\/api\/(datasets|models|spaces)\/([\w.-]+)\/([\w.-]+)\/(?:tree|revision)\/([^/]*)/;
 // First path segments of Hub pages and endpoints: never a model's owner.
 const HUB_RESERVED = new Set([
   'api',

@@ -44,6 +44,10 @@ const CASES = [
   ['https://huggingface.co/api/datasets/o/r/tree/main/pkg?recursive=true', HUB, [], OWN],
   ['https://huggingface.co/api/datasets/o/other/tree/main', HUB, [], OMIT],
 
+  // The revision lookup that pins a load to one commit: own repo only.
+  ['https://huggingface.co/api/datasets/o/r/revision/main?expand%5B%5D=sha', HUB, [], OWN],
+  ['https://huggingface.co/api/datasets/o/other/revision/main?expand%5B%5D=sha', HUB, [], OMIT],
+
   // Every other Hub path, even with any origin allowed.
   ['https://huggingface.co/api/whoami-v2', HUB, ['*'], REFUSED],
   ['https://huggingface.co/api/settings/tokens', HUB, ['*'], REFUSED],
