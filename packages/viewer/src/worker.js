@@ -2,7 +2,7 @@
 // textures as downscaled ImageBitmaps. One worker per load: the page
 // terminates it when done, disposed or aborted, which releases all WASM memory.
 import init, { lastPanic, UsdLoader } from '../wasm/usd_wasm.js';
-import { hubPackageLayers } from './hub-prefetch.js';
+import { hubPackageLayers, pinHubRevision } from './hub-prefetch.js';
 import {
   DEFAULTS,
   canonicalUrl,
@@ -113,7 +113,9 @@ self.onmessage = async ({ data }) => {
   let wasmMemory;
   try {
     const t0 = performance.now();
-    const preload = hubPackageLayers(url, request);
+    // Looked up while the WASM module initializes.
+    const rootUrl = pinHubRevision(url, request);
+    const preload = rootUrl.then((root) => hubPackageLayers(root, request));
     const wasm = await init({ module_or_path: wasmModule });
     wasmMemory = wasm.memory;
     const tInit = performance.now();
@@ -121,7 +123,7 @@ self.onmessage = async ({ data }) => {
     const { scene, meta, stats } = await composeStage({
       UsdLoader,
       fetchBytes,
-      rootUrl: url,
+      rootUrl: await rootUrl,
       maxConcurrentFetches,
       maxLayerBytes,
       maxLayers,
