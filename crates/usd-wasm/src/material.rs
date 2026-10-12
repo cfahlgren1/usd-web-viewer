@@ -161,24 +161,12 @@ fn read_material(stage: &Stage, path: &sdf::Path) -> openusd::Result<Material> {
         return read_preview_surface(stage, &shader, name);
     }
     if let Some(shader) = surface_shader(stage, path, "outputs:mdl:surface")? {
-        let prim = stage.prim(&shader)?;
-        if prim
-            .attribute("inputs:diffuse_color_constant")
-            .has_authored_value()?
-            || prim
-                .attribute("inputs:diffuse_texture")
-                .has_authored_value()?
-        {
-            return read_omnipbr(stage, &shader, name);
-        }
-        if prim
-            .attribute("inputs:base_color_factor")
-            .has_authored_value()?
-            || prim
-                .attribute("inputs:base_color_texture")
-                .has_authored_value()?
-        {
-            return read_gltf_pbr(stage, &shader, name);
+        match mdl_material(stage, &shader)?.as_deref() {
+            // OmniPBR and its ClearCoat / Opacity variants share OmniPBR's inputs.
+            Some(id) if id.starts_with("OmniPBR") => return read_omnipbr(stage, &shader, name),
+            // glTF's pbr.mdl, whatever the copy of the module is named (pbr_1.mdl, ...).
+            Some("gltf_material") => return read_gltf_pbr(stage, &shader, name),
+            _ => {}
         }
     }
     Ok(Material::neutral(name, "fallback", [0.7, 0.7, 0.7]))
@@ -201,6 +189,28 @@ fn surface_shader(
 
 fn shader_id(stage: &Stage, shader: &sdf::Path) -> openusd::Result<Option<String>> {
     Ok(crate::extract::token_attr(&stage.prim(shader)?, "info:id"))
+}
+
+/// Which MDL material a shader instantiates: its `subIdentifier`, else the
+/// module's file name (`OmniPBR` for `@../source_assets/OmniPBR.mdl@`).
+fn mdl_material(stage: &Stage, shader: &sdf::Path) -> openusd::Result<Option<String>> {
+    let prim = stage.prim(shader)?;
+    if let Some(id) = crate::extract::token_attr(&prim, "info:mdl:sourceAsset:subIdentifier") {
+        return Ok(Some(id));
+    }
+    Ok(prim
+        .attribute("info:mdl:sourceAsset")
+        .get::<Value>()
+        .ok()
+        .flatten()
+        .and_then(|value| match value {
+            Value::AssetPath(a) => Some(a.asset_path().to_owned()),
+            _ => None,
+        })
+        .and_then(|path| {
+            let file = path.rsplit('/').next()?;
+            Some(file.strip_suffix(".mdl").unwrap_or(file).to_owned())
+        }))
 }
 
 enum Source {

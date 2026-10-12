@@ -18,5 +18,5 @@ materials:
   0 /Mat fallback: color (0.7, 0.7, 0.7), opacity 1, roughness 0.5, metallic 0
 
 warnings:
-  material-fallback: 1 material(s) have no UsdPreviewSurface or readable MDL and show as grey (/Mat)
+  material-fallback: 1 material(s) have no UsdPreviewSurface or supported MDL material and show as grey (/Mat)
   composition: unresolved Reference layer @library.mtlx@ at /Library
