@@ -59,3 +59,28 @@ export async function hubPackageLayers(rootUrl, request) {
     return none;
   }
 }
+
+/**
+ * A Hub `resolve` URL pinned to the commit its branch or tag points at now,
+ * so every layer and texture of one load (all resolved against the root)
+ * comes from the same commit even if the repo is pushed to meanwhile. Unchanged,
+ * without a request, for a commit or any other URL, and if the lookup fails.
+ *
+ * @param {string} rootUrl
+ * @param {(url: string) => Promise<Response>} request  the load's fetch, with its headers
+ * @returns {Promise<string>}
+ */
+export async function pinHubRevision(rootUrl, request) {
+  const match = rootUrl.split(/[?#]/)[0].match(RESOLVE);
+  if (!match) return rootUrl;
+  const [, origin, prefix, repo, revision] = match;
+  if (/^[0-9a-f]{40}$/.test(revision)) return rootUrl;
+  try {
+    const response = await request(`${origin}/api/${prefix || 'models/'}${repo}/revision/${revision}?expand%5B%5D=sha`);
+    const { sha } = response.ok ? await response.json() : {};
+    if (!/^[0-9a-f]{40}$/.test(sha ?? '')) return rootUrl;
+    return rootUrl.replace(`/resolve/${revision}/`, `/resolve/${sha}/`);
+  } catch {
+    return rootUrl;
+  }
+}

@@ -8,7 +8,7 @@ import zlib from 'node:zlib';
 import { initSync, UsdLoader } from '../wasm/usd_wasm.js';
 import { composeStage, fetchLimited, imageInfo, loadFailure, readGeometries, takePackagedTextures, textureJobs } from '../src/load-core.js';
 import { UsdLoadError } from '../src/errors.js';
-import { hubPackageLayers } from '../src/hub-prefetch.js';
+import { hubPackageLayers, pinHubRevision } from '../src/hub-prefetch.js';
 
 // Missing from the oldest supported browsers (Safari 16.4).
 delete Map.groupBy;
@@ -634,6 +634,26 @@ test('a root with no dependencies fetches nothing ahead unless its package is de
     scene.free();
     assert.deepEqual(s.requested, eager ? ['https://h/root.usda', 'https://h/other.usda'] : ['https://h/root.usda']);
   }
+});
+
+test('pinHubRevision pins a Hub root to the commit its branch points at', async () => {
+  const SHA = 'a'.repeat(40);
+  const requested = [];
+  const request = async (url) => {
+    requested.push(url);
+    return url.includes('/revision/main') ? Response.json({ sha: SHA }) : new Response(null, { status: 404 });
+  };
+  const root = 'https://huggingface.co/datasets/nvidia/simready-assets/resolve/main/chair/simready_usd/sm_chair.usd';
+  assert.equal(await pinHubRevision(root, request), root.replace('/main/', `/${SHA}/`));
+  assert.deepEqual(requested, ['https://huggingface.co/api/datasets/nvidia/simready-assets/revision/main?expand%5B%5D=sha']);
+  // Already a commit, or not on the Hub: no request, URL unchanged.
+  const pinned = root.replace('/main/', `/${SHA}/`);
+  assert.equal(await pinHubRevision(pinned, request), pinned);
+  assert.equal(await pinHubRevision('https://example.com/a.usd', request), 'https://example.com/a.usd');
+  assert.equal(requested.length, 1);
+  // A failed lookup leaves the URL as it was.
+  const branch = root.replace('/main/', '/dev/');
+  assert.equal(await pinHubRevision(branch, request), branch);
 });
 
 test('hubPackageLayers lists the SimReady package of a Hub root, and nothing for other URLs', async () => {
