@@ -9,7 +9,7 @@ usd-web-viewer loads untrusted, user-uploaded USD files in the browser. This is 
   - the root URL the caller passes is always fetched;
   - otherwise http(s) only, and no URLs with credentials;
   - hf.co URLs are fetched and checked as the huggingface.co URLs they redirect to;
-  - on huggingface.co, only `resolve` file URLs and tree listings of user or organization repos, never `/api`, `/oauth` or other Hub pages;
+  - on huggingface.co, only `resolve` file URLs, tree listings and revision lookups of user or organization repos, never `/api`, `/oauth` or other Hub pages;
   - cookies and caller `headers` only for the root file's origin (for Hub URLs, the root's repo); every other request is sent with `credentials: 'omit'` and `no-referrer`;
   - requests carrying `headers` never follow a redirect with them: off the Hub, a redirect is fetched again without headers or cookies;
   - `allowedOrigins` adds more allowed hosts; the root's origin (and, for a Hub root, the Hub) is always allowed.
