@@ -292,6 +292,25 @@ test('fetchLimited stops reading a streamed body past maxBytes', async (t) => {
   assert.ok(sent < 4 * 1024 * 1024, `stopped early (${sent} bytes sent)`);
 });
 
+test('fetchLimited retries 429 and 5xx responses, not other errors', async (t) => {
+  const hits = {};
+  const srv = http.createServer((req, res) => {
+    hits[req.url] = (hits[req.url] ?? 0) + 1;
+    if (req.url === '/busy' && hits[req.url] === 1) return res.writeHead(429).end();
+    if (req.url === '/flaky' && hits[req.url] < 3) return res.writeHead(503).end();
+    if (req.url === '/missing') return res.writeHead(404).end();
+    res.end('ok');
+  });
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
+  t.after(() => srv.close());
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  const fast = { retryDelayMs: 1 };
+  assert.equal(new TextDecoder().decode(await fetchLimited(`${base}/busy`, cap(5), fast)), 'ok');
+  assert.equal(new TextDecoder().decode(await fetchLimited(`${base}/flaky`, cap(5), fast)), 'ok');
+  await assert.rejects(fetchLimited(`${base}/missing`, cap(5), fast), (error) => error.status === 404);
+  assert.deepEqual(hits, { '/busy': 2, '/flaky': 3, '/missing': 1 });
+});
+
 /** A byte budget for fetchLimited: charges each chunk and throws past `max`. */
 function cap(max) {
   let used = 0;
