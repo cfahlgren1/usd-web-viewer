@@ -2,11 +2,11 @@
 
 # usd-web-viewer
 
-**[OpenUSD](https://openusd.org) in the browser.** USD composition in 612 KiB of WebAssembly, built on [openusd](https://github.com/mxpv/openusd) and rendered with three.js.
+**[OpenUSD](https://openusd.org) in the browser.** USD composition in 625 KiB of WebAssembly, built on [openusd](https://github.com/mxpv/openusd) and rendered with three.js.
 
 <a href="https://huggingface.co/spaces/cfahlgren1/usd-viewer"><img src="https://huggingface.co/datasets/huggingface/badges/resolve/main/open-in-hf-spaces-md.svg" alt="Open in Spaces"></a>
 <img src="https://img.shields.io/badge/license-MIT-2ea44f" alt="MIT">
-<img src="https://img.shields.io/badge/wasm-612%20KiB%20brotli-orange" alt="612 KiB">
+<img src="https://img.shields.io/badge/wasm-625%20KiB%20brotli-orange" alt="625 KiB">
 
 <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/robotiq.png" width="118"> <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/laptop.png" width="118"> <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/thor.png" width="118"> <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/ivpole.png" width="118"> <img src="https://huggingface.co/datasets/cfahlgren1/simready-usd-web-viewers/resolve/main/readme/chair.png" width="118">
 
@@ -44,7 +44,7 @@ About half the size of tinyusdz, and it renders all [14 public Hub USD files in 
 
 | | Renders the 14 test files | Download | Load time | Memory |
 |---|---|--:|--:|--:|
-| **usd-web-viewer** | `██████████████` **14** | **612 KiB** | **1×** | **1×** |
+| **usd-web-viewer** | `██████████████` **14** | **625 KiB** | **1×** | **1×** |
 | openusd-wasm | `████████░░░░░░` 8 | 1.8 MB | 4.2× slower | 5.2× more |
 | Needle | `█████░░░░░░░░░` 5 | 4.9 MB | 6.0× slower | 5.6× more |
 | tinyusdz | `█████░░░░░░░░░` 5 | 1.2 MB | 9.1× slower | 1.5× more |
@@ -62,7 +62,7 @@ Similar names, different code: openusd-wasm and Needle compile **Pixar's C++ Ope
 | Scope | A full production library: authoring and editing APIs, many schema domains, a plugin system, change notification, file-format plugins | Read and compose only: parsers, composition, and the geometry and shading schemas a viewer needs |
 | Runtime | Multithreaded (TBB) C++ with its standard library; browser builds need shared memory (COOP/COEP) | Single-threaded, no C++ runtime |
 | Dead code | Plugin and type registries keep code reachable even when unused | Statically linked, so link-time optimization and `wasm-opt` strip what isn't called |
-| Measured | openusd-wasm: 12.8 MB raw / 1.8 MB brotli, ~680 MB WASM memory reserved up front | 2.3 MB raw / 612 KiB brotli, 1–2 MB WASM memory to start |
+| Measured | openusd-wasm: 12.8 MB raw / 1.8 MB brotli, ~680 MB WASM memory reserved up front | 2.3 MB raw / 625 KiB brotli, 1–2 MB WASM memory to start |
 
 The trade: no authoring, no Hydra and fewer schemas, which a viewer doesn't need.
 </details>
