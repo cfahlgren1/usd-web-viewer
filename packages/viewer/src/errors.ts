@@ -16,7 +16,11 @@ export class UsdLoadError extends Error {
   ) {
     super(message, cause === undefined ? undefined : { cause });
     this.code = code;
-    if (url !== undefined) this.url = url;
-    if (status !== undefined) this.status = status;
+    if (url !== undefined) {
+      this.url = url;
+    }
+    if (status !== undefined) {
+      this.status = status;
+    }
   }
 }

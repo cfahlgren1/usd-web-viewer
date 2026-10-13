@@ -101,7 +101,7 @@ export interface Failure {
 /** Progress as the worker reports it, before the page adds `fraction`. */
 export type StageProgress = LoadProgress extends infer P ? (P extends unknown ? Omit<P, 'fraction'> : never) : never;
 
-/** Starts a load. */
+/** Starts a load: the one message the page sends the worker. */
 export interface LoadRequest {
   url: string;
   wasmModule: WebAssembly.Module;
@@ -115,20 +115,10 @@ export interface LoadRequest {
   maxTriangles?: number | undefined;
   allowedOrigins?: readonly string[] | undefined;
   headers?: Record<string, string> | undefined;
-  proxyFetch: boolean;
 }
-
-/** Page to worker. */
-export type PageMessage =
-  | (LoadRequest & { type?: undefined })
-  | { type: 'fetched'; id: number; ok?: boolean; status?: number; error?: string }
-  | { type: 'chunk'; id: number; chunk?: ArrayBufferLike; done?: boolean; error?: string };
 
 /** Worker to page. */
 export type WorkerMessage =
-  | { type: 'fetch'; id: number; url: string }
-  | { type: 'pull'; id: number }
-  | { type: 'cancel'; id: number }
   | { type: 'progress'; progress: StageProgress }
   | { type: 'meta'; meta: SceneMeta }
   | { type: 'geometry'; index: number; meta: GeometryMeta | null; arrays: GeometryArrays | null }

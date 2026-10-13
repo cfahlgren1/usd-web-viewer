@@ -16,15 +16,12 @@
 
 ## Use it
 
-```html
-<script type="module">import 'usd-web-viewer/element';</script>
+```js
+import { createViewer } from 'usd-web-viewer';
 
-<usd-viewer
-  src="https://huggingface.co/datasets/Robotiq-Official/simready-assets/resolve/main/Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda"
-  alt="Robotiq 2F-85 gripper"></usd-viewer>
+const viewer = createViewer(document.getElementById('viewer')); // a canvas, or a container for one
+await viewer.load('https://huggingface.co/datasets/Robotiq-Official/simready-assets/resolve/main/Robotiq_2F_85/simready_usd/Robotiq_2F_85.usda');
 ```
-
-Attributes: `src`, `textures`, `alt`, `poster`, `loading`, `reveal`. Events: `progress`, `load`, `error`.
 
 Or with your own three.js scene:
 
@@ -80,10 +77,10 @@ Checked against Pixar's `usd-core` on all 2,503 packages in [nvidia/simready-ass
 
 ## Develop
 
-    npm install && npm run build        # WASM (needs Rust wasm32-unknown-unknown and wasm-bindgen-cli 0.2.129), then TypeScript to dist/
-    npm test && cargo test              # fixture snapshots: cargo insta review
-    npm run test:browser                # Playwright: element, real worker and fetch
-    npm run lint && npm run format:check # oxlint and oxfmt
-    npm run dev & npm run serve         # rebuild dist/ on change; examples on :8811
+    npm install && npm run build:wasm   # needs Rust (wasm32-unknown-unknown) and wasm-bindgen-cli 0.2.129
+    npm run build                       # TypeScript to packages/viewer/dist (tshy)
+    npm test && cargo test              # vitest; fixture snapshots: cargo insta review
+    npm run test:browser                # Playwright, local only: real worker, fetch and rendering, against dist
+    npm run lint && npm run check && npm run format:check # oxlint and eslint, tsc, oxfmt
 
 Built on [openusd](https://github.com/mxpv/openusd) (MIT, Maksym Pavlenko) and [three.js](https://github.com/mrdoob/three.js) (MIT). Security model: [SECURITY.md](SECURITY.md). MIT licensed.

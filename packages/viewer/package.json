@@ -4,41 +4,38 @@
   "description": "OpenUSD viewer for the web: pure-Rust USD composition (openusd) in WASM, rendered with three.js",
   "license": "MIT",
   "type": "module",
-  "main": "./dist/index.js",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    },
-    "./element": {
-      "types": "./dist/element.d.ts",
-      "default": "./dist/element.js"
-    },
-    "./hub": {
-      "types": "./dist/hub.d.ts",
-      "default": "./dist/hub.js"
-    },
-    "./worker": "./dist/worker.js",
-    "./wasm/usd_wasm_bg.wasm": "./wasm/usd_wasm_bg.wasm"
+  "tshy": {
+    "dialects": [
+      "esm"
+    ],
+    "exports": {
+      ".": "./src/index.ts",
+      "./worker": "./src/worker.ts",
+      "./wasm/usd_wasm_bg.wasm": "./dist/wasm/usd_wasm_bg.wasm",
+      "./package.json": "./package.json"
+    }
   },
   "files": [
     "dist",
-    "!dist/{hub-prefetch,load-core,materials,meta,worker}.d.ts",
-    "wasm/usd_wasm.js",
-    "wasm/usd_wasm_bg.wasm",
+    "!dist/esm/{hub-prefetch,load-core,materials,meta}.d.ts",
     "THIRD_PARTY_LICENSES"
   ],
-  "sideEffects": [
-    "./dist/element.js"
-  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tshy && mkdir -p dist/wasm && cp wasm/usd_wasm.js wasm/usd_wasm_bg.wasm dist/wasm/",
+    "build:wasm": "bash ../../scripts/build-wasm.sh",
+    "test": "vitest run",
+    "test:browser": "node ../../scripts/api-test.mjs",
+    "check": "tsc --noEmit",
+    "lint": "eslint --quiet --fix --ext .cjs,.ts .",
+    "lint:check": "eslint --ext .cjs,.ts .",
+    "format": "oxfmt .",
+    "format:check": "oxfmt --check .",
+    "prepublishOnly": "npm run build:wasm && npm run build"
+  },
   "peerDependencies": {
     "three": ">=0.162.0 <0.187.0",
     "@types/three": ">=0.162.0 <0.187.0"
-  },
-  "types": "./dist/index.d.ts",
-  "scripts": {
-    "build": "tsc -p .",
-    "prepack": "bash ../../scripts/build-wasm.sh && npm run build"
   },
   "peerDependenciesMeta": {
     "@types/three": {
@@ -47,5 +44,22 @@
   },
   "engines": {
     "node": ">=22"
-  }
+  },
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      }
+    },
+    "./worker": {
+      "import": {
+        "types": "./dist/esm/worker.d.ts",
+        "default": "./dist/esm/worker.js"
+      }
+    },
+    "./wasm/usd_wasm_bg.wasm": "./dist/wasm/usd_wasm_bg.wasm",
+    "./package.json": "./package.json"
+  },
+  "module": "./dist/esm/index.js"
 }

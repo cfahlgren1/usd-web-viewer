@@ -4,14 +4,13 @@
     "lib": ["es2022", "dom", "dom.iterable"],
     "module": "nodenext",
     "moduleResolution": "nodenext",
-    "rootDir": "src",
-    "outDir": "dist",
     "declaration": true,
     "strict": true,
     "exactOptionalPropertyTypes": true,
     "noImplicitOverride": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "verbatimModuleSyntax": true
   },
-  "include": ["src"]
+  "include": ["src", "test/types.ts"]
 }

@@ -33,24 +33,6 @@ export interface LoadOptions {
    * its own hosts), a request that redirects is fetched again without headers or cookies, for the browser to follow.
    */
   headers?: Record<string, string> | undefined;
-  /**
-   * Your own fetch for every request the request policy allows (see `allowedOrigins`), run on the page (requests are proxied from the worker).
-   * `init.headers` is `headers` where credentials may go and absent elsewhere, with `init.redirect` `manual` when it is set off the Hub (a
-   * redirect, opaque or 3xx, is then fetched again without them); `init.credentials` and `init.referrerPolicy` are what the built-in fetch would
-   * use; `init.signal` aborts when the load stops, and bodies still open are cancelled then.
-   */
-  fetch?:
-    | ((
-        url: string,
-        init: {
-          headers?: Record<string, string>;
-          credentials: 'same-origin' | 'omit';
-          referrerPolicy: 'no-referrer';
-          redirect?: 'manual';
-          signal: AbortSignal;
-        },
-      ) => Promise<Response>)
-    | undefined;
   onProgress?: ((progress: LoadProgress) => void) | undefined;
   /** Where the `.wasm` binary is served from. Defaults to the copy next to the package. */
   wasmUrl?: string | URL | undefined;
@@ -64,7 +46,7 @@ export interface LoadOptions {
   maxLayers?: number | undefined;
   /**
    * Origins, besides the root URL's, that layers and textures may be fetched from, e.g. `['https://cdn.example.com']`; `['*']` allows any.
-   * A root on the Hugging Face Hub also allows the Hub's hosts and CDNs. Every request, a custom `fetch`'s too, also follows these rules:
+   * A root on the Hugging Face Hub also allows the Hub's hosts and CDNs. Every request also follows these rules:
    * only http(s) URLs without user names; hf.co URLs are fetched (and checked) as the huggingface.co URLs they redirect to; on huggingface.co,
    * only repo files (`…/resolve/…`) and tree listings under a user or organization, with no encoded slash outside the revision (a pull
    * request's `refs%2Fpr%2F1`); cookies and `headers` only for the root's origin or, for a Hub root, the root's own repo; no referrer. Only the

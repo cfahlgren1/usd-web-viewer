@@ -28,8 +28,9 @@ jobs:
       - run: npm run format:check
       - run: cargo fmt --check
       - run: npm run build:wasm
+      - run: npm run build
       - run: npm test
-      - run: npm run check:types
+      - run: npm run check
       - run: cargo test --locked
       - run: cargo clippy --locked -- -D warnings
       - name: WASM size budget (brotli q11 <= 630 KiB)

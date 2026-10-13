@@ -12,7 +12,7 @@ import type { LoadWarning, TextureMode } from './types.js';
 
 /** The load options' defaults, and the largest image side read at all. SECURITY.md documents the limits. */
 export const DEFAULTS = {
-  textures: 'preview' as TextureMode,
+  textures: 'preview',
   maxTextureSize: 1024,
   maxConcurrentFetches: 16,
   maxLayerBytes: 768 * 2 ** 20,
@@ -21,7 +21,7 @@ export const DEFAULTS = {
   maxTriangles: 20e6,
   maxTextureBytes: 512 * 2 ** 20,
   maxImageSize: 16384,
-};
+} satisfies { textures: TextureMode; [limit: string]: unknown };
 
 /** Charged with each chunk's size as it arrives; throws once over budget. */
 export type Budget = (bytes: number) => void;
@@ -85,7 +85,9 @@ export async function composeStage({
   let heldBytes = 0;
   const charge = (bytes: number, path: string) => {
     heldBytes += bytes;
-    if (heldBytes > maxLayerBytes) throw resourceLimit(`layers exceed maxLayerBytes (${maxLayerBytes} bytes) at ${path}`);
+    if (heldBytes > maxLayerBytes) {
+      throw resourceLimit(`layers exceed maxLayerBytes (${maxLayerBytes} bytes) at ${path}`);
+    }
   };
   // Re-fetched layers replace their earlier bytes, so count each path once.
   const layerSizes = new Map<string, number>();
@@ -102,24 +104,36 @@ export async function composeStage({
     for (const { url, size } of layers) {
       const key = urlKey(url);
       bytes += size;
-      if (composed || bytes > maxLayerBytes) break;
-      if (requested.has(key)) continue;
-      if (requested.size >= maxLayers) break;
+      if (composed || bytes > maxLayerBytes) {
+        break;
+      }
+      if (requested.has(key)) {
+        continue;
+      }
+      if (requested.size >= maxLayers) {
+        break;
+      }
       requested.add(key);
       const entry: Preloaded = { started: false, charged: 0 };
       preloaded.set(key, entry);
       // Unused once composed: the next chunk cancels the body.
       const budget = (bytes: number) => {
-        if (composed) throw new Error('composed without it');
+        if (composed) {
+          throw new Error('composed without it');
+        }
         entry.charged += bytes;
         charge(bytes, url);
       };
       entry.bytes = throttle(
         async () => {
-          if (composed || preloaded.get(key) !== entry) return null;
+          if (composed || preloaded.get(key) !== entry) {
+            return null;
+          }
           entry.started = true;
           const bytes = await fetchBytes(url, budget);
-          if (bytes) budget(bytes.byteLength - entry.charged);
+          if (bytes) {
+            budget(bytes.byteLength - entry.charged);
+          }
           return bytes;
         },
         { later: true },
@@ -140,12 +154,18 @@ export async function composeStage({
   // them, so layers that reference each other cannot wait on each other.
   const pending: Promise<void>[] = [];
   const drain = async () => {
-    while (pending.length) await Promise.all(pending.splice(0));
+    while (pending.length) {
+      await Promise.all(pending.splice(0));
+    }
   };
   const fetchLayer = (path: string): void => {
-    if (loader.has(path) || started.has(path)) return;
+    if (loader.has(path) || started.has(path)) {
+      return;
+    }
     requested.add(urlKey(path));
-    if (requested.size > maxLayers) throw resourceLimit(`more than maxLayers (${maxLayers}) layer files at ${path}`);
+    if (requested.size > maxLayers) {
+      throw resourceLimit(`more than maxLayers (${maxLayers}) layer files at ${path}`);
+    }
     const { refused } = requestPolicy(urlOf(path), rootUrl, allowedOrigins);
     if (refused) {
       started.set(path, Promise.resolve());
@@ -171,12 +191,16 @@ export async function composeStage({
       try {
         const entry = takePreloaded(path);
         bytes = entry && (await entry.bytes);
-        if (entry && bytes) charged = entry.charged;
+        if (entry && bytes) {
+          charged = entry.charged;
+        }
         bytes ??= await throttle(() => fetchBytes(urlOf(path), budget));
       } catch (error) {
         heldBytes -= charged;
         // HTTP errors carry a status; network errors are TypeErrors (as from fetch).
-        if ((error as { status?: number })?.status === undefined && !(error instanceof TypeError)) throw error;
+        if ((error as { status?: number })?.status === undefined && !(error instanceof TypeError)) {
+          throw error;
+        }
         failure = error as Error;
       }
       stats.fetchMs = Math.max(stats.fetchMs, performance.now() - t0);
@@ -205,7 +229,9 @@ export async function composeStage({
         deps = loader.addLayer(path, bytes);
       } catch (error) {
         // After a trap the module is unusable: the load fails.
-        if (isTrap(error)) throw error;
+        if (isTrap(error)) {
+          throw error;
+        }
         // An unreadable layer is left out; composition carries on without it.
         stats.warnings.push({ code: 'layer-unreadable', message: String((error as Error).message || error), path: urlOf(path) });
         loader.markUnavailable(path);
@@ -215,7 +241,9 @@ export async function composeStage({
         stats.parseMs += performance.now() - t1;
       }
       progress();
-      for (const dep of deps) fetchLayer(dep);
+      for (const dep of deps) {
+        fetchLayer(dep);
+      }
     })();
     started.set(path, job);
     pending.push(job);
@@ -224,7 +252,7 @@ export async function composeStage({
   fetchLayer(root);
   // A root without dependencies needs nothing else from its directory.
   const rootHasDependencies = () =>
-    started.get(root)!.then(
+    (started.get(root) ?? Promise.resolve()).then(
       () => started.size > 1,
       () => false,
     );
@@ -241,10 +269,16 @@ export async function composeStage({
     const t0 = performance.now();
     const missing = loader.compose(root, maxInstances);
     stats.composeMs += performance.now() - t0;
-    if (!missing.length) break;
-    if (stats.rounds > 16) throw new UsdLoadError('compose', `composition still missing layers: ${missing.join(', ')}`);
+    if (!missing.length) {
+      break;
+    }
+    if (stats.rounds > 16) {
+      throw new UsdLoadError('compose', `composition still missing layers: ${missing.join(', ')}`);
+    }
     // The list also names layers the failed attempt consumed; fetch them again.
-    for (const path of missing) started.delete(path);
+    for (const path of missing) {
+      started.delete(path);
+    }
     missing.forEach(fetchLayer);
     await drain();
   }
@@ -269,16 +303,28 @@ export function loadFailure(error: unknown, wasmMemoryBytes: number, lastPanic?:
   const { code = 'compose', url, status } = (error ?? {}) as Partial<Failure>;
   const message = String((error as Error)?.message || error);
   const failure = (detail: string): Failure => ({ code, message: detail, url, status });
-  if (code !== 'compose') return failure(message);
+  if (code !== 'compose') {
+    return failure(message);
+  }
   const tooLarge = () =>
     failure(`scene too large to load: ran out of memory (${(wasmMemoryBytes / 2 ** 30).toFixed(1)} GiB of WebAssembly memory in use): ${message}`);
-  if (OUT_OF_MEMORY.test(message) || (error instanceof WebAssembly.RuntimeError && wasmMemoryBytes > 3 * 2 ** 30)) return tooLarge();
-  if (!isTrap(error)) return failure(message);
+  if (OUT_OF_MEMORY.test(message) || (error instanceof WebAssembly.RuntimeError && wasmMemoryBytes > 3 * 2 ** 30)) {
+    return tooLarge();
+  }
+  if (!isTrap(error)) {
+    return failure(message);
+  }
   const panic = readPanic(lastPanic);
-  if (panic) return failure(`${message}: ${panic}`);
-  if (/out of bounds|call stack|recursion/i.test(message)) return failure(`stack overflow: the layers nest too deeply to read (${message})`);
+  if (panic) {
+    return failure(`${message}: ${panic}`);
+  }
+  if (/out of bounds|call stack|recursion/i.test(message)) {
+    return failure(`stack overflow: the layers nest too deeply to read (${message})`);
+  }
   // Rust aborts on a failed allocation without a panic: a bare `unreachable`.
-  if (/unreachable/i.test(message)) return tooLarge();
+  if (/unreachable/i.test(message)) {
+    return tooLarge();
+  }
   return failure(message);
 }
 
@@ -314,9 +360,15 @@ export function limiter(max: number) {
   const queue: Job[] = [];
   const later: Job[] = [];
   const next = () => {
-    if (active >= max || !(queue.length || later.length)) return;
+    if (active >= max) {
+      return;
+    }
+    const job = queue.shift() ?? later.shift();
+    if (!job) {
+      return;
+    }
     active++;
-    const { task, resolve, reject } = (queue.shift() ?? later.shift())!;
+    const { task, resolve, reject } = job;
     task()
       .then(resolve, reject)
       .finally(() => {
@@ -360,14 +412,20 @@ export async function fetchLimited(
     await new Promise((resolve) => setTimeout(resolve, delay));
     response = await fetchFn(url);
   }
-  if (!response.ok) throw new UsdLoadError('fetch', `HTTP ${response.status} for ${url}`, { url, status: response.status });
-  if (!response.body) return new Uint8Array();
+  if (!response.ok) {
+    throw new UsdLoadError('fetch', `HTTP ${response.status} for ${url}`, { url, status: response.status });
+  }
+  if (!response.body) {
+    return new Uint8Array();
+  }
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let size = 0;
   for (;;) {
     const { done, value } = await reader.read();
-    if (done) break;
+    if (done) {
+      break;
+    }
     try {
       budget(value.byteLength);
     } catch (error) {
@@ -396,25 +454,31 @@ export function imageInfo(b: Uint8Array): { width: number; height: number; color
   const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
   const ascii = (at: number, text: string) => [...text].every((c, i) => b[at + i] === c.charCodeAt(0));
   if (b.length > 25 && b[0] === 0x89 && ascii(1, 'PNG')) {
-    const [bitDepth, colorType] = [b[24]!, b[25]!];
+    const [bitDepth, colorType] = [b[24], b[25]];
     const color = colorType === 3 || (bitDepth === 8 && (colorType === 2 || colorType === 6));
     return { width: v.getUint32(16), height: v.getUint32(20), color };
   }
   if (b[0] === 0xff && b[1] === 0xd8) {
     let i = 2;
     while (i + 9 < b.length) {
-      if (b[i] !== 0xff) return null;
+      if (b[i] !== 0xff) {
+        return null;
+      }
       const marker = b[i + 1];
       const length = (b[i + 2] << 8) | b[i + 3];
       const isFrame = marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
-      if (isFrame) return { height: (b[i + 5] << 8) | b[i + 6], width: (b[i + 7] << 8) | b[i + 8], color: b[i + 4] === 8 && b[i + 9] >= 3 };
+      if (isFrame) {
+        return { height: (b[i + 5] << 8) | b[i + 6], width: (b[i + 7] << 8) | b[i + 8], color: b[i + 4] === 8 && b[i + 9] >= 3 };
+      }
       i += 2 + length;
     }
     return null;
   }
   if (b.length >= 30 && ascii(0, 'RIFF') && ascii(8, 'WEBP')) {
     // The first chunk: lossy (VP8), lossless (VP8L) or extended (VP8X).
-    if (ascii(12, 'VP8 ')) return { width: v.getUint16(26, true) & 0x3fff, height: v.getUint16(28, true) & 0x3fff, color: true };
+    if (ascii(12, 'VP8 ')) {
+      return { width: v.getUint16(26, true) & 0x3fff, height: v.getUint16(28, true) & 0x3fff, color: true };
+    }
     if (ascii(12, 'VP8L')) {
       const bits = v.getUint32(21, true);
       return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1, color: true };
@@ -469,9 +533,13 @@ const HUB_RESERVED = new Set([
 
 /** The path match of a Hub file or tree-listing URL (`[, type, owner, repo, revision]`), else null. */
 function hubMatch(url: URL) {
-  if (!HUB_HOST.test(url.hostname) || url.protocol !== 'https:') return null;
+  if (!HUB_HOST.test(url.hostname) || url.protocol !== 'https:') {
+    return null;
+  }
   const file = url.pathname.match(HUB_FILE);
-  if (file && (file[1] || !HUB_RESERVED.has(file[2]!.toLowerCase()))) return file;
+  if (file && (file[1] || !HUB_RESERVED.has(file[2].toLowerCase()))) {
+    return file;
+  }
   return url.pathname.match(HUB_TREE);
 }
 
@@ -489,7 +557,9 @@ function hubRepo(url: URL) {
 export function canonicalUrl(url: string): string {
   try {
     const parsed = new URL(url);
-    if (!/^hf\.co\.?$/.test(parsed.hostname)) return url;
+    if (!/^hf\.co\.?$/.test(parsed.hostname)) {
+      return url;
+    }
     parsed.hostname = 'huggingface.co';
     return parsed.href;
   } catch {
@@ -497,18 +567,14 @@ export function canonicalUrl(url: string): string {
   }
 }
 
-export type RequestPolicy = { refused: string } | { refused?: undefined; credentials: 'same-origin' | 'omit'; referrerPolicy: 'no-referrer' };
-
-/** The fetch options a request is made with. */
-export interface PolicyInit {
-  headers?: Record<string, string>;
-  credentials?: 'same-origin' | 'omit';
-  referrerPolicy?: 'no-referrer';
-  redirect?: 'manual';
-  signal?: AbortSignal;
+/** The fetch options of a request the policy allows. */
+export interface AllowedRequest {
+  refused?: undefined;
+  credentials: 'same-origin' | 'omit';
+  referrerPolicy: 'no-referrer';
 }
 
-export type FetchFn = (url: string, init: PolicyInit) => Promise<Response>;
+export type RequestPolicy = { refused: string } | AllowedRequest;
 
 /**
  * How a load rooted at `rootUrl` may request `url`: `{ refused }` with the
@@ -532,12 +598,16 @@ export type FetchFn = (url: string, init: PolicyInit) => Promise<Response>;
  */
 export function requestPolicy(url: string, rootUrl: string, allowedOrigins: readonly string[] = []): RequestPolicy {
   const refused = refusal(canonicalUrl(url), canonicalUrl(rootUrl), allowedOrigins);
-  if (refused) return { refused };
+  if (refused) {
+    return { refused };
+  }
   return { credentials: credentialed(new URL(canonicalUrl(url)), new URL(canonicalUrl(rootUrl))) ? 'same-origin' : 'omit', referrerPolicy: 'no-referrer' };
 }
 
 function refusal(url: string, rootUrl: string, allowedOrigins: readonly string[]) {
-  if (url === rootUrl) return null;
+  if (url === rootUrl) {
+    return null;
+  }
   let target;
   try {
     target = new URL(url);
@@ -545,52 +615,63 @@ function refusal(url: string, rootUrl: string, allowedOrigins: readonly string[]
     return `not a URL: ${url}`;
   }
   const root = new URL(rootUrl);
-  if (target.protocol !== 'http:' && target.protocol !== 'https:') return `only http(s) URLs are fetched: ${url}`;
-  if (target.username || target.password) return `URLs with credentials are not fetched: ${url}`;
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') {
+    return `only http(s) URLs are fetched: ${url}`;
+  }
+  if (target.username || target.password) {
+    return `URLs with credentials are not fetched: ${url}`;
+  }
   const hub = HUB_HOST.test(target.hostname);
-  if (hub && !hubFile(target)) return `only Hub repo files are fetched from ${target.host}: ${url}`;
+  if (hub && !hubFile(target)) {
+    return `only Hub repo files are fetched from ${target.host}: ${url}`;
+  }
   const fromHub = HUB_HOST.test(root.hostname) && (hub || HUB_CDN.test(target.hostname)) && target.protocol === 'https:';
-  if (target.origin === root.origin || fromHub || allowedOrigins.includes('*') || allowedOrigins.includes(target.origin)) return null;
+  if (target.origin === root.origin || fromHub || allowedOrigins.includes('*') || allowedOrigins.includes(target.origin)) {
+    return null;
+  }
   return `its origin is not in allowedOrigins: ${url}`;
 }
 
 /** A Hub repo file or tree listing with no encoded slash or backslash, but for a `%2F` in its revision. */
 function hubFile(url: URL) {
   const match = hubMatch(url);
-  if (!match) return false;
-  const revisionStart = match[0].length - match[4]!.length;
+  if (!match) {
+    return false;
+  }
+  const revisionStart = match[0].length - match[4].length;
   const outside = url.pathname.slice(0, revisionStart) + url.pathname.slice(match[0].length);
-  return !/%2f|%5c/i.test(outside) && !/%5c/i.test(match[4]!);
+  return !/%2f|%5c/i.test(outside) && !/%5c/i.test(match[4]);
 }
 
 function credentialed(target: URL, root: URL) {
-  if (target.origin !== root.origin) return false;
+  if (target.origin !== root.origin) {
+    return false;
+  }
   const repo = hubRepo(root);
   return HUB_HOST.test(root.hostname) ? !!repo && hubRepo(target) === repo : true;
 }
 
 /**
- * Fetches `url` with `fetchFn` under `policy` (see {@link requestPolicy}),
- * sending `headers` only where credentials may go. A request carrying them
- * does not follow a redirect with them: unless it is on the Hub (whose
- * redirects stay on its own hosts), it is not followed, and the URL is
- * fetched again without headers or cookies, for the browser to follow.
- * `init` adds fetch options (a `signal`).
+ * Fetches `url` under `policy` (see {@link requestPolicy}), sending `headers`
+ * only where credentials may go. A request carrying them does not follow a
+ * redirect with them: unless it is on the Hub (whose redirects stay on its own
+ * hosts), it is not followed, and the URL is fetched again without headers or
+ * cookies, for the browser to follow.
  */
-export async function fetchWithPolicy(
-  fetchFn: FetchFn,
-  url: string,
-  policy: Exclude<RequestPolicy, { refused: string }>,
-  headers?: Record<string, string>,
-  init: PolicyInit = {},
-): Promise<Response> {
+export async function fetchWithPolicy(url: string, policy: AllowedRequest, headers: Record<string, string> | undefined): Promise<Response> {
   const sendHeaders = policy.credentials === 'same-origin' && !!headers && Object.keys(headers).length > 0;
-  if (!sendHeaders) return fetchFn(url, { ...policy, ...init });
-  if (HUB_HOST.test(new URL(url).hostname)) return fetchFn(url, { ...policy, headers, ...init });
-  const response = await fetchFn(url, { ...policy, headers, redirect: 'manual', ...init });
-  if (response.type !== 'opaqueredirect' && !(response.status >= 300 && response.status < 400)) return response;
+  if (!sendHeaders) {
+    return fetch(url, policy);
+  }
+  if (HUB_HOST.test(new URL(url).hostname)) {
+    return fetch(url, { ...policy, headers });
+  }
+  const response = await fetch(url, { ...policy, headers, redirect: 'manual' });
+  if (response.type !== 'opaqueredirect' && !(response.status >= 300 && response.status < 400)) {
+    return response;
+  }
   response.body?.cancel().catch(() => {});
-  return fetchFn(url, { ...policy, credentials: 'omit', ...init });
+  return fetch(url, { ...policy, credentials: 'omit' });
 }
 
 /**
@@ -609,7 +690,9 @@ export function readGeometries(
   { maxTriangles = DEFAULTS.maxTriangles }: { maxTriangles?: number | undefined } = {},
 ): LoadWarning[] {
   const instances = Array.from({ length: meta.geometryCount }, () => 0);
-  for (const { geometry } of meta.instances) instances[geometry]++;
+  for (const { geometry } of meta.instances) {
+    instances[geometry]++;
+  }
   let drawn = 0;
   let left = maxTriangles;
   const skipped: string[] = [];
@@ -622,7 +705,9 @@ export function readGeometries(
     const json = scene.read(i, Math.min(Math.floor(left / instances[i]), 2 ** 32 - 1));
     const g: GeometryMeta | OverBudget | undefined = json && JSON.parse(json);
     if (!g || 'overBudget' in g) {
-      if (g) skipped.push(g.path);
+      if (g) {
+        skipped.push(g.path);
+      }
       onGeometry(i, null, null);
       continue;
     }
@@ -638,9 +723,12 @@ export function readGeometries(
   }
   scene.finish();
   const warnings: LoadWarning[] = [];
-  if (skipped.length)
+  if (skipped.length) {
     warnings.push({ code: 'triangle-limit', message: `${skipped.length} meshes left out: past maxTriangles (${maxTriangles}) drawn`, path: skipped[0] });
-  if (!drawn) warnings.push({ code: 'nothing-drawable', message: 'nothing to draw: the stage has no visible meshes with geometry' });
+  }
+  if (!drawn) {
+    warnings.push({ code: 'nothing-drawable', message: 'nothing to draw: the stage has no visible meshes with geometry' });
+  }
   return warnings;
 }
 
@@ -654,10 +742,14 @@ export function takePackagedTextures(scene: UsdScene, jobs: TextureJob[], { maxB
   const out = new Map<string, Uint8Array | Error>();
   let left = maxBytes;
   for (const { path } of jobs) {
-    if (!path.includes('[')) continue;
+    if (!path.includes('[')) {
+      continue;
+    }
     try {
       const bytes = scene.packagedFile(path, left);
-      if (bytes) out.set(path, bytes);
+      if (bytes) {
+        out.set(path, bytes);
+      }
       left -= bytes?.byteLength ?? 0;
     } catch (error) {
       out.set(path, error as Error);
@@ -680,7 +772,9 @@ export interface TextureJob {
  * maps. `full`: every map, including normals, up to `maxSize`. `none`: nothing.
  */
 export function textureJobs(meta: SceneMeta, { textures, maxSize }: { textures: TextureMode; maxSize: number }): TextureJob[] {
-  if (textures === 'none') return [];
+  if (textures === 'none') {
+    return [];
+  }
   const full = textures === 'full';
   const dataSize = full ? maxSize : Math.min(maxSize, PREVIEW_DATA_SIZE);
   const tiers: [string[], number][] = [
@@ -694,7 +788,9 @@ export function textureJobs(meta: SceneMeta, { textures, maxSize }: { textures: 
       for (const input of inputs) {
         const path = m.maps[input]?.path;
         // A file shared by several inputs is decoded once, at the largest size asked.
-        if (path) jobs.set(path, Math.max(jobs.get(path) ?? 0, size));
+        if (path) {
+          jobs.set(path, Math.max(jobs.get(path) ?? 0, size));
+        }
       }
     }
   }

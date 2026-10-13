@@ -1,10 +1,9 @@
 // Its own file: a trap leaves the WASM instance unusable for later tests.
-// usage: node --test packages/viewer/test/
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { initSync, lastPanic, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, loadFailure } from '../dist/load-core.js';
+import { composeStage, loadFailure } from '../src/load-core.ts';
 
 const exports = initSync({ module: readFileSync(new URL('../wasm/usd_wasm_bg.wasm', import.meta.url)) });
 

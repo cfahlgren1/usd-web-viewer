@@ -32,15 +32,21 @@ interface TreeEntry {
 export async function hubPackageLayers(rootUrl: string, request: Request): Promise<PackageLayers> {
   const match = rootUrl.split(/[?#]/)[0].match(RESOLVE);
   const none: PackageLayers = { layers: [], eager: false };
-  if (!match) return none;
+  if (!match) {
+    return none;
+  }
   const [, origin, prefix, repo, revision, path] = match;
   const parent = path.split('/').slice(0, -1);
   // A root at the top of a repo would list, and preload, the whole repo.
-  if (!parent.length) return none;
+  if (!parent.length) {
+    return none;
+  }
   const listed = parent.length > 1 ? parent.slice(0, -1) : parent;
   try {
     const response = await request(`${origin}/api/${prefix || 'models/'}${repo}/tree/${revision}/${listed.join('/')}?recursive=true`);
-    if (!response.ok) return none;
+    if (!response.ok) {
+      return none;
+    }
     const entries: TreeEntry[] = await response.json();
     const decoded = parent.map(decodeURIComponent);
     const manifest = [decoded, decoded.slice(0, -1)].find(
@@ -59,8 +65,12 @@ export async function hubPackageLayers(rootUrl: string, request: Request): Promi
     const layers: PackageLayers['layers'] = [];
     let bytes = 0;
     for (const { type, path: file, size } of entries) {
-      if (type !== 'file' || !file.startsWith(packageDir) || !LAYER.test(file)) continue;
-      if (layers.length >= MAX_FILES || bytes + size > MAX_BYTES) continue;
+      if (type !== 'file' || !file.startsWith(packageDir) || !LAYER.test(file)) {
+        continue;
+      }
+      if (layers.length >= MAX_FILES || bytes + size > MAX_BYTES) {
+        continue;
+      }
       bytes += size;
       layers.push({ url: new URL(file.slice(packageDir.length).replace(/[%#?]/g, encodeURIComponent), base).href, size });
     }
@@ -78,13 +88,19 @@ export async function hubPackageLayers(rootUrl: string, request: Request): Promi
  */
 export async function pinHubRevision(rootUrl: string, request: Request): Promise<string> {
   const match = rootUrl.split(/[?#]/)[0].match(RESOLVE);
-  if (!match) return rootUrl;
+  if (!match) {
+    return rootUrl;
+  }
   const [, origin, prefix, repo, revision] = match;
-  if (/^[0-9a-f]{40}$/.test(revision)) return rootUrl;
+  if (/^[0-9a-f]{40}$/.test(revision)) {
+    return rootUrl;
+  }
   try {
     const response = await request(`${origin}/api/${prefix || 'models/'}${repo}/revision/${revision}?expand%5B%5D=sha`);
     const { sha }: { sha?: string } = response.ok ? await response.json() : {};
-    if (!/^[0-9a-f]{40}$/.test(sha ?? '')) return rootUrl;
+    if (!/^[0-9a-f]{40}$/.test(sha ?? '')) {
+      return rootUrl;
+    }
     return rootUrl.replace(`/resolve/${revision}/`, `/resolve/${sha}/`);
   } catch {
     return rootUrl;

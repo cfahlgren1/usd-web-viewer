@@ -84,7 +84,9 @@ export function createMaterial(m: MaterialMeta): UsdMaterial {
   material.userData.usd = { maps: m.maps, colorPrimvar: m.colorPrimvar, uvChannels: Object.create(null), color: m.color };
   // Until its base color texture streams in, a textured surface shows mid grey
   // (18%, the usual neutral) rather than the stark white texture multiplier.
-  if (m.maps.diffuseColor) material.color.setRGB(0.18, 0.18, 0.18, THREE.LinearSRGBColorSpace);
+  if (m.maps.diffuseColor) {
+    material.color.setRGB(0.18, 0.18, 0.18, THREE.LinearSRGBColorSpace);
+  }
   return prepare(material);
 }
 
@@ -95,7 +97,9 @@ export function variant(
 ): UsdMaterial {
   const copy = material.clone() as UsdMaterial;
   copy.userData.usd.uvChannels = uvChannels;
-  if (doubleSided) copy.side = THREE.DoubleSide;
+  if (doubleSided) {
+    copy.side = THREE.DoubleSide;
+  }
   if (vertexColors) {
     copy.vertexColors = true;
     copy.color.setRGB(1, 1, 1);
@@ -108,7 +112,7 @@ function prepare(material: THREE.MeshStandardMaterial): UsdMaterial {
   material.userData.patches = {};
   material.onBeforeCompile = (shader) => {
     for (const [input, ref] of Object.entries(material.userData.patches)) {
-      const { chunk, from, to } = SLOTS[input]!;
+      const { chunk, from, to } = SLOTS[input];
       const code = THREE.ShaderChunk[chunk].replaceAll(
         from,
         to((base, size) => remap(base, size, ref as Patch)),
@@ -130,7 +134,7 @@ function remap(base: string, size: 1 | 3, ref: Patch) {
     return size === 3 ? expr : `${expr}.r`;
   }
   const i = 'rgba'.indexOf(channel);
-  const expr = `(${base}.${channel} * ${f(ref.scale[i]!)} + ${f(ref.bias[i]!)})`;
+  const expr = `(${base}.${channel} * ${f(ref.scale[i])} + ${f(ref.bias[i])})`;
   return size === 3 ? `vec3${expr}` : expr;
 }
 
@@ -149,23 +153,37 @@ export function attachTexture(
   let changed = false;
   for (const [input, ref] of Object.entries(usd.maps)) {
     const slot = SLOTS[input];
-    if (ref.path !== path || !slot) continue;
+    if (ref.path !== path || !slot) {
+      continue;
+    }
     const texture = textureFor(
       ref,
       colorSpace(ref, isColor),
-      ref.uvSet !== undefined && Object.hasOwn(usd.uvChannels, ref.uvSet) ? usd.uvChannels[ref.uvSet]! : 0,
+      ref.uvSet !== undefined && Object.hasOwn(usd.uvChannels, ref.uvSet) ? usd.uvChannels[ref.uvSet] : 0,
     );
     material[slot.map] = texture;
     material.userData.patches[input] = { channel: ref.channel, scale: ref.scale, bias: ref.bias };
     // The texture now carries the value: the constant factor becomes neutral.
-    if (input === 'diffuseColor') material.color.setRGB(...usd.color, THREE.LinearSRGBColorSpace);
-    if (input === 'roughness') material.roughness = 1;
-    if (input === 'metallic') material.metalness = 1;
-    if (input === 'emissiveColor') material.emissive.setRGB(1, 1, 1);
-    if (input === 'opacity') material.opacity = 1;
+    if (input === 'diffuseColor') {
+      material.color.setRGB(...usd.color, THREE.LinearSRGBColorSpace);
+    }
+    if (input === 'roughness') {
+      material.roughness = 1;
+    }
+    if (input === 'metallic') {
+      material.metalness = 1;
+    }
+    if (input === 'emissiveColor') {
+      material.emissive.setRGB(1, 1, 1);
+    }
+    if (input === 'opacity') {
+      material.opacity = 1;
+    }
     changed = true;
   }
-  if (changed) material.needsUpdate = true;
+  if (changed) {
+    material.needsUpdate = true;
+  }
 }
 
 /**
@@ -175,35 +193,55 @@ export function attachTexture(
  */
 export function applyFallback(material: UsdMaterial, path: string): void {
   for (const [input, ref] of Object.entries(material.userData.usd.maps)) {
-    if (ref.path !== path || !ref.value) continue;
+    if (ref.path !== path || !ref.value) {
+      continue;
+    }
     const [r, g, b] = ref.value;
-    if (input === 'diffuseColor') material.color.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
-    if (input === 'emissiveColor') material.emissive.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
-    if (input === 'roughness') material.roughness = r;
-    if (input === 'metallic') material.metalness = r;
-    if (input === 'opacity') material.opacity = r;
+    if (input === 'diffuseColor') {
+      material.color.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
+    }
+    if (input === 'emissiveColor') {
+      material.emissive.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
+    }
+    if (input === 'roughness') {
+      material.roughness = r;
+    }
+    if (input === 'metallic') {
+      material.metalness = r;
+    }
+    if (input === 'opacity') {
+      material.opacity = r;
+    }
   }
 }
 
 /** `sourceColorSpace`: explicit `raw`/`sRGB` wins; `auto` follows the image, so every input sampling it agrees. */
 function colorSpace(ref: TextureRef, isColor: boolean): THREE.ColorSpace {
-  if (ref.colorSpace === 'raw') return THREE.NoColorSpace;
-  if (ref.colorSpace === 'sRGB') return THREE.SRGBColorSpace;
+  if (ref.colorSpace === 'raw') {
+    return THREE.NoColorSpace;
+  }
+  if (ref.colorSpace === 'sRGB') {
+    return THREE.SRGBColorSpace;
+  }
   return isColor ? THREE.SRGBColorSpace : THREE.NoColorSpace;
 }
+
+// UsdUVTexture wrap tokens; anything else (`repeat`, `useMetadata`) repeats. A
+// Map, so tokens from the file never reach Object.prototype. `black` has no
+// three.js equivalent (no border color); clamp is closest.
+const WRAP = new Map<string, THREE.Wrapping>([
+  ['mirror', THREE.MirroredRepeatWrapping],
+  ['clamp', THREE.ClampToEdgeWrapping],
+  ['black', THREE.ClampToEdgeWrapping],
+]);
 
 /** A texture for `ref` sharing the decoded image of `base`: color space, wrap, UV set and UsdTransform2d. */
 export function configureTexture(base: THREE.Texture, ref: TextureRef, colorSpaceValue: THREE.ColorSpace, uvChannel: number): THREE.Texture {
   const texture = base.clone();
   texture.colorSpace = colorSpaceValue;
   texture.channel = uvChannel;
-  // `black` has no three.js equivalent (no border color); clamp is closest.
-  const wrap = (token: string | undefined): THREE.Wrapping =>
-    (({ mirror: THREE.MirroredRepeatWrapping, clamp: THREE.ClampToEdgeWrapping, black: THREE.ClampToEdgeWrapping }) as Record<string, THREE.Wrapping>)[
-      token ?? ''
-    ] ?? THREE.RepeatWrapping;
-  texture.wrapS = wrap(ref.wrapS);
-  texture.wrapT = wrap(ref.wrapT);
+  texture.wrapS = WRAP.get(ref.wrapS ?? '') ?? THREE.RepeatWrapping;
+  texture.wrapT = WRAP.get(ref.wrapT ?? '') ?? THREE.RepeatWrapping;
   const [sx, sy] = ref.uvScale;
   const [tx, ty] = ref.uvTranslation;
   const angle = (ref.uvRotation * Math.PI) / 180;

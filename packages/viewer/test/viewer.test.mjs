@@ -1,6 +1,5 @@
 // Drives loadUsd with a controlled fake Worker standing in for the WASM worker.
-// usage: node --test packages/viewer/test/
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
 
@@ -40,7 +39,7 @@ globalThis.Worker = FakeWorker;
 globalThis.fetch = async () => new Response(new Uint8Array());
 WebAssembly.compileStreaming = async () => ({});
 WebAssembly.compile = async () => ({});
-const { frame, loadUsd } = await import('../dist/index.js');
+const { frame, loadUsd } = await import('../src/index.ts');
 
 const TEXTURE = {
   path: 'https://example.test/t.png',
@@ -250,84 +249,16 @@ test('complete reports texture counts and failures become warnings', async () =>
   assert.deepEqual(info.warnings, [{ code: 'texture-failed', message: 'HTTP 404', path: 'https://example.test/u.png' }]);
 });
 
-/** Starts a load with a custom fetch; the fake worker then asks the page for requests. */
-async function proxiedLoad(fetch, options = {}) {
-  const controller = new AbortController();
-  const loading = loadUsd('https://example.test/scene.usda', { fetch, signal: controller.signal, ...options });
-  loading.catch(() => {});
-  await tick();
-  return { worker: FakeWorker.last, loading, stop: () => controller.abort() };
-}
-
-test('the page applies the request policy to a custom fetch: headers and cookies only to the root origin', { timeout: 3000 }, async () => {
-  const seen = [];
-  const fetchFn = async (url, init) => (seen.push([url, init.headers, init.credentials, init.referrerPolicy]), new Response('x'));
-  const { worker, stop } = await proxiedLoad(fetchFn, { headers: { Authorization: 'Bearer t' }, allowedOrigins: ['https://cdn.other.test'] });
-  worker.send({ type: 'fetch', id: 1, url: 'https://example.test/a.usda' });
-  worker.send({ type: 'fetch', id: 2, url: 'https://cdn.other.test/t.png' });
-  worker.send({ type: 'fetch', id: 3, url: 'https://attacker.example/t.png' });
-  await tick();
-  assert.deepEqual(seen, [
-    ['https://example.test/a.usda', { Authorization: 'Bearer t' }, 'same-origin', 'no-referrer'],
-    ['https://cdn.other.test/t.png', undefined, 'omit', 'no-referrer'],
-  ]);
-  assert.match(worker.received.find((m) => m.id === 3).error, /request refused/);
-  stop();
-});
-
-test('a proxied body streams to the worker chunk by chunk and stops when it cancels', { timeout: 3000 }, async () => {
-  let pulls = 0;
-  let cancelled = false;
-  const endless = () =>
-    new Response(
-      new ReadableStream({
-        async pull(controller) {
-          pulls++;
-          await tick();
-          controller.enqueue(new Uint8Array(4096));
-        },
-        cancel: () => void (cancelled = true),
-      }),
-    );
-  const { worker, stop } = await proxiedLoad(async () => endless());
-  worker.send({ type: 'fetch', id: 1, url: 'https://example.test/a.usda' });
-  await tick(20);
-  worker.send({ type: 'pull', id: 1 });
-  await tick(20);
-  const chunks = worker.received.filter((m) => m.type === 'chunk' && m.id === 1);
-  assert.equal(chunks.length, 1);
-  assert.equal(chunks[0].chunk.byteLength, 4096);
-  worker.send({ type: 'cancel', id: 1 });
-  await tick(20);
-  assert.equal(cancelled, true);
-  assert.ok(pulls <= 3, `read only what the worker asked for (${pulls} pulls)`);
-  stop();
-});
-
-test('dispose aborts requests still running in the caller fetch', { timeout: 3000 }, async () => {
-  let signal;
-  const loading = loadUsd('https://example.test/scene.usda', { fetch: (url, init) => ((signal = init.signal), new Promise(() => {})) });
-  await tick();
-  const worker = FakeWorker.last;
-  sceneMessages(IDENTITY).forEach((m) => worker.send(m));
-  const result = await loading;
-  worker.send({ type: 'fetch', id: 1, url: 'https://example.test/t.png' });
-  await tick();
-  assert.equal(signal.aborted, false);
-  result.dispose();
-  assert.equal(signal.aborted, true);
-});
-
-test('a worker that cannot be constructed fails with a worker UsdLoadError', { timeout: 3000 }, async () => {
+test('a worker that cannot be constructed fails with a worker UsdLoadError', async () => {
   FakeWorker.failNext = Object.assign(new Error('cross-origin worker script'), { name: 'SecurityError', code: 18 });
   await assert.rejects(loadUsd('scene.usda', { workerUrl: 'https://cdn.other.test/worker.js' }), { name: 'UsdLoadError', code: 'worker' });
-});
+}, 3000);
 
-test('maxConcurrentFetches must be a finite positive integer', { timeout: 3000 }, async () => {
+test('maxConcurrentFetches must be a finite positive integer', async () => {
   for (const value of [0, -1, 1.5, Infinity, NaN]) {
     await assert.rejects(loadUsd('scene.usda', { maxConcurrentFetches: value }), RangeError, String(value));
   }
-});
+}, 3000);
 
 test('a material shared by meshes with different UV sets reads the named set on each', async () => {
   const emissive = { ...TEXTURE, uvSet: 'custom' };

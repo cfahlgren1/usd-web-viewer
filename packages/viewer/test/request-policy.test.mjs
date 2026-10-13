@@ -1,8 +1,8 @@
 // Table of requests a USD file can author and what the request policy must
 // do with each. usage: node --test packages/viewer/test/request-policy.test.mjs
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
-import { requestPolicy } from '../dist/load-core.js';
+import { requestPolicy } from '../src/load-core.ts';
 
 const HUB = 'https://huggingface.co/datasets/o/r/resolve/main/pkg/root.usda';
 const MODEL = 'https://huggingface.co/o/m/resolve/main/root.usda';
