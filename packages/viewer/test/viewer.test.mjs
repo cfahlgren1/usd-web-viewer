@@ -38,7 +38,9 @@ globalThis.location = { href: 'https://example.test/' };
 globalThis.Worker = FakeWorker;
 globalThis.fetch = async () => new Response(new Uint8Array());
 WebAssembly.compileStreaming = async () => ({});
-WebAssembly.compile = async () => ({});
+// Only the viewer's empty module: Node itself compiles WASM (undici's llhttp on Node 20).
+const realCompile = WebAssembly.compile;
+WebAssembly.compile = async (bytes) => (bytes.byteLength ? realCompile(bytes) : {});
 const { frame, loadUsd } = await import('../src/index.ts');
 
 const TEXTURE = {

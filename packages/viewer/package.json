@@ -22,7 +22,7 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tshy && mkdir -p dist/wasm && cp wasm/usd_wasm.js wasm/usd_wasm_bg.wasm dist/wasm/",
+    "build": "tshy && npm pkg set types=./dist/esm/index.d.ts && if [ -f wasm/usd_wasm_bg.wasm ]; then mkdir -p dist/wasm && cp wasm/usd_wasm.js wasm/usd_wasm_bg.wasm dist/wasm/; fi",
     "build:wasm": "bash ../../scripts/build-wasm.sh",
     "test": "vitest run",
     "test:browser": "node ../../scripts/api-test.mjs",
@@ -31,11 +31,11 @@
     "lint:check": "eslint --ext .cjs,.ts .",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
-    "prepublishOnly": "npm run build:wasm && npm run build"
+    "prepack": "npm run build:wasm && npm run build"
   },
   "peerDependencies": {
-    "three": ">=0.162.0 <0.187.0",
-    "@types/three": ">=0.162.0 <0.187.0"
+    "@types/three": ">=0.162.0 <0.187.0",
+    "three": ">=0.162.0 <0.187.0"
   },
   "peerDependenciesMeta": {
     "@types/three": {
@@ -43,7 +43,7 @@
     }
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=20"
   },
   "exports": {
     ".": {
@@ -61,5 +61,6 @@
     "./wasm/usd_wasm_bg.wasm": "./dist/wasm/usd_wasm_bg.wasm",
     "./package.json": "./package.json"
   },
-  "module": "./dist/esm/index.js"
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts"
 }

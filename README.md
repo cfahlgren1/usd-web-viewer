@@ -33,7 +33,7 @@ const { root } = await loadUsd(url);
 scene.add(root); // a THREE.Group, Y-up, in meters
 ```
 
-All options, errors and warnings are typed in [`types.ts`](packages/viewer/src/types.ts). Not on npm yet: depend on `packages/viewer` from this repo. With Vite, add `optimizeDeps: { exclude: ['usd-web-viewer'] }` so the dev server finds the worker and WASM.
+All options, errors and warnings are typed in [`types.ts`](packages/viewer/src/types.ts). Not on npm yet: to depend on `packages/viewer` from this repo, build it first (`npm run build:wasm && npm run build`). With Vite, add `optimizeDeps: { exclude: ['usd-web-viewer'] }` so the dev server finds the worker and WASM.
 
 ## Why
 

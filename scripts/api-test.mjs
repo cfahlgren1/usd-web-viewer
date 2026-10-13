@@ -362,6 +362,70 @@ test('toBlob captures a freshly rendered frame, as PNG or WebP, at the canvas si
   assert.match(shots.disposed, /no frame to capture/);
 });
 
+test('a lost WebGL context drops the stage and calls onContextLost; once restored, onContextRestored gets the reload', async () => {
+  const out = await page.evaluate(
+    async ([module, url]) => {
+      const { createViewer } = await import(module);
+      const until = async (predicate) => {
+        for (let i = 0; i < 500 && !predicate(); i++) await new Promise((resolve) => setTimeout(resolve, 20));
+      };
+      const host = document.body.appendChild(document.createElement('div'));
+      host.style.cssText = 'width:200px;height:150px';
+      const events = [];
+      let reload;
+      const viewer = createViewer(host, {
+        onContextLost: () => events.push('lost'),
+        onContextRestored: (promise) => (events.push(promise ? 'restored with a reload' : 'restored'), (reload = promise)),
+      });
+      await viewer.load(url, { textures: 'none' });
+      const lose = viewer.renderer.getContext().getExtension('WEBGL_lose_context');
+      lose.loseContext();
+      await until(() => events.includes('lost'));
+      const lost = { stage: !!viewer.scene.getObjectByName('usd') };
+      lose.restoreContext();
+      await until(() => events.length === 2);
+      const again = await reload;
+      const restored = { triangles: again.info.triangles, shown: viewer.scene.children.includes(again.root) };
+      viewer.dispose();
+      host.remove();
+      return { events, lost, restored };
+    },
+    [MODULE, SHAPES],
+  );
+  assert.deepEqual(out, { events: ['lost', 'restored with a reload'], lost: { stage: false }, restored: { triangles: 3304, shown: true } });
+});
+
+test('the focused canvas zooms in with + and out with -, from the keyboard', async () => {
+  await page.evaluate(
+    async ([module, url]) => {
+      const { createViewer } = await import(module);
+      const host = document.body.appendChild(document.createElement('div'));
+      host.style.cssText = 'width:200px;height:150px';
+      window.zoomViewer = createViewer(host);
+      window.zoomHost = host;
+      await window.zoomViewer.load(url, { textures: 'none' });
+    },
+    [MODULE, SHAPES],
+  );
+  // The canvas is focusable: Tab reaches it, with a visible focus ring.
+  await page.keyboard.press('Tab');
+  const distance = () => page.evaluate(() => window.zoomViewer.controls.getDistance());
+  const before = await distance();
+  await page.keyboard.press('+');
+  const closer = await distance();
+  await page.keyboard.press('-');
+  await page.keyboard.press('-');
+  const farther = await distance();
+  const focused = await page.evaluate(() => {
+    const focused = window.zoomViewer.renderer.domElement.matches(':focus-visible');
+    window.zoomViewer.dispose();
+    window.zoomHost.remove();
+    return focused;
+  });
+  assert.ok(closer < before && farther > before, `${before} -> ${closer} -> ${farther}`);
+  assert.equal(focused, true);
+});
+
 let failed = 0;
 try {
   for (const [name, fn] of tests) {

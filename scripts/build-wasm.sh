@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Builds the WASM module into packages/viewer/wasm: cargo (size profile) ->
-# stub the layer writers -> wasm-bindgen (web target) -> wasm-opt -Os.
+# stub the layer writers -> wasm-bindgen (web target) -> wasm-opt -Os. Prints the brotli size and
+# fails past the 630 KiB budget.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -14,3 +15,10 @@ node_modules/.bin/wasm-opt -O"$OPT_LEVEL" --strip-debug --strip-producers \
   --enable-bulk-memory --enable-nontrapping-float-to-int --enable-sign-ext --enable-mutable-globals \
   --enable-reference-types --enable-multivalue \
   "$OUT/usd_wasm_bg.wasm" -o "$OUT/usd_wasm_bg.wasm"
+
+node -e "
+  const zlib = require('node:zlib');
+  const size = zlib.brotliCompressSync(require('node:fs').readFileSync(process.argv[1]), { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 11 } }).length;
+  console.log('usd_wasm_bg.wasm: ' + (size / 1024).toFixed(1) + ' KiB brotli (budget 630 KiB)');
+  if (size > 630 * 1024) throw new Error('usd_wasm_bg.wasm brotli is over the 630 KiB budget');
+" "$OUT/usd_wasm_bg.wasm"
