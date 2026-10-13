@@ -5,10 +5,11 @@
   "scripts": {
     "build:wasm": "bash scripts/build-wasm.sh",
     "build:ts": "tsc -p packages/viewer",
+    "dev": "tsc -p packages/viewer --watch",
     "build": "bash scripts/build-wasm.sh && npm run build:ts",
     "serve": "node scripts/serve.mjs",
     "test": "npm run build:ts && node --test 'packages/viewer/test/*.test.mjs'",
-    "test:browser": "node scripts/api-test.mjs",
+    "test:browser": "npm run build:ts && node scripts/api-test.mjs",
     "check:types": "tsc -p packages/viewer --noEmit && tsc --noEmit --strict --exactOptionalPropertyTypes --skipLibCheck --module nodenext --target es2022 --lib es2022,dom packages/viewer/test/types.ts",
     "licenses": "node scripts/third-party-licenses.mjs",
     "lint": "oxlint packages scripts examples",

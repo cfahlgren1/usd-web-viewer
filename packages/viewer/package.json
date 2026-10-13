@@ -23,8 +23,8 @@
   },
   "files": [
     "dist",
+    "!dist/{hub-prefetch,load-core,materials,meta,worker}.d.ts",
     "wasm/usd_wasm.js",
-    "wasm/usd_wasm.d.ts",
     "wasm/usd_wasm_bg.wasm",
     "THIRD_PARTY_LICENSES"
   ],

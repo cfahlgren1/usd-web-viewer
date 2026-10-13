@@ -36,7 +36,7 @@ const { root } = await loadUsd(url);
 scene.add(root); // a THREE.Group, Y-up, in meters
 ```
 
-All options, errors and warnings are typed in [`types.ts`](packages/viewer/src/types.ts). Not on npm yet: depend on `packages/viewer` from this repo.
+All options, errors and warnings are typed in [`types.ts`](packages/viewer/src/types.ts). Not on npm yet: depend on `packages/viewer` from this repo. With Vite, add `optimizeDeps: { exclude: ['usd-web-viewer'] }` so the dev server finds the worker and WASM.
 
 ## Why
 
@@ -80,10 +80,10 @@ Checked against Pixar's `usd-core` on all 2,503 packages in [nvidia/simready-ass
 
 ## Develop
 
-    npm install && npm run build:wasm   # needs Rust (wasm32-unknown-unknown) and wasm-bindgen-cli 0.2.129
+    npm install && npm run build        # WASM (needs Rust wasm32-unknown-unknown and wasm-bindgen-cli 0.2.129), then TypeScript to dist/
     npm test && cargo test              # fixture snapshots: cargo insta review
     npm run test:browser                # Playwright: element, real worker and fetch
     npm run lint && npm run format:check # oxlint and oxfmt
-    npm run serve                       # examples on :8811
+    npm run dev & npm run serve         # rebuild dist/ on change; examples on :8811
 
 Built on [openusd](https://github.com/mxpv/openusd) (MIT, Maksym Pavlenko) and [three.js](https://github.com/mrdoob/three.js) (MIT). Security model: [SECURITY.md](SECURITY.md). MIT licensed.
