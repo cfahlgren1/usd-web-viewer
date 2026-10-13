@@ -135,6 +135,13 @@ fn expanded_size(entry: &zip::read::ZipFile<'_, impl Read>) -> u64 {
     }
 }
 
+/// Whether a layer is a package: named `.usdz`, or anything a zip reader
+/// opens. Zip archives are found from their end, so bytes before one (not
+/// `PK` magic) still read as a package.
+pub fn is_package(path: &str, bytes: &[u8]) -> bool {
+    extension(path) == "usdz" || zip::ZipArchive::new(io::Cursor::new(bytes)).is_ok()
+}
+
 /// Refuses a package whose files would expand past the limits, before
 /// openusd reads them whole (it trusts no limit of its own). Stored files
 /// cannot outgrow the package; a compressed file's declared size is checked

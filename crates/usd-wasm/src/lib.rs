@@ -50,7 +50,7 @@ impl Loader {
     /// Stores a layer under its identifier and returns the layers it names
     /// outside unselected variants, so the host can prefetch them in parallel.
     pub fn add_layer(&mut self, path: &str, bytes: Vec<u8>) -> openusd::Result<Vec<String>> {
-        if bytes.starts_with(b"PK\x03\x04") {
+        if resolver::is_package(path, &bytes) {
             resolver::check_package(&bytes)?;
         }
         resolver::lock(&self.files)
