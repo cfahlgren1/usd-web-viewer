@@ -22,13 +22,14 @@
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tshy && npm pkg set types=./dist/esm/index.d.ts && if [ -f wasm/usd_wasm_bg.wasm ]; then mkdir -p dist/wasm && cp wasm/usd_wasm.js wasm/usd_wasm_bg.wasm dist/wasm/; fi",
-    "build:wasm": "bash ../../scripts/build-wasm.sh",
-    "test": "vitest run",
-    "test:browser": "node ../../scripts/api-test.mjs",
+    "build": "tshy && if [ -f wasm/usd_wasm_bg.wasm ]; then mkdir -p dist/wasm && cp wasm/usd_wasm.js wasm/usd_wasm_bg.wasm dist/wasm/; fi",
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "test": "cargo test --locked && cargo clippy --locked -- -D warnings && npm run build:wasm && git diff --exit-code -- wasm/usd_wasm.d.ts && vitest run",
+    "test:e2e": "node scripts/api-test.mjs",
     "check": "tsc --noEmit",
-    "lint": "eslint --quiet --fix --ext .cjs,.ts .",
-    "lint:check": "eslint --ext .cjs,.ts .",
+    "licenses": "node scripts/third-party-licenses.mjs",
+    "lint": "eslint --quiet --fix --ext .cjs,.ts . && cargo fmt",
+    "lint:check": "eslint --ext .cjs,.ts . && cargo fmt --check",
     "format": "oxfmt .",
     "format:check": "oxfmt --check .",
     "prepack": "npm run build:wasm && npm run build"
@@ -41,6 +42,21 @@
     "@types/three": {
       "optional": true
     }
+  },
+  "devDependencies": {
+    "@types/three": "^0.186.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "binaryen": "^132.0.0",
+    "esbuild": "^0.28.2",
+    "eslint": "^8.57.1",
+    "eslint-config-prettier": "^9.1.2",
+    "oxfmt": "^0.26.0",
+    "playwright": "1.64.0",
+    "three": "^0.186.1",
+    "tshy": "^3.3.2",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=20"

@@ -1,10 +1,10 @@
-// Builds this Vite app, serves the build and loads a repo fixture in Chromium.
+// Builds this Vite app, serves the build and loads a package fixture in Chromium.
 // usage: npm install && node test.mjs
 import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { chromium } from 'playwright';
 
-const FIXTURES = new URL('../../fixtures/', import.meta.url);
+const FIXTURES = new URL('../../packages/viewer/fixtures/', import.meta.url);
 
 execFileSync('npx', ['vite', 'build'], { stdio: 'inherit' });
 const server = spawn('npx', ['vite', 'preview', '--port', '4173', '--strictPort'], { stdio: 'ignore' });

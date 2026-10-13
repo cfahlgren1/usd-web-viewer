@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { DEFAULTS } from '../src/load-core.ts';
 
-const read = (path) => readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8');
+const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const bytes = (text) => {
   const [n, unit] = text.split(' ');
   return Number(n) * { MiB: 2 ** 20, GiB: 2 ** 30 }[unit];
@@ -24,7 +24,7 @@ test('SECURITY.md defaults match the code', () => {
 
   // The package limits are the Rust side's.
   const [, perFile, perPackage] = rows.get('Packaged zip entries').match(/^(.+) per file, (.+) per package$/);
-  const resolver = read('crates/usd-wasm/src/resolver.rs');
+  const resolver = read('crate/src/resolver.rs');
   const shifted = (name) => {
     const [, n, shift] = resolver.match(new RegExp(`${name}: u64 = (\\d+) << (\\d+);`));
     return n * 2 ** shift;

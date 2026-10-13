@@ -1,4 +1,4 @@
-// What the WASM side reports as JSON (crates/usd-wasm/src/json.rs), and the
+// What the WASM side reports as JSON (crate/src/json.rs), and the
 // messages between the page and the worker. Internal: not exported.
 import type { LoadProgress, LoadStats, LoadWarning, MaterialKind, TextureMode, UsdLoadErrorCode } from './types.js';
 

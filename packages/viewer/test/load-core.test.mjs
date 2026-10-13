@@ -203,7 +203,7 @@ test('imageInfo reads the size of PNG, JPEG and WebP from the header, and whethe
   // 8-bit RGB(A) and palette images are color (sRGB under `auto`); single-channel and 16-bit ones are data.
   // [what, header, info]
   for (const [what, header, expected] of [
-    ['quadrants.png', new Uint8Array(readFileSync(new URL('../../../fixtures/quadrants.png', import.meta.url))), color(2, 2)],
+    ['quadrants.png', new Uint8Array(readFileSync(new URL('../fixtures/quadrants.png', import.meta.url))), color(2, 2)],
     ['RGBA PNG', png(8, 6), color(64, 32)],
     ['palette PNG', png(8, 3), color(64, 32)],
     ['grey PNG', png(8, 0), data],
@@ -522,7 +522,7 @@ test('running out of WASM memory fails as a scene too large to load; a panic giv
   // Without a panic message, a bare `unreachable` is Rust aborting on a failed allocation.
   assert.match(loadFailure(new WebAssembly.RuntimeError('unreachable'), 0.1 * GiB).message, /^scene too large to load: ran out of memory/);
   assert.match(loadFailure(new RangeError('Array buffer allocation failed'), 0.1 * GiB).message, /^scene too large to load/);
-  const panic = 'panicked at crates/usd-wasm/src/extract.rs:1:1:\nindex out of bounds';
+  const panic = 'panicked at crate/src/extract.rs:1:1:\nindex out of bounds';
   assert.equal(loadFailure(new WebAssembly.RuntimeError('unreachable'), 0.1 * GiB, () => panic).message, `unreachable: ${panic}`);
   const fetchError = loadFailure(new UsdLoadError('fetch', 'HTTP 404 for https://h/a.usd', { url: 'https://h/a.usd', status: 404 }), 4 * GiB);
   assert.deepEqual(fetchError, { code: 'fetch', message: 'HTTP 404 for https://h/a.usd', url: 'https://h/a.usd', status: 404 });
