@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { UsdLoadError } from './errors.js';
-import { OUT_OF_MEMORY, canonicalUrl } from './load-core.js';
+import { OUT_OF_MEMORY, canonicalUrl, localKey, localUrl } from './load-core.js';
 import { applyFallback, attachTexture, configureTexture, createMaterial, variant } from './materials.js';
 import type { UsdMaterial } from './materials.js';
 import type { GeometryArrays, GeometryMeta, InstanceMeta, LoadRequest, Mutable, SceneMeta, StageProgress, WorkerMessage } from './meta.js';
@@ -68,7 +68,7 @@ async function compile(url: string | URL) {
  * `complete` settles when every texture has streamed in. Rejects with a
  * UsdLoadError of code `worker` where there are no Web Workers (e.g. on a server).
  *
- * @param url  root layer URL (relative URLs resolve against the page)
+ * @param url  root layer URL (relative URLs resolve against the page), or its key in `options.files`
  */
 export async function loadUsd(url: string, options: LoadOptions = {}): Promise<LoadResult> {
   const { maxTextureSize, textures, maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxInstances, maxTriangles, allowedOrigins } = options;
@@ -83,7 +83,11 @@ export async function loadUsd(url: string, options: LoadOptions = {}): Promise<L
   if (typeof Worker === 'undefined') {
     throw new UsdLoadError('worker', 'loading needs Web Workers: call loadUsd in a browser', { url });
   }
-  const absoluteUrl = canonicalUrl(new URL(url, location.href).href);
+  const files = options.files && new Map([...options.files].map(([key, file]) => [localKey(key), file]));
+  if (files && !files.has(localKey(url))) {
+    throw new UsdLoadError('fetch', `the root layer ${url} is not in files`, { url, status: 404 });
+  }
+  const absoluteUrl = files ? localUrl(url) : canonicalUrl(new URL(url, location.href).href);
   // The compile is shared with other loads: aborting stops waiting for it, not it.
   const module = await new Promise<WebAssembly.Module>((resolve, reject) => {
     const abortWait = () => reject(aborted());
@@ -239,6 +243,7 @@ export async function loadUsd(url: string, options: LoadOptions = {}): Promise<L
     maxTriangles,
     allowedOrigins,
     headers,
+    files,
   };
   worker.postMessage(request);
 

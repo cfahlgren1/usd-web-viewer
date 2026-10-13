@@ -41,6 +41,7 @@ await complete; // textures stream in after the geometry
 | `headers`                      |                     | Sent only to the root URL's origin (or, on the Hugging Face Hub, the root's repo), e.g. `{ Authorization: 'Bearer hf_…' }` |
 | `onProgress`                   |                     | Called with the stage and an overall `fraction` from 0 to 1                                                                |
 | `allowedOrigins`               |                     | Other origins layers and textures may come from; `['*']` for any                                                           |
+| `files`                        |                     | Load dropped or picked files instead of the network (see below)                                                            |
 | `wasmUrl`, `workerUrl`         | next to the package | Where the WASM binary and the worker script are served from                                                                |
 | `maxConcurrentFetches`         | `16`                | Requests in flight at once                                                                                                 |
 | `maxLayerBytes`, `maxLayers`   | 768 MiB, 1024       | Layer download limits                                                                                                      |
@@ -48,6 +49,15 @@ await complete; // textures stream in after the geometry
 | `maxTriangles`, `maxInstances` | 20M, 100,000        | What is drawn at most                                                                                                      |
 
 Failures are `UsdLoadError`s with a `code` (`aborted`, `fetch`, `compose`, `worker`, `webgl`); anything that could not be shown faithfully is listed in `info.warnings`. Every option, error and warning is typed.
+
+## Local files
+
+To show files dropped on the page or picked with `<input type="file" webkitdirectory>`, pass them as `files`, keyed by their path in the package, and load the root layer's key. Relative paths in the files resolve against each other; nothing is fetched for them.
+
+```js
+const files = new Map([...input.files].map((file) => [file.webkitRelativePath || file.name, file]));
+await viewer.load('chair/simready_usd/sm_chair.usd', { files });
+```
 
 ## Bundlers
 

@@ -256,6 +256,35 @@ test('a worker that cannot be constructed fails with a worker UsdLoadError', asy
   await assert.rejects(loadUsd('scene.usda', { workerUrl: 'https://cdn.other.test/worker.js' }), { name: 'UsdLoadError', code: 'worker' });
 }, 3000);
 
+test('files: the root key loads as a local: URL, with the keys normalised', async () => {
+  const root = new Blob(['#usda 1.0']);
+  const texture = new Blob([]);
+  const loading = loadUsd('./my pkg\\root.usda', {
+    files: new Map([
+      ['my pkg/root.usda', root],
+      ['/my pkg/Textures\\a.png', texture],
+    ]),
+  });
+  await tick();
+  const { request } = FakeWorker.last;
+  assert.equal(request.url, 'local:///my%20pkg/root.usda');
+  assert.deepEqual(
+    [...request.files],
+    [
+      ['my pkg/root.usda', root],
+      ['my pkg/Textures/a.png', texture],
+    ],
+  );
+  FakeWorker.last.send({ type: 'error', code: 'compose', message: 'stop' });
+  await assert.rejects(loading, { code: 'compose' });
+});
+
+test('files: a root missing from files fails with a 404 fetch error before any worker starts', async () => {
+  const before = FakeWorker.last;
+  await assert.rejects(loadUsd('root.usda', { files: new Map([['Root.usda', new Blob([])]]) }), { name: 'UsdLoadError', code: 'fetch', status: 404 });
+  assert.equal(FakeWorker.last, before);
+}, 3000);
+
 test('maxConcurrentFetches must be a finite positive integer', async () => {
   for (const value of [0, -1, 1.5, Infinity, NaN]) {
     await assert.rejects(loadUsd('scene.usda', { maxConcurrentFetches: value }), RangeError, String(value));

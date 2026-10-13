@@ -12,7 +12,8 @@ usd-web-viewer loads untrusted, user-uploaded USD files in the browser. This is 
   - on huggingface.co, only `resolve` file URLs, tree listings and revision lookups of user or organization repos, never `/api`, `/oauth` or other Hub pages;
   - cookies and caller `headers` only for the root file's origin (for Hub URLs, the root's repo); every other request is sent with `credentials: 'omit'` and `no-referrer`;
   - requests carrying `headers` never follow a redirect with them: off the Hub, a redirect is fetched again without headers or cookies;
-  - `allowedOrigins` adds more allowed hosts; the root's origin (and, for a Hub root, the Hub) is always allowed.
+  - `allowedOrigins` adds more allowed hosts; the root's origin (and, for a Hub root, the Hub) is always allowed;
+  - a load from `files` reads only those files for its own paths (a path not in them is missing, never fetched); http(s) paths in them follow `allowedOrigins`, never with `headers` or cookies.
 
   The `.wasm` module is fetched by the page from `wasmUrl`, not under this policy.
 - **Bounded resources.** Each load is capped:

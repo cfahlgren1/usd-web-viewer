@@ -567,6 +567,24 @@ export function canonicalUrl(url: string): string {
   }
 }
 
+/** The scheme of files given with the `files` option: `local:///<key>`, the key percent-encoded. */
+export const LOCAL = 'local:';
+
+/** A `files` key as the load spells it: `/` separators, no leading `./` or `/`. */
+export function localKey(key: string): string {
+  return key.replace(/\\/g, '/').replace(/^(?:\.?\/)+/, '');
+}
+
+/** The URL a `files` key loads as; relative asset paths in the file resolve against it. */
+export function localUrl(key: string): string {
+  return `${LOCAL}///${localKey(key).split('/').map(encodeURIComponent).join('/')}`;
+}
+
+/** The `files` key a `local:` URL names. */
+export function keyOfLocalUrl(url: string): string {
+  return decodeURIComponent(new URL(url).pathname.slice(1));
+}
+
 /** The fetch options of a request the policy allows. */
 export interface AllowedRequest {
   refused?: undefined;
@@ -586,6 +604,8 @@ export type RequestPolicy = { refused: string } | AllowedRequest;
  *
  * - hf.co URLs are checked as the huggingface.co URLs they redirect to.
  * - The root URL itself, as the caller gave it, is always allowed.
+ * - A `local:` root (the `files` option) may read other `local:` URLs, which
+ *   are looked up in its files and never fetched; no other root may.
  * - Only http(s), with no user name or password in the URL.
  * - Origins: the root's, those in `allowedOrigins` (`'*'` for any) and, for a
  *   root on the Hugging Face Hub, the Hub and its CDN hosts.
@@ -615,6 +635,9 @@ function refusal(url: string, rootUrl: string, allowedOrigins: readonly string[]
     return `not a URL: ${url}`;
   }
   const root = new URL(rootUrl);
+  if (root.protocol === LOCAL && target.protocol === LOCAL) {
+    return null;
+  }
   if (target.protocol !== 'http:' && target.protocol !== 'https:') {
     return `only http(s) URLs are fetched: ${url}`;
   }
@@ -644,6 +667,10 @@ function hubFile(url: URL) {
 }
 
 function credentialed(target: URL, root: URL) {
+  // Every `local:` URL's origin is the string "null", which would match any other's.
+  if (root.protocol === LOCAL) {
+    return false;
+  }
   if (target.origin !== root.origin) {
     return false;
   }

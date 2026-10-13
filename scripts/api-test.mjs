@@ -426,6 +426,72 @@ test('the focused canvas zooms in with + and out with -, from the keyboard', asy
   assert.equal(focused, true);
 });
 
+/** Loads `root` from `files` (`{ key: text, or '/fixtures/…' to copy a served file }`) with `options`, logging only the requests made during the load. */
+async function loadFiles(root, files, options = {}) {
+  const sources = Object.fromEntries(
+    Object.entries(files).map(([key, source]) => [key, source.startsWith('/fixtures/') ? [...fs.readFileSync(path.join(ROOT, source))] : source]),
+  );
+  await page.evaluate(() => import('/packages/viewer/dist/esm/index.js'));
+  requests = [];
+  return page.evaluate(
+    async ([module, root, sources, options]) => {
+      const { loadUsd } = await import(module);
+      const files = new Map(
+        Object.entries(sources).map(([key, source]) => [key, new File([typeof source === 'string' ? source : new Uint8Array(source)], key.split('/').pop())]),
+      );
+      const result = await loadUsd(root, { ...options, files });
+      const complete = await result.complete;
+      result.dispose();
+      return { meshes: result.info.meshes, complete, warnings: result.info.warnings.map((w) => [w.code, w.path]) };
+    },
+    [MODULE, root, sources, options],
+  );
+}
+
+const fetched = () => requests.filter((r) => /\.(usd[acz]?|png)$/.test(r.url));
+
+test('files: a dropped package loads its payloads and textures by relative path, and fetches nothing', async () => {
+  const quad = fs.readFileSync(path.join(ROOT, TEXTURED), 'utf8').replace('@quadrants.png@', '@../Textures/quadrants.png@');
+  const result = await loadFiles('pkg/root.usda', {
+    'pkg/root.usda': '#usda 1.0\n(subLayers = [@./payloads/quad.usda@])',
+    'pkg/payloads/quad.usda': quad,
+    'pkg/Textures/quadrants.png': '/fixtures/quadrants.png',
+  });
+  assert.deepEqual(result, { meshes: 1, complete: { textures: 1, failed: 0 }, warnings: [] });
+  assert.deepEqual(fetched(), []);
+});
+
+test('files: a missing file is a warning with its local: path, never a request', async () => {
+  const result = await loadFiles('root.usda', { 'root.usda': '#usda 1.0\n(subLayers = [@./absent.usda@, @/fixtures/uv_set.usda@])' });
+  assert.deepEqual(
+    result.warnings
+      .filter(([code]) => code === 'layer-missing')
+      .map(([, path]) => path)
+      .sort(),
+    ['local:///absent.usda', 'local:///fixtures/uv_set.usda'],
+  );
+  assert.deepEqual(fetched(), []);
+});
+
+test('files: an http(s) layer in the files follows allowedOrigins and never gets headers', async () => {
+  const root = { 'root.usda': `#usda 1.0\n(subLayers = [@${BASE}/fixtures/meshes.usda@])` };
+  const refused = await loadFiles('root.usda', root, { headers: { Authorization: 'Bearer SECRET' } });
+  assert.deepEqual(
+    refused.warnings.filter(([code]) => code === 'layer-missing'),
+    [['layer-missing', `${BASE}/fixtures/meshes.usda`]],
+  );
+  assert.deepEqual(fetched(), []);
+  const allowed = await loadFiles('root.usda', root, { headers: { Authorization: 'Bearer SECRET' }, allowedOrigins: [BASE] });
+  assert.ok(allowed.meshes > 0);
+  assert.deepEqual(fetched(), [{ url: '/fixtures/meshes.usda', auth: null }]);
+});
+
+test('files: a single dropped .usdz loads its packaged texture', async () => {
+  const result = await loadFiles('uv_set.usdz', { 'uv_set.usdz': '/fixtures/uv_set.usdz' });
+  assert.deepEqual(result, { meshes: 1, complete: { textures: 1, failed: 0 }, warnings: [] });
+  assert.deepEqual(fetched(), []);
+});
+
 let failed = 0;
 try {
   for (const [name, fn] of tests) {
