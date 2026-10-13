@@ -1,4 +1,5 @@
-// huggingface.js's root eslint config (without its Svelte parts), for the move there.
+// huggingface.js's root eslint config (without its Svelte parts), for the move there:
+// delete this file then, the root one covers the package. Ignores are in .eslintignore.
 module.exports = {
   extends: ['eslint:recommended', 'plugin:@typescript-eslint/recommended', 'prettier'],
   parser: '@typescript-eslint/parser',
@@ -13,7 +14,6 @@ module.exports = {
     sourceType: 'module',
     ecmaVersion: 2020,
   },
-  ignorePatterns: ['dist', 'wasm', '.tshy', '.tshy-build'],
   rules: {
     'no-constant-condition': 'off',
     '@typescript-eslint/no-empty-function': 'off',
