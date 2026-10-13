@@ -46,7 +46,9 @@ const TEXTURED = '/fixtures/uv_set.usda';
 
 const browser = await chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
-page.on('pageerror', (e) => console.log('pageerror:', e.message));
+// An uncaught error or unhandled rejection in the page fails the test it happens in.
+let pageErrors = [];
+page.on('pageerror', (e) => pageErrors.push(e.message));
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 await page.goto(BASE);
@@ -261,6 +263,7 @@ test('lifecycle: a newer load wins; stopping a load stops all of it, while WASM 
       const fresh = await import(`${module}?compiling`);
       const compiling = new AbortController();
       const whileCompiling = fresh.loadUsd(shapes, { signal: compiling.signal, wasmUrl: '/__hang.wasm' });
+      const compilingOutcome = settle(whileCompiling);
       setTimeout(() => compiling.abort(), 50);
 
       const { createViewer } = await import(module);
@@ -284,7 +287,7 @@ test('lifecycle: a newer load wins; stopping a load stops all of it, while WASM 
       const before = shown();
       viewer.clear();
       const afterClear = shown();
-      const outcomes = { compiling: await settle(whileCompiling), cleared: await settle(cleared) };
+      const outcomes = { compiling: await compilingOutcome, cleared: await settle(cleared) };
       await new Promise((resolve) => setTimeout(resolve, 300));
       const later = shown();
       viewer.dispose();
@@ -495,8 +498,12 @@ test('files: a single dropped .usdz loads its packaged texture', async () => {
 let failed = 0;
 try {
   for (const [name, fn] of tests) {
+    pageErrors = [];
     try {
       await fn();
+      if (pageErrors.length) {
+        throw new Error(`page error: ${pageErrors.join('; ')}`);
+      }
       console.log(`ok   ${name}`);
     } catch (error) {
       failed++;
