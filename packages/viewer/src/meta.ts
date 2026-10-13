@@ -115,6 +115,8 @@ export interface LoadRequest {
   maxTriangles?: number | undefined;
   allowedOrigins?: readonly string[] | undefined;
   headers?: Record<string, string> | undefined;
+  /** Keyed by `localKey`. */
+  files?: ReadonlyMap<string, Blob> | undefined;
 }
 
 /** Worker to page. */

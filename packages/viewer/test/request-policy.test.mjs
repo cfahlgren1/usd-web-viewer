@@ -7,6 +7,7 @@ import { requestPolicy } from '../src/load-core.ts';
 const HUB = 'https://huggingface.co/datasets/o/r/resolve/main/pkg/root.usda';
 const MODEL = 'https://huggingface.co/o/m/resolve/main/root.usda';
 const SITE = 'https://site.example/scenes/root.usda';
+const FILES = 'local:///pkg/root.usda';
 const REFUSED = 'refused';
 const OWN = 'same-origin';
 const OMIT = 'omit';
@@ -25,6 +26,17 @@ const CASES = [
   ['HtTpS://HuggingFace.co/datasets/o/r/resolve/main/a.usda', HUB, [], OWN],
   // The root itself is the caller's choice, whatever its scheme.
   ['blob:https://site.example/1234', 'blob:https://site.example/1234', [], OWN],
+
+  // Files given with `files`: read only by a load rooted in them, never with credentials.
+  [FILES, FILES, [], OMIT],
+  ['local:///pkg/payloads/a.usda', FILES, [], OMIT],
+  ['local:///pkg/a.usda', SITE, ['*'], REFUSED],
+  ['local:///pkg/a.usda', HUB, ['*'], REFUSED],
+  ['https://site.example/a.usda', FILES, [], REFUSED],
+  ['https://site.example/a.usda', FILES, ['https://site.example'], OMIT],
+  ['https://huggingface.co/datasets/o/r/resolve/main/a.usda', FILES, ['*'], OMIT],
+  ['javascript:alert(1)//x.png', FILES, ['*'], REFUSED],
+  ['blob:https://site.example/1234', FILES, ['*'], REFUSED],
 
   // User info, which also hides the real host.
   ['https://huggingface.co@attacker.example/x', HUB, ['*'], REFUSED],

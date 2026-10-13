@@ -60,6 +60,15 @@ export interface LoadOptions {
   maxInstances?: number | undefined;
   /** Total bytes of texture files, read from packages or fetched (counted as they download); textures past it fail with a `texture-failed` warning. Default 512 MiB. Only PNG, JPEG and WebP up to 16384 px a side are decoded; others are refused from their header. */
   maxTextureBytes?: number | undefined;
+  /**
+   * Loads from these files instead of the network, e.g. ones dropped on the page or picked with `<input type="file" webkitdirectory>`.
+   * Keys are package-relative paths (`pkg/root.usda`, `pkg/Textures/a.png`; a `File`'s `webkitRelativePath` works as is), and the
+   * `url` argument is the key of the root layer. Relative asset paths resolve against their layer's key and match a key exactly
+   * (case-sensitive; `\\` and a leading `./` or `/` are normalised). Paths not in `files` are never fetched: they are missing.
+   * Absolute http(s) paths in the files follow `allowedOrigins`, without `headers` or cookies. Files are read in the worker only when
+   * needed, counted against `maxLayerBytes` and `maxTextureBytes`.
+   */
+  files?: ReadonlyMap<string, Blob> | undefined;
 }
 
 /**

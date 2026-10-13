@@ -5,11 +5,13 @@ import init, { lastPanic, UsdLoader } from '../wasm/usd_wasm.js';
 import { hubPackageLayers, pinHubRevision } from './hub-prefetch.js';
 import {
   DEFAULTS,
+  LOCAL,
   canonicalUrl,
   composeStage,
   fetchLimited,
   fetchWithPolicy,
   imageInfo,
+  keyOfLocalUrl,
   limiter,
   loadFailure,
   readGeometries,
@@ -48,6 +50,7 @@ self.onmessage = async ({ data }) => {
     maxTriangles,
     allowedOrigins,
     headers,
+    files,
   } = data;
   // Every request (layer, texture, Hub listing) goes through here, and
   // through the request policy first. The caller's headers go only where
@@ -58,6 +61,10 @@ self.onmessage = async ({ data }) => {
     // Reads like a network failure: a missing layer or a failed texture.
     if (policy.refused !== undefined) {
       throw new TypeError(`request refused: ${policy.refused}`);
+    }
+    if (target.startsWith(LOCAL)) {
+      const file = files?.get(keyOfLocalUrl(target));
+      return file ? new Response(file) : new Response(null, { status: 404 });
     }
     return fetchWithPolicy(target, policy, headers);
   };
