@@ -17,7 +17,7 @@
   },
   "files": [
     "dist",
-    "!dist/esm/{hub-prefetch,load-core,materials,meta}.d.ts",
+    "!dist/esm/{hub-prefetch,load-core,materials,meta,show}.d.ts",
     "THIRD_PARTY_LICENSES"
   ],
   "sideEffects": false,
