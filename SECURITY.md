@@ -27,7 +27,7 @@ usd-web-viewer loads untrusted, user-uploaded USD files in the browser. This is 
   | Packaged zip entries | 512 MiB per file, 1 GiB per package | the package, or that texture, fails |
   | Image size | 16384 px per side | that texture fails, with a warning |
 
-  `maxLayers` counts requested files; layers inside a `.usdz` count toward the package limits instead. The package limits are enforced in Rust before openusd reads an entry: a deflated entry is checked against what it actually inflates to, not only the size its zip header declares, so a zip bomb fails the load.
+  `maxLayers` counts requested files; layers inside a `.usdz` count toward the package limits instead. The package limits are enforced in Rust before openusd reads an entry of any layer that is a package (named `.usdz`, or anything that opens as a zip, whatever bytes precede it): every deflated entry is checked against what it actually inflates to, not only the size its zip header declares, so a zip bomb fails the load.
 - **No code from files.** No arbitrary code or shader source from files; only validated channel names and numbers reach generated shader code. Nothing from a file reaches `eval` or `innerHTML`.
 
 ## Not in scope

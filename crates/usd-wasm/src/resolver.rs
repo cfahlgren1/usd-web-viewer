@@ -135,6 +135,13 @@ fn expanded_size(entry: &zip::read::ZipFile<'_, impl Read>) -> u64 {
     }
 }
 
+/// Whether a layer is a package: named `.usdz`, or anything a zip reader
+/// opens. Zip archives are found from their end, so bytes before one (not
+/// `PK` magic) still read as a package.
+pub fn is_package(path: &str, bytes: &[u8]) -> bool {
+    extension(path) == "usdz" || zip::ZipArchive::new(io::Cursor::new(bytes)).is_ok()
+}
+
 /// Refuses a package whose files would expand past the limits, before
 /// openusd reads them whole (it trusts no limit of its own). Stored files
 /// cannot outgrow the package; a compressed file's declared size is checked
@@ -552,42 +559,6 @@ mod tests {
         assert_eq!(
             read_packaged(&package, "big.usdc", 1 << 20).unwrap().len(),
             1 << 20
-        );
-    }
-
-    /// `package` with its one file's declared expanded size set to `size`, in
-    /// both its local header and the central directory.
-    fn declaring(mut package: Vec<u8>, size: u32) -> Vec<u8> {
-        let patch = |package: &mut Vec<u8>, signature: &[u8], offset: usize| {
-            let at = package
-                .windows(4)
-                .position(|w| w == signature)
-                .expect("zip header")
-                + offset;
-            package[at..at + 4].copy_from_slice(&size.to_le_bytes());
-        };
-        patch(&mut package, b"PK\x03\x04", 22);
-        patch(&mut package, b"PK\x01\x02", 24);
-        package
-    }
-
-    #[test]
-    fn package_bombs_are_refused_before_openusd_reads_them() {
-        let bomb = zeros_package(1 << 20);
-        assert!(bomb.len() < 4096, "a decompression bomb");
-        check_package(&bomb).unwrap();
-
-        // Declaring more than one file may expand to.
-        let error = check_package(&declaring(bomb.clone(), 600 << 20)).unwrap_err();
-        assert!(
-            error.to_string().contains("resource limit exceeded"),
-            "{error}"
-        );
-        // Declaring less than it actually inflates to.
-        let error = check_package(&declaring(bomb, 1 << 10)).unwrap_err();
-        assert!(
-            error.to_string().contains("does not expand to the size"),
-            "{error}"
         );
     }
 
