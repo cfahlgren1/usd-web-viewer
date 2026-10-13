@@ -52,8 +52,6 @@ pub struct Stats {
     pub skipped_purpose: usize,
     pub skipped_empty: usize,
     pub triangles: usize,
-    /// Meshes left out, with why: `invisible`, `purpose` or `empty`.
-    pub skipped: Vec<(String, &'static str)>,
 }
 
 /// A mesh prim to read, with what its bound materials need from it.
@@ -258,7 +256,6 @@ impl Scene {
             let Some(geometry) = index[instance.geometry as usize] else {
                 self.stats.meshes -= 1;
                 self.stats.skipped_empty += 1;
-                self.stats.skipped.push((instance.path, "empty"));
                 continue;
             };
             instance.geometry = geometry;
@@ -458,18 +455,10 @@ pub fn plan(stage: &Stage, max_instances: usize) -> openusd::Result<Scene> {
         }
         if own.invisible {
             scene.stats.skipped_invisible += 1;
-            scene
-                .stats
-                .skipped
-                .push((path.as_str().to_owned(), "invisible"));
             continue;
         }
         if own.hidden_purpose {
             scene.stats.skipped_purpose += 1;
-            scene
-                .stats
-                .skipped
-                .push((path.as_str().to_owned(), "purpose"));
             continue;
         }
         let remaining = max_instances.saturating_sub(scene.instances.len());

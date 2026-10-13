@@ -5,8 +5,7 @@ input_file: fixtures/implicit_gprims.usdc
 ---
 upAxis Z, metersPerUnit 0.01
 prims 17, meshes 11, triangles 3304
-skipped /Hidden (invisible)
-skipped /Guide (purpose)
+skipped invisible 1, purpose 1, empty 0
 
 instances:
   /Shapes/Cube: geometry 0, material 0

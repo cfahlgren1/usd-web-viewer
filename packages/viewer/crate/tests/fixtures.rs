@@ -45,8 +45,13 @@ fn summary(s: &Scene) -> String {
         st.prims, st.meshes, st.triangles
     )
     .unwrap();
-    for (path, why) in &st.skipped {
-        writeln!(o, "skipped {path} ({why})").unwrap();
+    if st.skipped_invisible + st.skipped_purpose + st.skipped_empty > 0 {
+        writeln!(
+            o,
+            "skipped invisible {}, purpose {}, empty {}",
+            st.skipped_invisible, st.skipped_purpose, st.skipped_empty
+        )
+        .unwrap();
     }
 
     writeln!(o, "\ninstances:").unwrap();
