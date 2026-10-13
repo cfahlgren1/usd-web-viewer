@@ -17,6 +17,15 @@ import {
   takePackagedTextures,
   textureJobs,
 } from './load-core.js';
+import type { Budget } from './load-core.js';
+import type { PageMessage, StageProgress, WorkerMessage } from './meta.js';
+
+// The worker's global scope, typed here: the package is checked against the
+// `dom` lib, whose `self` is a window.
+declare const self: {
+  postMessage(message: WorkerMessage, transfer?: Transferable[]): void;
+  onmessage: ((event: MessageEvent<PageMessage>) => void) | null;
+};
 
 // Textures in flight at once (fetch and decode): decoding a large image
 // briefly holds it at full size, so wide parallelism spikes memory.
@@ -28,22 +37,22 @@ const MAX_IMAGE_SIZE = DEFAULTS.maxImageSize;
 // Requests answered by the page, for a caller-supplied `fetch`. The page sends
 // the body one chunk per pull, so byte budgets apply as it arrives and
 // cancelling the body stops the caller's read.
-const replies = new Map();
-const pulls = new Map();
+const replies = new Map<number, (reply: Extract<PageMessage, { type: 'fetched' }>) => void>();
+const pulls = new Map<number, { controller: ReadableStreamDefaultController<Uint8Array>; resolve: () => void }>();
 let nextId = 0;
 
 /** A fetch that asks the page (which runs the caller's `fetch`) and streams its reply. */
-function proxiedFetch(url) {
+function proxiedFetch(url: string): Promise<Response> {
   const id = nextId++;
   self.postMessage({ type: 'fetch', id, url });
-  return new Promise((resolve) => replies.set(id, resolve)).then(({ ok, status, error }) => {
+  return new Promise<Extract<PageMessage, { type: 'fetched' }>>((resolve) => replies.set(id, resolve)).then(({ ok, status, error }) => {
     // A network failure in the caller's fetch reads like one from fetch itself.
     if (error) throw new TypeError(error);
     if (!ok) return new Response(null, { status: status || 500 });
-    const body = new ReadableStream(
+    const body = new ReadableStream<Uint8Array>(
       {
         pull: (controller) =>
-          new Promise((resolve) => {
+          new Promise<void>((resolve) => {
             pulls.set(id, { controller, resolve });
             self.postMessage({ type: 'pull', id });
           }),
@@ -56,12 +65,12 @@ function proxiedFetch(url) {
 }
 
 /** Delivers one chunk (or the end, or a failure) of a proxied body. */
-function receiveChunk({ id, chunk, done, error }) {
-  const { controller, resolve } = pulls.get(id);
+function receiveChunk({ id, chunk, done, error }: Extract<PageMessage, { type: 'chunk' }>) {
+  const { controller, resolve } = pulls.get(id)!;
   pulls.delete(id);
   if (error) controller.error(new TypeError(error));
   else if (done) controller.close();
-  else controller.enqueue(new Uint8Array(chunk));
+  else controller.enqueue(new Uint8Array(chunk!));
   resolve();
 }
 
@@ -91,26 +100,26 @@ self.onmessage = async ({ data }) => {
   // through the request policy first. The caller's headers go only where
   // cookies may, and never through a redirect off the Hub; a custom fetch on
   // the page applies the same policy.
-  const request = async (target) => {
+  const request = async (target: string): Promise<Response> => {
     target = canonicalUrl(target);
     const policy = requestPolicy(target, url, allowedOrigins);
     // Reads like a network failure: a missing layer or a failed texture.
-    if (policy.refused) throw new TypeError(`request refused: ${policy.refused}`);
+    if (policy.refused !== undefined) throw new TypeError(`request refused: ${policy.refused}`);
     if (proxyFetch) return proxiedFetch(target);
     return fetchWithPolicy(fetch, target, policy, headers);
   };
-  const fetchBytes = (target, budget) => fetchLimited(target, budget, { fetchFn: request });
+  const fetchBytes = (target: string, budget: Budget) => fetchLimited(target, budget, { fetchFn: request });
   // One budget for every texture, packaged ones first, then each fetched
   // body as its bytes arrive. Bytes of a body cut short stay charged: they
   // were downloaded.
   let textureBytes = 0;
-  const chargeTexture = (bytes) => {
+  const chargeTexture = (bytes: number) => {
     textureBytes += bytes;
     if (textureBytes > maxTextureBytes) throw new Error(`textures exceed maxTextureBytes (${maxTextureBytes} bytes)`);
   };
-  const progress = (p) => self.postMessage({ type: 'progress', progress: p });
+  const progress = (p: StageProgress) => self.postMessage({ type: 'progress', progress: p });
 
-  let wasmMemory;
+  let wasmMemory: WebAssembly.Memory | undefined;
   try {
     const t0 = performance.now();
     // Looked up while the WASM module initializes.
@@ -135,8 +144,8 @@ self.onmessage = async ({ data }) => {
     stats.initMs = tInit - t0;
     self.postMessage({ type: 'meta', meta });
     // One mesh at a time: each is transferred (not copied) as soon as it is read.
-    const onGeometry = (index, g, arrays) => {
-      const transfer = arrays ? [arrays.positions, arrays.normals, arrays.colors, arrays.indices, ...arrays.uvs].filter(Boolean).map((a) => a.buffer) : [];
+    const onGeometry: Parameters<typeof readGeometries>[2] = (index, g, arrays) => {
+      const transfer = arrays ? [arrays.positions, arrays.normals, arrays.colors, arrays.indices, ...arrays.uvs].filter((a) => !!a).map((a) => a.buffer) : [];
       self.postMessage({ type: 'geometry', index, meta: g, arrays }, transfer);
       progress({ stage: 'geometry', loaded: index + 1, total: meta.geometryCount });
     };
@@ -148,7 +157,7 @@ self.onmessage = async ({ data }) => {
     stats.warnings.push(...warnings);
     stats.totalMs = performance.now() - t0;
     stats.wasmMemoryBytes = wasm.memory.buffer.byteLength;
-    self.postMessage({ type: 'scene', stats });
+    self.postMessage({ type: 'scene', stats: stats as Required<typeof stats> });
 
     let loaded = 0;
     let bytes = 0;
@@ -168,7 +177,7 @@ self.onmessage = async ({ data }) => {
             const { bitmap, color } = await decodeTexture(image, size);
             self.postMessage({ type: 'texture', path, bitmap, color }, [bitmap]);
           } catch (error) {
-            self.postMessage({ type: 'texture', path, error: String(error?.message || error) });
+            self.postMessage({ type: 'texture', path, error: String((error as Error)?.message || error) });
           }
           progress({ stage: 'textures', loaded: ++loaded, total: jobs.length, bytes });
         }),
@@ -186,18 +195,18 @@ self.onmessage = async ({ data }) => {
  * decodes as sRGB). Images whose size the header does not give, or that are
  * too large, are refused before decoding.
  */
-async function decodeTexture(bytes, maxSize) {
+async function decodeTexture(bytes: Uint8Array, maxSize: number) {
   const info = imageInfo(bytes);
   if (!info) throw new Error('unsupported image format: only PNG, JPEG and WebP are read');
   if (Math.max(info.width, info.height) > MAX_IMAGE_SIZE)
     throw new Error(`image too large: ${info.width}x${info.height} (at most ${MAX_IMAGE_SIZE} px a side)`);
   // USD texture coordinates put (0,0) at the bottom-left, three.js's default.
-  const options = { imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none' };
+  const options: ImageBitmapOptions = { imageOrientation: 'flipY', premultiplyAlpha: 'none', colorSpaceConversion: 'none' };
   const scale = Math.min(1, maxSize / Math.max(info.width, info.height));
   if (scale < 1) {
     options.resizeWidth = Math.max(1, Math.round(info.width * scale));
     options.resizeHeight = Math.max(1, Math.round(info.height * scale));
     options.resizeQuality = 'high';
   }
-  return { bitmap: await createImageBitmap(new Blob([bytes]), options), color: info.color };
+  return { bitmap: await createImageBitmap(new Blob([bytes as Uint8Array<ArrayBuffer>]), options), color: info.color };
 }

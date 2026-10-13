@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { initSync, lastPanic, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, loadFailure } from '../src/load-core.js';
+import { composeStage, loadFailure } from '../dist/load-core.js';
 
 const exports = initSync({ module: readFileSync(new URL('../wasm/usd_wasm_bg.wasm', import.meta.url)) });
 

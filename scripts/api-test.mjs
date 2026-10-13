@@ -74,7 +74,7 @@ test('headers never follow a redirect to another origin', async () => {
     res.writeHead(302, { ...cors, location: `${other.origin}/a.usda` }).end();
   });
   const meshes = await page.evaluate(async (url) => {
-    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const { loadUsd } = await import('/packages/viewer/dist/index.js');
     const result = await loadUsd(url, { headers: { Authorization: 'Bearer SECRET', 'X-Key': 'SECRET2' }, textures: 'none' });
     result.dispose();
     return result.info.meshes;
@@ -92,7 +92,7 @@ test('headers never follow a redirect to another origin', async () => {
 test('headers reach the layers and textures on the root origin, and no other origin', async () => {
   await fetch(`${BASE}/__stats/reset`);
   await page.evaluate(async (url) => {
-    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const { loadUsd } = await import('/packages/viewer/dist/index.js');
     const result = await loadUsd(url, { headers: { Authorization: 'Bearer test-token' } });
     await result.complete;
     result.dispose();
@@ -111,7 +111,7 @@ test('headers reach the layers and textures on the root origin, and no other ori
   await fetch(`${BASE}/__stats/reset`);
   const counts = await page.evaluate(
     async ([url, origin]) => {
-      const { loadUsd } = await import('/packages/viewer/src/index.js');
+      const { loadUsd } = await import('/packages/viewer/dist/index.js');
       const result = await loadUsd(url, { headers: { Authorization: 'Bearer test-token' }, allowedOrigins: [origin] });
       const done = await result.complete;
       result.dispose();
@@ -129,7 +129,7 @@ test('a texture outside allowedOrigins is never requested, through fetch or a cu
   await routeTextured(root, `http://localhost:${new URL(BASE).port}/fixtures/quadrants.png`);
   await fetch(`${BASE}/__stats/reset`);
   const out = await page.evaluate(async (url) => {
-    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const { loadUsd } = await import('/packages/viewer/dist/index.js');
     const seen = [];
     const outcomes = [];
     for (const options of [{}, { fetch: (u, init) => (seen.push(u), fetch(u, init)) }]) {
@@ -153,7 +153,7 @@ test('a texture outside allowedOrigins is never requested, through fetch or a cu
 test('a custom fetch serves every layer and texture, and a missing sublayer warns as with fetch', async () => {
   const out = await page.evaluate(
     async ([textured, missing]) => {
-      const { loadUsd } = await import('/packages/viewer/src/index.js');
+      const { loadUsd } = await import('/packages/viewer/dist/index.js');
       const seen = [];
       const custom = (u, init) => (seen.push(u), fetch(u, init));
       const result = await loadUsd(textured, { fetch: custom });
@@ -177,7 +177,7 @@ test('a custom fetch serves every layer and texture, and a missing sublayer warn
 
 test('textures past maxTextureBytes, over 16384 px a side or of unchecked formats fail as warnings, not the load', async () => {
   const out = await page.evaluate(async (url) => {
-    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const { loadUsd } = await import('/packages/viewer/dist/index.js');
     // A PNG header claiming 20000 x 20000 px.
     const huge = new Uint8Array(33);
     huge.set([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82]);
@@ -216,7 +216,7 @@ test('abort rejects with an aborted UsdLoadError, before or during the load', as
   let held;
   await page.context().route('**/__pending.usda', (route) => (held = route));
   const outcomes = await page.evaluate(async (url) => {
-    const { loadUsd } = await import('/packages/viewer/src/index.js');
+    const { loadUsd } = await import('/packages/viewer/dist/index.js');
     const outcome = (promise) =>
       promise.then(
         () => 'resolved',
@@ -246,12 +246,12 @@ test('lifecycle: a newer load wins; stopping a load stops all of it, while WASM 
           new Promise((resolve) => setTimeout(() => resolve('hung'), 3000)),
         ]);
       // A fresh copy of the module, its WASM compile never finishing.
-      const fresh = await import('/packages/viewer/src/index.js?compiling');
+      const fresh = await import('/packages/viewer/dist/index.js?compiling');
       const compiling = new AbortController();
       const whileCompiling = fresh.loadUsd(shapes, { signal: compiling.signal, wasmUrl: '/__hang.wasm' });
       setTimeout(() => compiling.abort(), 50);
 
-      const { createViewer, loadUsd } = await import('/packages/viewer/src/index.js');
+      const { createViewer, loadUsd } = await import('/packages/viewer/dist/index.js');
       const host = document.body.appendChild(document.createElement('div'));
       host.style.cssText = 'width:200px;height:150px';
       const viewer = createViewer(host);
@@ -312,7 +312,7 @@ test('lifecycle: a newer load wins; stopping a load stops all of it, while WASM 
 test('many instances of one mesh render as one InstancedMesh', async () => {
   await page.evaluate(installDescribeImage);
   const out = await page.evaluate(async (url) => {
-    const { createViewer } = await import('/packages/viewer/src/index.js');
+    const { createViewer } = await import('/packages/viewer/dist/index.js');
     const host = document.body.appendChild(document.createElement('div'));
     host.style.cssText = 'width:200px;height:150px';
     const viewer = createViewer(host);

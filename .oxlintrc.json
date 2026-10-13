@@ -2,5 +2,5 @@
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "categories": { "correctness": "error" },
   "env": { "browser": true, "node": true, "worker": true, "es2024": true },
-  "ignorePatterns": ["examples/vite/dist"]
+  "ignorePatterns": ["examples/vite/dist", "packages/viewer/dist"]
 }

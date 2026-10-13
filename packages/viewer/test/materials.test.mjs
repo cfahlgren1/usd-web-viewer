@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { SLOTS, applyFallback, attachTexture, configureTexture, createMaterial } from '../src/materials.js';
+import { SLOTS, applyFallback, attachTexture, configureTexture, createMaterial } from '../dist/materials.js';
 
 const ref = { path: 'image.png', channel: 'r', scale: [1, 1, 1, 1], bias: [0, 0, 0, 0], uvScale: [1, 1], uvTranslation: [0, 0], uvRotation: 0 };
 const material = (maps) =>

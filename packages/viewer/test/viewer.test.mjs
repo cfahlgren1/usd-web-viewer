@@ -40,7 +40,7 @@ globalThis.Worker = FakeWorker;
 globalThis.fetch = async () => new Response(new Uint8Array());
 WebAssembly.compileStreaming = async () => ({});
 WebAssembly.compile = async () => ({});
-const { frame, loadUsd } = await import('../src/index.js');
+const { frame, loadUsd } = await import('../dist/index.js');
 
 const TEXTURE = {
   path: 'https://example.test/t.png',

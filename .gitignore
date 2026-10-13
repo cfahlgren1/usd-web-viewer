@@ -3,3 +3,4 @@ node_modules
 /packages/viewer/wasm/
 /dist/
 .DS_Store
+/packages/viewer/dist/

@@ -36,7 +36,7 @@ const { root } = await loadUsd(url);
 scene.add(root); // a THREE.Group, Y-up, in meters
 ```
 
-All options, errors and warnings are typed in [`index.d.ts`](packages/viewer/src/index.d.ts). Not on npm yet: depend on `packages/viewer` from this repo.
+All options, errors and warnings are typed in [`types.ts`](packages/viewer/src/types.ts). Not on npm yet: depend on `packages/viewer` from this repo.
 
 ## Why
 

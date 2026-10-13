@@ -4,39 +4,41 @@
   "description": "OpenUSD viewer for the web: pure-Rust USD composition (openusd) in WASM, rendered with three.js",
   "license": "MIT",
   "type": "module",
-  "main": "./src/index.js",
+  "main": "./dist/index.js",
   "exports": {
     ".": {
-      "types": "./src/index.d.ts",
-      "default": "./src/index.js"
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
     },
     "./element": {
-      "types": "./src/element.d.ts",
-      "default": "./src/element.js"
+      "types": "./dist/element.d.ts",
+      "default": "./dist/element.js"
     },
     "./hub": {
-      "types": "./src/hub.d.ts",
-      "default": "./src/hub.js"
+      "types": "./dist/hub.d.ts",
+      "default": "./dist/hub.js"
     },
-    "./worker": "./src/worker.js",
+    "./worker": "./dist/worker.js",
     "./wasm/usd_wasm_bg.wasm": "./wasm/usd_wasm_bg.wasm"
   },
   "files": [
-    "src",
+    "dist",
     "wasm/usd_wasm.js",
+    "wasm/usd_wasm.d.ts",
     "wasm/usd_wasm_bg.wasm",
     "THIRD_PARTY_LICENSES"
   ],
   "sideEffects": [
-    "./src/element.js"
+    "./dist/element.js"
   ],
   "peerDependencies": {
     "three": ">=0.162.0 <0.187.0",
     "@types/three": ">=0.162.0 <0.187.0"
   },
-  "types": "./src/index.d.ts",
+  "types": "./dist/index.d.ts",
   "scripts": {
-    "prepack": "bash ../../scripts/build-wasm.sh"
+    "build": "tsc -p .",
+    "prepack": "bash ../../scripts/build-wasm.sh && npm run build"
   },
   "peerDependenciesMeta": {
     "@types/three": {

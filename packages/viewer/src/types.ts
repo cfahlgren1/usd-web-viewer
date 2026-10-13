@@ -1,3 +1,4 @@
+// The public types; `index` re-exports them.
 import type * as THREE from 'three';
 import type { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
@@ -150,19 +151,6 @@ export interface LoadResult {
 /** A `compose` error whose message starts with `scene too large to load` ran out of WebAssembly memory (4 GiB at most). */
 export type UsdLoadErrorCode = 'aborted' | 'fetch' | 'compose' | 'worker' | 'webgl';
 
-export class UsdLoadError extends Error {
-  constructor(code: UsdLoadErrorCode, message: string, details?: { url?: string | undefined; status?: number | undefined; cause?: unknown });
-  readonly name: 'UsdLoadError';
-  readonly code: UsdLoadErrorCode;
-  /** The URL that failed, when there is one. */
-  readonly url?: string | undefined;
-  /** HTTP status of a failed root layer fetch: 401 / 403 for gated or private repos, 404 when missing. */
-  readonly status?: number | undefined;
-}
-
-/** Rejects with a UsdLoadError of code `worker` where there are no Web Workers (e.g. on a server). */
-export function loadUsd(url: string, options?: LoadOptions): Promise<LoadResult>;
-
 export interface ViewerOptions {
   /** Canvas background. Default: transparent. */
   background?: THREE.ColorRepresentation | undefined;
@@ -200,9 +188,3 @@ export interface Viewer {
   /** Frees the renderer, the GPU context, the current stage and any load in flight. Safe to call twice. */
   dispose(): void;
 }
-
-/** Throws a UsdLoadError of code `webgl` when WebGL is unavailable. */
-export function createViewer(target: HTMLElement | HTMLCanvasElement, options?: ViewerOptions): Viewer;
-
-/** Points the camera at the visible bounds of `object`. */
-export function frame(camera: THREE.PerspectiveCamera, controls: OrbitControls | undefined, object: THREE.Object3D): void;

@@ -13,9 +13,23 @@
 // Safe to import where there is no DOM (server rendering): the element is
 // only defined in a browser.
 import { createViewer, UsdLoadError } from './index.js';
+import type { LoadInfo, LoadProgress, LoadResult, TextureMode, ToBlobOptions, Viewer } from './index.js';
 import { DEFAULTS } from './load-core.js';
 
-const Base = globalThis.HTMLElement ?? class {};
+export interface UsdViewerErrorEvent extends ErrorEvent {
+  readonly error: UsdLoadError;
+}
+
+export interface UsdViewerEventMap extends Omit<HTMLElementEventMap, 'progress' | 'load' | 'error'> {
+  progress: CustomEvent<LoadProgress>;
+  load: CustomEvent<LoadInfo>;
+  error: UsdViewerErrorEvent;
+  /** The WebGL context was lost: the poster shows, `result` is null, and once the context is restored the model loads again (another `load`). */
+  'context-lost': Event;
+}
+
+// Defined where there is a DOM; on a server the class is never instantiated.
+const Base = (globalThis.HTMLElement ?? class {}) as typeof HTMLElement;
 const ATTRIBUTES = {
   src: 'src',
   textures: 'textures',
@@ -27,8 +41,8 @@ const ATTRIBUTES = {
   reveal: 'reveal',
 };
 // Property values of attributes that are missing or not one of their values.
-const READ = {
-  textures: (value) => (['none', 'preview', 'full'].includes(value) ? value : DEFAULTS.textures),
+const READ: Partial<Record<string, (value: string | null) => string | number>> = {
+  textures: (value) => (value === 'none' || value === 'preview' || value === 'full' ? value : DEFAULTS.textures),
   maxTextureSize: (value) => Number(value) || DEFAULTS.maxTextureSize,
   loading: (value) => (value === 'eager' ? 'eager' : 'lazy'),
   reveal: (value) => (value === 'interaction' ? 'interaction' : 'auto'),
@@ -49,32 +63,63 @@ img.hidden{opacity:0}
 button{border:0;padding:0;background:none;cursor:pointer;font:inherit;color:inherit}
 span{display:inline-block;padding:.5em 1em;border-radius:2em;background:#000a;color:#fff}`;
 
+/** Properties reflecting the attributes, defined below the class; and the typed events. */
+// oxlint-disable-next-line no-unsafe-declaration-merging -- the properties are defined on the prototype below the class
+export interface UsdViewerElement {
+  /** Nothing is created (no worker, WASM or WebGL context) without one. */
+  src: string;
+  /** Reads `preview` when the attribute is missing or not a TextureMode. */
+  textures: TextureMode;
+  maxTextureSize: number;
+  /** Accessible description: the `aria-label` of the canvas (`role="img"`), `3D model` when absent. The element is `aria-busy` while loading; the focused canvas pans with the arrow keys and zooms with + / -. */
+  alt: string;
+  /** Applied to the canvas. Default `pan-y`, so the page scrolls on touch screens. */
+  touchAction: string;
+  /** `lazy` (default): the viewer (worker, WASM, WebGL context) starts once the element is within half a viewport of the screen, and is released (and loads again on return) once it is two viewports away. `eager`: starts right away and stays. */
+  loading: 'lazy' | 'eager';
+  /** An image shown until the model's first geometry is drawn, then cross-faded out; shown again while there is no viewer. */
+  poster: string;
+  /** `auto` (default). `interaction`: nothing loads until the reveal button over the poster is clicked, tapped or activated from the keyboard. */
+  reveal: 'auto' | 'interaction';
+  addEventListener<K extends keyof UsdViewerEventMap>(
+    type: K,
+    listener: (this: UsdViewerElement, event: UsdViewerEventMap[K]) => void,
+    options?: boolean | AddEventListenerOptions,
+  ): void;
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions): void;
+}
+
+/**
+ * `<usd-viewer src textures max-texture-size alt touch-action loading poster reveal>`.
+ * Before it is defined, give it a size: `usd-viewer:not(:defined) { display: block; min-height: 200px }`.
+ * The shadow parts `viewer`, `poster` and `reveal` (the button) can be styled with `::part()`.
+ */
 export class UsdViewerElement extends Base {
   static observedAttributes = Object.values(ATTRIBUTES);
-  static #nearObserver = null;
-  static #farObserver = null;
+  static #nearObserver: IntersectionObserver | null = null;
+  static #farObserver: IntersectionObserver | null = null;
 
-  #viewer = null;
-  #result = null;
-  #abort = null;
-  #parts = null;
+  #viewer: Viewer | null = null;
+  #result: LoadResult | null = null;
+  #abort: AbortController | null = null;
+  #parts: { viewer: HTMLDivElement; poster: HTMLImageElement; reveal: HTMLButtonElement } | null = null;
   // Lazy: within NEAR of the viewport. Interaction: the reveal button was used.
   #near = false;
   #revealed = false;
   #broken = false;
 
-  /** The underlying viewer (renderer, scene, camera, controls) while one is live. */
-  get viewer() {
+  /** The underlying viewer (renderer, scene, camera, controls) while one is live; null until one starts (see `loading` and `reveal`). */
+  get viewer(): Viewer | null {
     return this.#viewer;
   }
 
   /** The current load result (root, info, complete, dispose), once geometry shows. */
-  get result() {
+  get result(): LoadResult | null {
     return this.#result;
   }
 
   /** A fresh frame as an image (see `Viewer.toBlob`); rejects while there is no viewer. */
-  toBlob(options) {
+  toBlob(options?: ToBlobOptions): Promise<Blob> {
     return this.#viewer
       ? this.#viewer.toBlob(options)
       : Promise.reject(new Error('no viewer to capture: the element has not started (see loading and reveal)'));
@@ -82,12 +127,18 @@ export class UsdViewerElement extends Base {
 
   connectedCallback() {
     if (!this.#parts) this.#render();
-    UsdViewerElement.#nearObserver ??= new IntersectionObserver((entries) => entries.forEach((e) => e.isIntersecting && e.target.#setNear(true)), {
-      rootMargin: NEAR,
-    });
-    UsdViewerElement.#farObserver ??= new IntersectionObserver((entries) => entries.forEach((e) => e.isIntersecting || e.target.#setNear(false)), {
-      rootMargin: FAR,
-    });
+    UsdViewerElement.#nearObserver ??= new IntersectionObserver(
+      (entries) => entries.forEach((e) => e.isIntersecting && (e.target as UsdViewerElement).#setNear(true)),
+      {
+        rootMargin: NEAR,
+      },
+    );
+    UsdViewerElement.#farObserver ??= new IntersectionObserver(
+      (entries) => entries.forEach((e) => e.isIntersecting || (e.target as UsdViewerElement).#setNear(false)),
+      {
+        rootMargin: FAR,
+      },
+    );
     UsdViewerElement.#nearObserver.observe(this);
     UsdViewerElement.#farObserver.observe(this);
     this.#update();
@@ -97,15 +148,15 @@ export class UsdViewerElement extends Base {
     // Deferred so a move (disconnect then reconnect in one task) keeps the viewer.
     queueMicrotask(() => {
       if (this.isConnected) return;
-      UsdViewerElement.#nearObserver.unobserve(this);
-      UsdViewerElement.#farObserver.unobserve(this);
+      UsdViewerElement.#nearObserver!.unobserve(this);
+      UsdViewerElement.#farObserver!.unobserve(this);
       this.#near = false;
       this.#broken = false;
       this.#update();
     });
   }
 
-  attributeChangedCallback(name, previous, value) {
+  attributeChangedCallback(name: string, previous: string | null, value: string | null) {
     if (!this.#parts || previous === value) return;
     if (name === 'alt' || name === 'touch-action' || name === 'poster') return this.#decorate();
     const live = !!this.#viewer;
@@ -116,7 +167,7 @@ export class UsdViewerElement extends Base {
   #render() {
     const root = this.shadowRoot ?? this.attachShadow({ mode: 'open' });
     root.innerHTML = `<style>${STYLE}</style><div part="viewer"></div><img part="poster" alt=""><button part="reveal" type="button" hidden><span>View in 3D</span></button>`;
-    const [viewer, poster, reveal] = root.querySelectorAll('div, img, button');
+    const [viewer, poster, reveal] = root.querySelectorAll('div, img, button') as unknown as [HTMLDivElement, HTMLImageElement, HTMLButtonElement];
     this.#parts = { viewer, poster, reveal };
     reveal.addEventListener('click', () => {
       this.#revealed = true;
@@ -126,7 +177,7 @@ export class UsdViewerElement extends Base {
     this.#decorate();
   }
 
-  #setNear(near) {
+  #setNear(near: boolean) {
     this.#near = near;
     this.#update();
   }
@@ -137,22 +188,22 @@ export class UsdViewerElement extends Base {
     const live = this.isConnected && !!this.getAttribute('src') && (this.loading === 'eager' || this.#near) && !interaction;
     if (live && !this.#viewer && !this.#broken) this.#start();
     if (!live && this.#viewer) this.#release();
-    this.#parts.reveal.hidden = !interaction;
+    this.#parts!.reveal.hidden = !interaction;
   }
 
   #start() {
     try {
-      this.#viewer = createViewer(this.#parts.viewer, {
+      this.#viewer = createViewer(this.#parts!.viewer, {
         onContextLost: () => {
           this.#result = null;
           this.#showPoster(true);
           this.dispatchEvent(new Event('context-lost'));
         },
-        onContextRestored: (reload) => reload && this.#track(reload, this.#abort),
+        onContextRestored: (reload) => reload && this.#track(reload, this.#abort!),
       });
     } catch (error) {
       this.#broken = true;
-      this.#fail(error instanceof UsdLoadError ? error : new UsdLoadError('webgl', String(error?.message || error), { cause: error }));
+      this.#fail(error instanceof UsdLoadError ? error : new UsdLoadError('webgl', String((error as Error)?.message || error), { cause: error }));
       return;
     }
     this.#decorate();
@@ -162,7 +213,7 @@ export class UsdViewerElement extends Base {
   #release() {
     this.#abort?.abort();
     this.removeAttribute('aria-busy');
-    this.#viewer.dispose();
+    this.#viewer!.dispose();
     this.#viewer = null;
     this.#result = null;
     this.#showPoster(true);
@@ -171,7 +222,7 @@ export class UsdViewerElement extends Base {
 
   #decorate() {
     const alt = this.getAttribute('alt') || '3D model';
-    const { poster, reveal } = this.#parts;
+    const { poster, reveal } = this.#parts!;
     const src = this.getAttribute('poster');
     if (src) poster.src = src;
     poster.hidden = !src;
@@ -188,14 +239,14 @@ export class UsdViewerElement extends Base {
     canvas.style.touchAction = this.getAttribute('touch-action') || 'pan-y';
   }
 
-  #showPoster(shown) {
-    this.#parts.poster.classList.toggle('hidden', !shown);
+  #showPoster(shown: boolean) {
+    this.#parts!.poster.classList.toggle('hidden', !shown);
   }
 
   #load() {
     this.#abort?.abort();
     const abort = (this.#abort = new AbortController());
-    const loading = this.#viewer.load(this.getAttribute('src'), {
+    const loading = this.#viewer!.load(this.getAttribute('src')!, {
       textures: this.textures,
       maxTextureSize: this.maxTextureSize,
       signal: abort.signal,
@@ -208,7 +259,7 @@ export class UsdViewerElement extends Base {
   }
 
   /** Follows a load of the viewer's (the element's own, or one after a restored context). */
-  async #track(loading, abort) {
+  async #track(loading: Promise<LoadResult>, abort: AbortController) {
     this.setAttribute('aria-busy', 'true');
     this.#showPoster(true);
     try {
@@ -219,16 +270,16 @@ export class UsdViewerElement extends Base {
       this.dispatchEvent(new CustomEvent('load', { detail: result.info }));
     } catch (error) {
       if (this.#abort === abort) this.removeAttribute('aria-busy');
-      if (error?.code !== 'aborted') this.#fail(error);
+      if ((error as UsdLoadError)?.code !== 'aborted') this.#fail(error as UsdLoadError);
     }
   }
 
   /** Fades the poster out after the next frame, which draws the geometry. */
-  #fadePoster(abort) {
+  #fadePoster(abort: AbortController) {
     requestAnimationFrame(() => abort.signal.aborted || this.#showPoster(false));
   }
 
-  #fail(error) {
+  #fail(error: UsdLoadError) {
     this.dispatchEvent(new ErrorEvent('error', { error, message: error.message }));
   }
 }
@@ -236,11 +287,11 @@ export class UsdViewerElement extends Base {
 // Properties reflecting their attributes.
 for (const [property, attribute] of Object.entries(ATTRIBUTES)) {
   Object.defineProperty(UsdViewerElement.prototype, property, {
-    get() {
+    get(this: UsdViewerElement) {
       const value = this.getAttribute(attribute);
       return READ[property] ? READ[property](value) : (value ?? '');
     },
-    set(value) {
+    set(this: UsdViewerElement, value: unknown) {
       if (value == null || value === '') this.removeAttribute(attribute);
       else this.setAttribute(attribute, String(value));
     },

@@ -2,7 +2,7 @@
 // do with each. usage: node --test packages/viewer/test/request-policy.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { requestPolicy } from '../src/load-core.js';
+import { requestPolicy } from '../dist/load-core.js';
 
 const HUB = 'https://huggingface.co/datasets/o/r/resolve/main/pkg/root.usda';
 const MODEL = 'https://huggingface.co/o/m/resolve/main/root.usda';

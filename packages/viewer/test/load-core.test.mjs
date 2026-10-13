@@ -6,9 +6,9 @@ import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { initSync, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, imageInfo, loadFailure, readGeometries, takePackagedTextures, textureJobs } from '../src/load-core.js';
-import { UsdLoadError } from '../src/errors.js';
-import { hubPackageLayers, pinHubRevision } from '../src/hub-prefetch.js';
+import { composeStage, fetchLimited, imageInfo, loadFailure, readGeometries, takePackagedTextures, textureJobs } from '../dist/load-core.js';
+import { UsdLoadError } from '../dist/errors.js';
+import { hubPackageLayers, pinHubRevision } from '../dist/hub-prefetch.js';
 
 // Missing from the oldest supported browsers (Safari 16.4).
 delete Map.groupBy;

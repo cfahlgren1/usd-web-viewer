@@ -3,22 +3,29 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { UsdLoadError } from './errors.js';
 import { OUT_OF_MEMORY, canonicalUrl, fetchWithPolicy, requestPolicy } from './load-core.js';
+import type { FetchFn } from './load-core.js';
 import { applyFallback, attachTexture, configureTexture, createMaterial, variant } from './materials.js';
+import type { UsdMaterial } from './materials.js';
+import type { GeometryArrays, GeometryMeta, InstanceMeta, Mutable, SceneMeta, StageProgress, WorkerMessage } from './meta.js';
+import type { LoadInfo, LoadOptions, LoadProgress, LoadResult, LoadStats, Viewer, ViewerOptions } from './types.js';
 
+export type * from './types.js';
 export { UsdLoadError };
 
 // Lets the viewer show meshes as they stream in, before the load resolves.
-const SHOW = Symbol('show');
+const SHOW: unique symbol = Symbol('show');
+
+type InternalOptions = LoadOptions & { [SHOW]?: (root: THREE.Group, meta: SceneMeta) => void };
 
 // Instances of one geometry with the same materials drawn as one
 // InstancedMesh past this many.
 const INSTANCING_MIN = 4;
 
 // The share of the overall `fraction` each stage spans (see LoadProgress).
-const STAGES = { layers: [0, 0.4], compose: [0.4, 0.5], geometry: [0.5, 0.8], textures: [0.8, 1] };
+const STAGES: Record<LoadProgress['stage'], [number, number]> = { layers: [0, 0.4], compose: [0.4, 0.5], geometry: [0.5, 0.8], textures: [0.8, 1] };
 
 /** Where `progress` puts the load overall, before taking the maximum so far. */
-function stageFraction(progress) {
+function stageFraction(progress: StageProgress) {
   const [start, end] = STAGES[progress.stage];
   // More layers may yet be found; a compose round is halfway into its stage.
   const done =
@@ -32,20 +39,20 @@ function stageFraction(progress) {
   return start + (end - start) * done;
 }
 
-let wasmModule = null;
+let wasmModule: Promise<WebAssembly.Module> | null = null;
 
 /** Compiles the WASM module once per page; workers instantiate it without refetching. */
-function compileWasm(url) {
+function compileWasm(url?: string | URL) {
   // Written inline so bundlers (Vite, webpack) emit the asset and rewrite the URL.
   url ??= new URL('../wasm/usd_wasm_bg.wasm', import.meta.url);
   wasmModule ||= compile(url).catch((error) => {
     wasmModule = null;
-    throw new UsdLoadError('worker', `could not load the WASM module from ${url}: ${error.message}`, { url: String(url), cause: error });
+    throw new UsdLoadError('worker', `could not load the WASM module from ${url}: ${(error as Error).message}`, { url: String(url), cause: error });
   });
   return wasmModule;
 }
 
-async function compile(url) {
+async function compile(url: string | URL) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`HTTP ${response.status}`);
   // Servers that do not send `application/wasm` break streaming compilation.
@@ -55,13 +62,12 @@ async function compile(url) {
 
 /**
  * Loads a USD stage into a three.js group. Resolves once geometry is ready;
- * `complete` settles when every texture has streamed in.
+ * `complete` settles when every texture has streamed in. Rejects with a
+ * UsdLoadError of code `worker` where there are no Web Workers (e.g. on a server).
  *
- * @param {string} url  root layer URL (relative URLs resolve against the page)
- * @param {import('./index.js').LoadOptions} [options]
- * @returns {Promise<import('./index.js').LoadResult>}
+ * @param url  root layer URL (relative URLs resolve against the page)
  */
-export async function loadUsd(url, options = {}) {
+export async function loadUsd(url: string, options: LoadOptions = {}): Promise<LoadResult> {
   const { maxTextureSize, textures, maxConcurrentFetches, maxLayerBytes, maxTextureBytes, maxLayers, maxInstances, maxTriangles, allowedOrigins } = options;
   const { onProgress, signal, headers } = options;
   if (maxConcurrentFetches !== undefined && !(Number.isInteger(maxConcurrentFetches) && maxConcurrentFetches > 0)) {
@@ -72,7 +78,7 @@ export async function loadUsd(url, options = {}) {
   if (typeof Worker === 'undefined') throw new UsdLoadError('worker', 'loading needs Web Workers: call loadUsd in a browser', { url });
   const absoluteUrl = canonicalUrl(new URL(url, location.href).href);
   // The compile is shared with other loads: aborting stops waiting for it, not it.
-  const module = await new Promise((resolve, reject) => {
+  const module = await new Promise<WebAssembly.Module>((resolve, reject) => {
     const abortWait = () => reject(aborted());
     signal?.addEventListener('abort', abortWait, { once: true });
     compileWasm(options.wasmUrl)
@@ -80,32 +86,39 @@ export async function loadUsd(url, options = {}) {
       .finally(() => signal?.removeEventListener('abort', abortWait));
   });
   if (signal?.aborted) throw aborted();
-  let worker;
+  let worker: Worker;
   try {
     // Inline `new Worker(new URL(...))` is the pattern bundlers recognise and bundle.
     worker = options.workerUrl ? new Worker(options.workerUrl, { type: 'module' }) : new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
   } catch (error) {
-    throw new UsdLoadError('worker', `could not start the worker: ${error.message}`, { url: options.workerUrl && String(options.workerUrl), cause: error });
+    throw new UsdLoadError('worker', `could not start the worker: ${(error as Error).message}`, {
+      url: options.workerUrl && String(options.workerUrl),
+      cause: error,
+    });
   }
   // Ends the caller's fetches (custom `fetch` requests) when the load stops,
   // aborted or not.
   const requests = new AbortController();
   // Bodies of custom-fetch responses the worker is reading, by request id.
-  const bodies = new Map();
+  const bodies = new Map<number, ReadableStreamDefaultReader<Uint8Array>>();
 
-  let resolveScene, rejectScene, resolveComplete, rejectComplete;
-  const scenePromise = new Promise((resolve, reject) => ((resolveScene = resolve), (rejectScene = reject)));
-  const complete = new Promise((resolve, reject) => ((resolveComplete = resolve), (rejectComplete = reject)));
+  type Counts = { textures: number; failed: number };
+  let resolveScene!: (scene: BuiltScene) => void;
+  let rejectScene!: (error?: UsdLoadError) => void;
+  let resolveComplete!: (counts: Counts) => void;
+  let rejectComplete!: (error: UsdLoadError) => void;
+  const scenePromise = new Promise<BuiltScene>((resolve, reject) => ((resolveScene = resolve), (rejectScene = reject)));
+  const complete = new Promise<Counts>((resolve, reject) => ((resolveComplete = resolve), (rejectComplete = reject)));
   // A rejection nobody awaits (e.g. after dispose) must not surface as unhandled.
   complete.catch(() => {});
   const counts = { textures: 0, failed: 0 };
   let fraction = 0;
-  let built = null;
+  let built: BuiltScene | null = null;
   let delivered = false;
   let stopped = false;
   // The one way out (done, error, dispose, abort): stop the worker, which
   // frees its WASM memory, and settle both promises (a no-op if settled).
-  const stop = (error) => {
+  const stop = (error?: UsdLoadError) => {
     if (stopped) return;
     stopped = true;
     worker.terminate();
@@ -118,7 +131,7 @@ export async function loadUsd(url, options = {}) {
     if (error) rejectComplete(error);
     else resolveComplete({ ...counts });
   };
-  function fail(error) {
+  function fail(error: UsdLoadError) {
     // Before geometry resolves nothing has reached the caller: free it here.
     if (built && !delivered) built.dispose();
     stop(error);
@@ -128,20 +141,20 @@ export async function loadUsd(url, options = {}) {
   }
   signal?.addEventListener('abort', abort, { once: true });
 
-  worker.onmessage = ({ data }) => {
+  worker.onmessage = ({ data }: MessageEvent<WorkerMessage>) => {
     // Messages already queued when the load was stopped (disposed or aborted).
     if (stopped) {
-      data.bitmap?.close();
+      if (data.type === 'texture') data.bitmap?.close();
       return;
     }
     try {
       receive(data);
     } catch (error) {
-      data.bitmap?.close();
-      fail(new UsdLoadError('worker', `could not build the scene: ${error?.message || error}`, { url: absoluteUrl, cause: error }));
+      if (data.type === 'texture') data.bitmap?.close();
+      fail(new UsdLoadError('worker', `could not build the scene: ${(error as Error)?.message || error}`, { url: absoluteUrl, cause: error }));
     }
   };
-  function receive(data) {
+  function receive(data: WorkerMessage) {
     switch (data.type) {
       case 'fetch':
         proxyFetch(data);
@@ -160,27 +173,27 @@ export async function loadUsd(url, options = {}) {
       case 'meta':
         if (signal?.aborted) return abort();
         built = buildScene(data.meta);
-        options[SHOW]?.(built.root, data.meta);
+        (options as InternalOptions)[SHOW]?.(built.root, data.meta);
         break;
       case 'geometry':
-        built.addGeometry(data.index, data.meta, data.arrays);
+        built!.addGeometry(data.index, data.meta, data.arrays);
         break;
       case 'scene': {
         const { warnings, ...stats } = data.stats;
-        built.info.stats = stats;
-        built.info.warnings.push(...warnings);
+        built!.info.stats = stats;
+        built!.info.warnings.push(...warnings);
         delivered = true;
-        resolveScene(built);
+        resolveScene(built!);
         break;
       }
       case 'texture':
         if (data.bitmap) {
-          built.applyTexture(data.path, data.bitmap, data.color);
+          built!.applyTexture(data.path, data.bitmap, data.color);
           counts.textures++;
         } else {
-          built.textureFailed(data.path);
+          built!.textureFailed(data.path);
           counts.failed++;
-          built.info.warnings.push({ code: 'texture-failed', message: data.error, path: data.path });
+          built!.info.warnings.push({ code: 'texture-failed', message: data.error, path: data.path });
         }
         break;
       case 'done':
@@ -191,7 +204,7 @@ export async function loadUsd(url, options = {}) {
         break;
     }
   }
-  worker.onerror = (event) => {
+  worker.onerror = (event: ErrorEvent) => {
     event.preventDefault?.();
     const message = event.message || 'the worker failed';
     // The worker itself ran out of memory, outside the handler that reports it.
@@ -215,11 +228,12 @@ export async function loadUsd(url, options = {}) {
   });
 
   /** Runs one worker request through the caller's `fetch`; the body follows chunk by chunk. */
-  async function proxyFetch({ id, url: target }) {
+  async function proxyFetch({ id, url: target }: { id: number; url: string }) {
     try {
       const policy = requestPolicy(target, absoluteUrl, allowedOrigins);
-      if (policy.refused) throw new TypeError(`request refused: ${policy.refused}`);
-      const response = await fetchWithPolicy(options.fetch, target, policy, headers, { signal: requests.signal });
+      if (policy.refused !== undefined) throw new TypeError(`request refused: ${policy.refused}`);
+      // Called with `signal`, and with credentials and referrerPolicy from the policy, as LoadOptions promises.
+      const response = await fetchWithPolicy(options.fetch as FetchFn, target, policy, headers, { signal: requests.signal });
       if (stopped) return response.body?.cancel().catch(() => {});
       if (response.ok) bodies.set(id, (response.body ?? new Blob().stream()).getReader());
       else response.body?.cancel();
@@ -230,15 +244,15 @@ export async function loadUsd(url, options = {}) {
   }
 
   /** Reads the next chunk of a custom-fetch body for the worker, which asks once per chunk. */
-  async function pullChunk(id) {
+  async function pullChunk(id: number) {
     try {
-      const { done, value } = await bodies.get(id).read();
+      const { done, value } = await bodies.get(id)!.read();
       if (done) {
         bodies.delete(id);
         return worker.postMessage({ type: 'chunk', id, done });
       }
       const chunk = value.byteLength === value.buffer.byteLength ? value : value.slice();
-      worker.postMessage({ type: 'chunk', id, chunk }, [chunk.buffer]);
+      worker.postMessage({ type: 'chunk', id, chunk }, [chunk.buffer as ArrayBuffer]);
     } catch (error) {
       bodies.delete(id);
       worker.postMessage({ type: 'chunk', id, error: String(error) });
@@ -248,7 +262,7 @@ export async function loadUsd(url, options = {}) {
   const scene = await scenePromise;
   return {
     root: scene.root,
-    info: scene.info,
+    info: scene.info as LoadInfo,
     complete,
     dispose() {
       stop(aborted());
@@ -257,8 +271,10 @@ export async function loadUsd(url, options = {}) {
   };
 }
 
-function buildScene(meta) {
-  const info = {
+type BuiltScene = ReturnType<typeof buildScene>;
+
+function buildScene(meta: SceneMeta) {
+  const info: Mutable<Omit<LoadInfo, 'stats'>> & { stats?: LoadStats; warnings: LoadInfo['warnings'][number][] } = {
     upAxis: meta.upAxis,
     metersPerUnit: meta.metersPerUnit,
     meshes: 0,
@@ -275,41 +291,43 @@ function buildScene(meta) {
   root.scale.setScalar(meta.metersPerUnit || 1);
 
   const materials = meta.materials.map((m) => createMaterial(m));
-  const variants = new Map();
-  const materialFor = (index, doubleSided, vertexColors, uvChannels) => {
+  const variants = new Map<string, UsdMaterial>();
+  const materialFor = (index: number, doubleSided: boolean, vertexColors: boolean, uvChannels: Record<string, number>) => {
     const routed = Object.keys(uvChannels).length > 0;
-    if (!doubleSided && !vertexColors && !routed) return materials[index];
+    if (!doubleSided && !vertexColors && !routed) return materials[index]!;
     const key = `${index}|${doubleSided}|${vertexColors}|${JSON.stringify(uvChannels)}`;
-    if (!variants.has(key)) variants.set(key, variant(materials[index], { doubleSided, vertexColors, uvChannels }));
-    return variants.get(key);
+    if (!variants.has(key)) variants.set(key, variant(materials[index]!, { doubleSided, vertexColors, uvChannels }));
+    return variants.get(key)!;
   };
 
   // Geometries stream in one at a time; each brings in the meshes that draw it.
-  const geometries = [];
-  const instancesOf = new Map();
+  const geometries: THREE.BufferGeometry[] = [];
+  const instancesOf = new Map<number, InstanceMeta[]>();
   for (const inst of meta.instances) {
     if (!instancesOf.has(inst.geometry)) instancesOf.set(inst.geometry, []);
-    instancesOf.get(inst.geometry).push(inst);
+    instancesOf.get(inst.geometry)!.push(inst);
   }
-  const instanced = [];
-  const addGeometry = (index, g, a) => {
+  const instanced: THREE.InstancedMesh[] = [];
+  const addGeometry = (index: number, g: GeometryMeta | null, a: GeometryArrays | null) => {
     if (!g) return;
-    const geometry = createGeometry(g, a);
+    // A geometry without arrays is a malformed message: it throws and fails the load.
+    const geometry = createGeometry(g, a!);
     geometries.push(geometry);
     info.geometries++;
 
     const triangles = g.groups.reduce((n, [, count]) => n + count / 3, 0);
     // Instances by the materials they draw with.
-    const batches = new Map();
+    const batches = new Map<string, { material: UsdMaterial | UsdMaterial[]; list: InstanceMeta[] }>();
     for (const inst of instancesOf.get(index) ?? []) {
       // A group takes its GeomSubset's material, else the mesh's.
       const mats = g.groups.map(([, , subset]) => {
-        const m = subset !== undefined && Object.hasOwn(inst.subsets, subset) ? inst.subsets[subset] : inst.material;
-        const usd = materials[m].userData.usd;
+        const m = subset !== undefined && Object.hasOwn(inst.subsets, subset) ? inst.subsets[subset]! : inst.material;
+        const usd = materials[m]!.userData.usd;
         // Route each named UV set to its attribute on this geometry; meshes that
         // lay their UV sets out differently get their own copy of the material.
-        const uvChannels = Object.create(null);
+        const uvChannels: Record<string, number> = Object.create(null);
         for (const ref of Object.values(usd.maps)) {
+          if (ref.uvSet === undefined) continue;
           const k = g.uvSets.indexOf(ref.uvSet);
           if (k > 0) uvChannels[ref.uvSet] = k;
         }
@@ -317,7 +335,7 @@ function buildScene(meta) {
       });
       const key = mats.map((m) => m.uuid).join();
       if (!batches.has(key)) batches.set(key, { material: mats.length > 1 ? mats : mats[0], list: [] });
-      batches.get(key).list.push(inst);
+      batches.get(key)!.list.push(inst);
       info.meshes++;
       info.triangles += triangles;
     }
@@ -326,7 +344,7 @@ function buildScene(meta) {
     for (const { material, list } of batches.values()) {
       if (list.length > INSTANCING_MIN) {
         const mesh = new THREE.InstancedMesh(geometry, material, list.length);
-        mesh.name = list[0].path;
+        mesh.name = list[0]!.path;
         const matrix = new THREE.Matrix4();
         list.forEach((inst, k) => mesh.setMatrixAt(k, matrix.fromArray(inst.matrix)));
         mesh.computeBoundingBox();
@@ -347,26 +365,26 @@ function buildScene(meta) {
   };
 
   const allMaterials = () => [...materials, ...variants.values()];
-  const textures = new Map();
-  const applyTexture = (path, bitmap, isColor) => {
+  const textures = new Map<string, THREE.Texture>();
+  const applyTexture = (path: string, bitmap: ImageBitmap, isColor: boolean) => {
     const base = new THREE.Texture(bitmap);
     base.flipY = false;
     base.anisotropy = 4;
     textures.set(path, base);
-    const textureFor = (ref, colorSpace, uvChannel) => configureTexture(base, ref, colorSpace, uvChannel);
+    const textureFor: Parameters<typeof attachTexture>[3] = (ref, colorSpace, uvChannel) => configureTexture(base, ref, colorSpace, uvChannel);
     for (const material of allMaterials()) attachTexture(material, path, isColor, textureFor);
   };
-  const textureFailed = (path) => allMaterials().forEach((material) => applyFallback(material, path));
+  const textureFailed = (path: string) => allMaterials().forEach((material) => applyFallback(material, path));
 
   const dispose = () => {
     geometries.forEach((g) => g.dispose());
     instanced.forEach((mesh) => mesh.dispose());
     for (const m of allMaterials()) {
-      for (const key of ['map', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'alphaMap', 'normalMap']) m[key]?.dispose();
+      for (const key of ['map', 'emissiveMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'alphaMap', 'normalMap'] as const) m[key]?.dispose();
       m.dispose();
     }
     for (const t of textures.values()) {
-      t.image?.close?.();
+      (t.image as ImageBitmap | undefined)?.close?.();
       t.dispose();
     }
   };
@@ -374,7 +392,7 @@ function buildScene(meta) {
   return { root, info, addGeometry, applyTexture, textureFailed, dispose };
 }
 
-function createGeometry(g, a) {
+function createGeometry(g: GeometryMeta, a: GeometryArrays) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(a.positions, 3));
   geometry.setAttribute('normal', new THREE.BufferAttribute(a.normals, 3));
@@ -385,7 +403,7 @@ function createGeometry(g, a) {
   // Once on the GPU the arrays are dead weight: bounds are precomputed, so
   // framing and culling never read them. The cost: nothing to re-upload
   // after a lost WebGL context, and no CPU raycasting against the mesh.
-  for (const attribute of [geometry.index, ...Object.values(geometry.attributes)]) attribute.onUpload(releaseArray);
+  for (const attribute of [geometry.index!, ...(Object.values(geometry.attributes) as THREE.BufferAttribute[])]) attribute.onUpload(releaseArray);
   // Bounds come from the worker, so framing and culling never rescan positions.
   geometry.boundingBox = new THREE.Box3().setFromArray(g.bounds);
   geometry.boundingSphere = geometry.boundingBox.getBoundingSphere(new THREE.Sphere());
@@ -394,12 +412,12 @@ function createGeometry(g, a) {
 }
 
 /** `onUpload` callback: drops the CPU copy of an attribute three.js just uploaded. */
-function releaseArray() {
+function releaseArray(this: { array: unknown }) {
   this.array = null;
 }
 
-function countBy(list, key) {
-  const out = {};
+function countBy<T>(list: T[], key: (item: T) => string) {
+  const out: Record<string, number> = {};
   for (const item of list) out[key(item)] = (out[key(item)] || 0) + 1;
   return out;
 }
@@ -409,20 +427,18 @@ function countBy(list, key) {
  * on-demand rendering around {@link loadUsd}. The canvas is transparent unless
  * a `background` is given. Throws a `webgl` UsdLoadError without WebGL.
  *
- * @param {HTMLElement | HTMLCanvasElement} target  a canvas, or a container to append one to
- * @param {import('./index.js').ViewerOptions} [options]
- * @returns {import('./index.js').Viewer}
+ * @param target  a canvas, or a container to append one to
  */
-export function createViewer(target, options = {}) {
+export function createViewer(target: HTMLElement | HTMLCanvasElement, options: ViewerOptions = {}): Viewer {
   const ownsCanvas = !(target instanceof HTMLCanvasElement);
-  const canvas = ownsCanvas ? target.appendChild(document.createElement('canvas')) : target;
+  const canvas = ownsCanvas ? target.appendChild(document.createElement('canvas')) : (target as HTMLCanvasElement);
   const container = ownsCanvas ? target : canvas.parentElement;
-  let renderer;
+  let renderer: THREE.WebGLRenderer;
   try {
     renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
   } catch (error) {
     if (ownsCanvas) canvas.remove();
-    throw new UsdLoadError('webgl', `WebGL is not available: ${error.message}`, { cause: error });
+    throw new UsdLoadError('webgl', `WebGL is not available: ${(error as Error).message}`, { cause: error });
   }
   renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -449,8 +465,8 @@ export function createViewer(target, options = {}) {
   // Focusable, with arrow keys panning the camera and + / - zooming.
   canvas.tabIndex = 0;
   controls.listenToKeyEvents(canvas);
-  const zoomKey = (event) => {
-    const scale = { '+': 0.8, '=': 0.8, '-': 1.25, _: 1.25 }[event.key];
+  const zoomKey = (event: KeyboardEvent) => {
+    const scale = ({ '+': 0.8, '=': 0.8, '-': 1.25, _: 1.25 } as Record<string, number>)[event.key];
     if (!scale || !controls.enabled || !controls.enableZoom || event.ctrlKey || event.metaKey || event.altKey) return;
     event.preventDefault();
     camera.position.sub(controls.target).multiplyScalar(scale).add(controls.target);
@@ -485,11 +501,11 @@ export function createViewer(target, options = {}) {
   observer.observe(container || canvas);
   resize();
 
-  let current = null;
+  let current: LoadResult | null = null;
   // The load in flight; a newer load or dispose aborts it.
-  let pending = null;
+  let pending: AbortController | null = null;
   // The latest load's arguments, to load again after a lost context.
-  let last = null;
+  let last: [string, LoadOptions] | null = null;
   const clear = () => {
     if (!current) return;
     scene.remove(current.root);
@@ -499,14 +515,14 @@ export function createViewer(target, options = {}) {
   };
   // Geometry lives only on the GPU (its arrays are released once uploaded),
   // so a lost context loses the stage: it is loaded again once restored.
-  const contextLost = (event) => {
+  const contextLost = (event: Event) => {
     event.preventDefault();
     pending?.abort();
     clear();
     options.onContextLost?.();
   };
   const contextRestored = () => {
-    scene.environment.dispose();
+    scene.environment!.dispose();
     makeEnvironment();
     const reload = last && viewer.load(...last);
     reload?.catch(() => {});
@@ -516,7 +532,7 @@ export function createViewer(target, options = {}) {
   canvas.addEventListener('webglcontextlost', contextLost);
   canvas.addEventListener('webglcontextrestored', contextRestored);
 
-  const viewer = {
+  const viewer: Viewer = {
     renderer,
     scene,
     camera,
@@ -536,9 +552,9 @@ export function createViewer(target, options = {}) {
       // every mesh has them, else once complete (and again if a mesh in those
       // extents was left out): framing the meshes streamed so far would zoom
       // in on the first and jump out again.
-      let streaming = null;
+      let streaming: THREE.Group | null = null;
       let planned = 0;
-      const show = (root, meta) => {
+      const show = (root: THREE.Group, meta: SceneMeta) => {
         if (controller.signal.aborted) return;
         clear();
         streaming = root;
@@ -554,12 +570,13 @@ export function createViewer(target, options = {}) {
         requestRender();
       };
       controller.signal.addEventListener('abort', hide, { once: true });
-      const onProgress = (progress) => {
+      const onProgress = (progress: LoadProgress) => {
         if (progress.stage === 'geometry' || progress.stage === 'textures') requestRender();
         loadOptions.onProgress?.(progress);
       };
       try {
-        const result = await loadUsd(url, { ...loadOptions, signal: controller.signal, onProgress, [SHOW]: show });
+        const internal: InternalOptions = { ...loadOptions, signal: controller.signal, onProgress, [SHOW]: show };
+        const result = await loadUsd(url, internal);
         // Superseded (or the viewer disposed) as geometry arrived: drop it.
         if (controller.signal.aborted || disposed) {
           result.dispose();
@@ -588,16 +605,16 @@ export function createViewer(target, options = {}) {
         return Promise.reject(new Error('no frame to capture: the viewer is disposed or its WebGL context is lost'));
       const size = renderer.getSize(new THREE.Vector2());
       const ratio = renderer.getPixelRatio();
-      const setSize = (w, h, pixelRatio) => {
+      const setSize = (w: number, h: number, pixelRatio: number) => {
         renderer.setPixelRatio(pixelRatio);
         renderer.setSize(w, h, false);
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
       };
       const resized = width || height;
-      if (resized) setSize(width || Math.round((height * size.x) / size.y), height || Math.round((width * size.y) / size.x), 1);
+      if (resized) setSize(width || Math.round((height! * size.x) / size.y), height || Math.round((width! * size.y) / size.x), 1);
       renderer.render(scene, camera);
-      const blob = new Promise((resolve, reject) =>
+      const blob = new Promise<Blob>((resolve, reject) =>
         canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('the canvas could not be encoded'))), type, quality),
       );
       if (resized) {
@@ -629,7 +646,7 @@ export function createViewer(target, options = {}) {
       canvas.removeEventListener('webglcontextlost', contextLost);
       canvas.removeEventListener('webglcontextrestored', contextRestored);
       controls.dispose();
-      scene.environment.dispose();
+      scene.environment!.dispose();
       renderer.dispose();
       renderer.forceContextLoss();
       if (ownsCanvas) canvas.remove();
@@ -639,11 +656,11 @@ export function createViewer(target, options = {}) {
 }
 
 /** Points the camera at the visible bounds of `object`. */
-export function frame(camera, controls, object) {
+export function frame(camera: THREE.PerspectiveCamera, controls: OrbitControls | undefined, object: THREE.Object3D): void {
   frameBox(camera, controls, new THREE.Box3().setFromObject(object));
 }
 
-function frameBox(camera, controls, box) {
+function frameBox(camera: THREE.PerspectiveCamera, controls: OrbitControls | undefined, box: THREE.Box3) {
   if (box.isEmpty()) return;
   const center = box.getCenter(new THREE.Vector3());
   const radius = box.getSize(new THREE.Vector3()).length() / 2 || 1;

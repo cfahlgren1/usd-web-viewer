@@ -1,7 +1,7 @@
 // Type-level checks of the public typings.
 // usage: npm run check:types
-import { UsdLoadError, loadUsd } from '../src/index.js';
-import type { UsdViewerElement } from '../src/element.js';
+import { UsdLoadError, loadUsd } from 'usd-web-viewer';
+import type { UsdViewerElement } from 'usd-web-viewer/element';
 
 const error = new UsdLoadError('fetch', 'missing', { url: 'https://example.test/root.usda', status: 404 });
 const code: 'aborted' | 'fetch' | 'compose' | 'worker' | 'webgl' = error.code;

@@ -3,5 +3,5 @@
   "printWidth": 160,
   "singleQuote": true,
   "sortPackageJson": false,
-  "ignorePatterns": ["**/package-lock.json", "examples/vite/dist"]
+  "ignorePatterns": ["**/package-lock.json", "examples/vite/dist", "packages/viewer/dist"]
 }
