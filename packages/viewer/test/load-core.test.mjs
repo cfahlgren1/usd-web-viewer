@@ -1,14 +1,17 @@
 // Drives the real WASM build through load-core with in-memory files.
-// usage: node --test packages/viewer/test/
-import { test } from 'node:test';
+import { afterEach, test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { initSync, UsdLoader } from '../wasm/usd_wasm.js';
-import { composeStage, fetchLimited, imageInfo, loadFailure, readGeometries, takePackagedTextures, textureJobs } from '../src/load-core.js';
-import { UsdLoadError } from '../src/errors.js';
-import { hubPackageLayers, pinHubRevision } from '../src/hub-prefetch.js';
+import { composeStage, fetchLimited, imageInfo, loadFailure, readGeometries, takePackagedTextures, textureJobs } from '../src/load-core.ts';
+import { UsdLoadError } from '../src/errors.ts';
+import { hubPackageLayers, pinHubRevision } from '../src/hub-prefetch.ts';
+
+// Closed once each test ends, as node:test's t.after did.
+const cleanups = [];
+afterEach(() => cleanups.splice(0).forEach((cleanup) => cleanup()));
 
 // Missing from the oldest supported browsers (Safari 16.4).
 delete Map.groupBy;
@@ -91,7 +94,7 @@ test('a package entry that lies about its size is read without trusting the head
   assert.equal(triangles, 2);
 });
 
-test('a usdz layer whose files would expand too far is refused before openusd reads it', { timeout: 5000 }, async () => {
+test('a usdz layer whose files would expand too far is refused before openusd reads it', async () => {
   // bomb.usdz, smaller: a deflated entry declaring 600 MiB, and one declaring less than it inflates to.
   const quad = Buffer.from(`#usda 1.0\n${QUAD}`);
   for (const entry of [
@@ -110,7 +113,7 @@ test('a usdz layer whose files would expand too far is refused before openusd re
   const { scene, meta } = await composeStage({ UsdLoader, fetchBytes: s.fetchBytes, rootUrl: 'https://h/ok.usdz' });
   scene.free();
   assert.equal(meta.geometryCount, 1);
-});
+}, 5000);
 
 test('packaged texture reads share one byte budget', async () => {
   // overlap.zip, smaller: three images in one package, read past the budget.
@@ -234,7 +237,7 @@ test('imageInfo reads the size of PNG, JPEG and WebP from the header, and whethe
     assert.deepEqual(imageInfo(header), expected, what);
   }
 });
-test('a mesh whose corners share one point welds in linear time', { timeout: 10000 }, async () => {
+test('a mesh whose corners share one point welds in linear time', async () => {
   // weld.usda, smaller: every corner on point 0, each with its own normal.
   const faces = 20000;
   const normals = Array.from({ length: faces * 3 }, (_, i) => `(${i}, 1, 0)`).join(', ');
@@ -253,7 +256,7 @@ def Mesh "M" {
   scene.free();
   assert.equal(vertices, faces * 3);
   assert.ok(performance.now() - t0 < 3000, `${Math.round(performance.now() - t0)} ms`);
-});
+}, 10000);
 
 test('indices are 16-bit up to index 65535, 32-bit past it', async () => {
   // One triangle reaching the last of `points` points.
@@ -272,7 +275,7 @@ test('indices are 16-bit up to index 65535, 32-bit past it', async () => {
     [65536, 'Uint32Array'],
   ]);
 });
-test('fetchLimited stops reading a streamed body past maxBytes', async (t) => {
+test('fetchLimited stops reading a streamed body past maxBytes', async () => {
   const chunk = Buffer.alloc(64 * 1024);
   let sent = 0;
   const srv = http.createServer((req, res) => {
@@ -285,14 +288,14 @@ test('fetchLimited stops reading a streamed body past maxBytes', async (t) => {
     res.on('close', () => clearInterval(timer));
   });
   await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
-  t.after(() => srv.close());
+  cleanups.push(() => srv.close());
   const base = `http://127.0.0.1:${srv.address().port}`;
   assert.equal(new TextDecoder().decode(await fetchLimited(`${base}/small`, cap(5))), 'hello');
   await assert.rejects(fetchLimited(`${base}/endless`, cap(256 * 1024)), /over the cap/);
   assert.ok(sent < 4 * 1024 * 1024, `stopped early (${sent} bytes sent)`);
 });
 
-test('fetchLimited retries 429 and 5xx responses, not other errors', async (t) => {
+test('fetchLimited retries 429 and 5xx responses, not other errors', async () => {
   const hits = {};
   const srv = http.createServer((req, res) => {
     hits[req.url] = (hits[req.url] ?? 0) + 1;
@@ -302,7 +305,7 @@ test('fetchLimited retries 429 and 5xx responses, not other errors', async (t) =
     res.end('ok');
   });
   await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
-  t.after(() => srv.close());
+  cleanups.push(() => srv.close());
   const base = `http://127.0.0.1:${srv.address().port}`;
   const fast = { retryDelayMs: 1 };
   assert.equal(new TextDecoder().decode(await fetchLimited(`${base}/busy`, cap(5), fast)), 'ok');
@@ -410,7 +413,7 @@ def "A" (
   }
 });
 
-test('relative layers resolve against the requested URL, not where it redirected', async (t) => {
+test('relative layers resolve against the requested URL, not where it redirected', async () => {
   const requested = [];
   const srv = http.createServer((req, res) => {
     requested.push(req.url);
@@ -420,7 +423,7 @@ test('relative layers resolve against the requested URL, not where it redirected
     res.writeHead(404).end();
   });
   await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve));
-  t.after(() => srv.close());
+  cleanups.push(() => srv.close());
   const base = `http://127.0.0.1:${srv.address().port}`;
   const { scene } = await composeStage({ UsdLoader, fetchBytes: fetchLimited, rootUrl: `${base}/a/root.usda` });
   scene.free();
@@ -472,7 +475,7 @@ def Material "Mat${i}" {
   }
 });
 
-test('layers that reference each other compose instead of waiting on each other forever', { timeout: 5000 }, async () => {
+test('layers that reference each other compose instead of waiting on each other forever', async () => {
   const s = server({
     'https://h/root.usda': '#usda 1.0\ndef "A" (references = @./a.usda@) {}',
     'https://h/a.usda': `#usda 1.0\n(defaultPrim = "M")\n${QUAD}\ndef "Back" (references = @./b.usda@) {}`,
@@ -482,7 +485,7 @@ test('layers that reference each other compose instead of waiting on each other 
   scene.free();
   assert.equal(stats.layers, 3);
   assert.deepEqual(s.requested.sort(), ['https://h/a.usda', 'https://h/b.usda', 'https://h/root.usda']);
-});
+}, 5000);
 
 test('a stage with nothing to draw says so, after naming what it could not draw', async () => {
   const read = async (usda) => {

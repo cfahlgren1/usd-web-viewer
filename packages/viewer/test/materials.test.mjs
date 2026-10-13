@@ -1,9 +1,8 @@
 // UsdPreviewSurface inputs on three.js materials.
-// usage: node --test packages/viewer/test/
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import { SLOTS, applyFallback, attachTexture, configureTexture, createMaterial } from '../src/materials.js';
+import { SLOTS, applyFallback, attachTexture, configureTexture, createMaterial } from '../src/materials.ts';
 
 const ref = { path: 'image.png', channel: 'r', scale: [1, 1, 1, 1], bias: [0, 0, 0, 0], uvScale: [1, 1], uvTranslation: [0, 0], uvRotation: 0 };
 const material = (maps) =>
@@ -52,4 +51,14 @@ test('every patched line is still in its three.js shader chunk', () => {
   for (const [input, { chunk, from }] of Object.entries(SLOTS)) {
     assert.ok(THREE.ShaderChunk[chunk].includes(from), `${input}: ${chunk} no longer contains ${JSON.stringify(from)}`);
   }
+});
+
+test('wrap tokens map to three.js wrapping, and any other token repeats', () => {
+  const wraps = (wrapS) => configureTexture(new THREE.Texture(), { ...ref, wrapS }, THREE.NoColorSpace, 0).wrapS;
+  assert.deepEqual(['mirror', 'clamp', 'black', 'repeat', undefined, 'constructor', '__proto__'].map(wraps), [
+    THREE.MirroredRepeatWrapping,
+    THREE.ClampToEdgeWrapping,
+    THREE.ClampToEdgeWrapping,
+    ...Array(4).fill(THREE.RepeatWrapping),
+  ]);
 });

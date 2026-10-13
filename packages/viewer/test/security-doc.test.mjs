@@ -1,9 +1,8 @@
 // The defaults table in SECURITY.md matches the defaults in the code.
-// usage: node --test packages/viewer/test/security-doc.test.mjs
-import { test } from 'node:test';
+import { test } from 'vitest';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { DEFAULTS } from '../src/load-core.js';
+import { DEFAULTS } from '../src/load-core.ts';
 
 const read = (path) => readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8');
 const bytes = (text) => {

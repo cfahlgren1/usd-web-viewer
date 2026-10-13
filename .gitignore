@@ -1,5 +1,8 @@
 /target
 node_modules
-/packages/viewer/wasm/
+/packages/viewer/wasm/*
+!/packages/viewer/wasm/usd_wasm.d.ts
 /dist/
 .DS_Store
+/packages/viewer/dist/
+/packages/viewer/.tshy-build/

@@ -5,9 +5,39 @@
 // three.js maps read fixed channels with no remap, so the sampling line of the
 // map's shader chunk is rewritten to the authored channel, scale and bias.
 import * as THREE from 'three';
+import type { MaterialMeta, TextureRef, Vec3, Vec4 } from './meta.js';
+
+type MapName = 'map' | 'emissiveMap' | 'roughnessMap' | 'metalnessMap' | 'aoMap' | 'alphaMap' | 'normalMap';
+
+interface Slot {
+  map: MapName;
+  chunk: keyof typeof THREE.ShaderChunk;
+  from: string;
+  /** The rewritten line, given `e(base, size)`, the remapped texel as GLSL. */
+  to: (e: (base: string, size: 1 | 3) => string) => string;
+}
+
+/** How a textured input samples its image. */
+interface Patch {
+  channel: string;
+  scale: Vec4;
+  bias: Vec4;
+}
+
+/** What a material keeps of its USD source, in `userData.usd`. */
+interface UsdData {
+  maps: MaterialMeta['maps'];
+  colorPrimvar: string | undefined;
+  /** UV set name to the three.js `channel` reading it. */
+  uvChannels: Record<string, number>;
+  color: Vec3;
+}
+
+/** A MeshStandardMaterial made here: its USD source and shader patches in `userData`. */
+export type UsdMaterial = THREE.MeshStandardMaterial & { userData: { usd: UsdData; patches: Record<string, Patch> } };
 
 // input -> three.js map and the shader chunk line to rewrite.
-export const SLOTS = {
+export const SLOTS: Record<string, Slot> = {
   diffuseColor: {
     map: 'map',
     chunk: 'map_fragment',
@@ -33,8 +63,8 @@ export const SLOTS = {
 };
 
 /** A material from the extracted parameters; maps attach later as textures arrive. */
-export function createMaterial(m) {
-  const linear = (c) => new THREE.Color().setRGB(c[0], c[1], c[2], THREE.LinearSRGBColorSpace);
+export function createMaterial(m: MaterialMeta): UsdMaterial {
+  const linear = (c: Vec3) => new THREE.Color().setRGB(c[0], c[1], c[2], THREE.LinearSRGBColorSpace);
   const material = new THREE.MeshStandardMaterial({
     color: linear(m.color),
     emissive: linear(m.emissive),
@@ -54,15 +84,22 @@ export function createMaterial(m) {
   material.userData.usd = { maps: m.maps, colorPrimvar: m.colorPrimvar, uvChannels: Object.create(null), color: m.color };
   // Until its base color texture streams in, a textured surface shows mid grey
   // (18%, the usual neutral) rather than the stark white texture multiplier.
-  if (m.maps.diffuseColor) material.color.setRGB(0.18, 0.18, 0.18, THREE.LinearSRGBColorSpace);
+  if (m.maps.diffuseColor) {
+    material.color.setRGB(0.18, 0.18, 0.18, THREE.LinearSRGBColorSpace);
+  }
   return prepare(material);
 }
 
 /** A copy that reads per-vertex colors, is double-sided, or reads UV sets from other attributes. */
-export function variant(material, { doubleSided, vertexColors, uvChannels }) {
-  const copy = material.clone();
+export function variant(
+  material: UsdMaterial,
+  { doubleSided, vertexColors, uvChannels }: { doubleSided: boolean; vertexColors: boolean; uvChannels: Record<string, number> },
+): UsdMaterial {
+  const copy = material.clone() as UsdMaterial;
   copy.userData.usd.uvChannels = uvChannels;
-  if (doubleSided) copy.side = THREE.DoubleSide;
+  if (doubleSided) {
+    copy.side = THREE.DoubleSide;
+  }
   if (vertexColors) {
     copy.vertexColors = true;
     copy.color.setRGB(1, 1, 1);
@@ -71,25 +108,25 @@ export function variant(material, { doubleSided, vertexColors, uvChannels }) {
 }
 
 /** Wires the shader rewrite; `userData.patches` grows as textured inputs attach. */
-function prepare(material) {
+function prepare(material: THREE.MeshStandardMaterial): UsdMaterial {
   material.userData.patches = {};
   material.onBeforeCompile = (shader) => {
     for (const [input, ref] of Object.entries(material.userData.patches)) {
       const { chunk, from, to } = SLOTS[input];
       const code = THREE.ShaderChunk[chunk].replaceAll(
         from,
-        to((base, size) => remap(base, size, ref)),
+        to((base, size) => remap(base, size, ref as Patch)),
       );
       shader.fragmentShader = shader.fragmentShader.replace(`#include <${chunk}>`, code);
     }
   };
   material.customProgramCacheKey = () => JSON.stringify(material.userData.patches);
-  return material;
+  return material as UsdMaterial;
 }
 
 /** `texel.<channel> * scale + bias` as GLSL, sized to the slot (1 or 3 components). */
-function remap(base, size, ref) {
-  const f = (v) => v.toFixed(6);
+function remap(base: string, size: 1 | 3, ref: Patch) {
+  const f = (v: number) => v.toFixed(6);
   // The channel is an output name from the file: only r, g, b or a reach the shader.
   const channel = ['r', 'g', 'b', 'a'].includes(ref.channel) ? ref.channel : 'rgb';
   if (channel === 'rgb') {
@@ -106,24 +143,47 @@ function remap(base, size, ref) {
  * `isColor` says whether the image holds color (see `imageInfo`).
  * `textureFor(ref, colorSpace, uvChannel)` returns a configured three.js texture.
  */
-export function attachTexture(material, path, isColor, textureFor) {
+export function attachTexture(
+  material: UsdMaterial,
+  path: string,
+  isColor: boolean,
+  textureFor: (ref: TextureRef, colorSpace: THREE.ColorSpace, uvChannel: number) => THREE.Texture,
+): void {
   const usd = material.userData.usd;
   let changed = false;
   for (const [input, ref] of Object.entries(usd.maps)) {
     const slot = SLOTS[input];
-    if (ref.path !== path || !slot) continue;
-    const texture = textureFor(ref, colorSpace(ref, isColor), Object.hasOwn(usd.uvChannels, ref.uvSet) ? usd.uvChannels[ref.uvSet] : 0);
+    if (ref.path !== path || !slot) {
+      continue;
+    }
+    const texture = textureFor(
+      ref,
+      colorSpace(ref, isColor),
+      ref.uvSet !== undefined && Object.hasOwn(usd.uvChannels, ref.uvSet) ? usd.uvChannels[ref.uvSet] : 0,
+    );
     material[slot.map] = texture;
     material.userData.patches[input] = { channel: ref.channel, scale: ref.scale, bias: ref.bias };
     // The texture now carries the value: the constant factor becomes neutral.
-    if (input === 'diffuseColor') material.color.setRGB(...usd.color, THREE.LinearSRGBColorSpace);
-    if (input === 'roughness') material.roughness = 1;
-    if (input === 'metallic') material.metalness = 1;
-    if (input === 'emissiveColor') material.emissive.setRGB(1, 1, 1);
-    if (input === 'opacity') material.opacity = 1;
+    if (input === 'diffuseColor') {
+      material.color.setRGB(...usd.color, THREE.LinearSRGBColorSpace);
+    }
+    if (input === 'roughness') {
+      material.roughness = 1;
+    }
+    if (input === 'metallic') {
+      material.metalness = 1;
+    }
+    if (input === 'emissiveColor') {
+      material.emissive.setRGB(1, 1, 1);
+    }
+    if (input === 'opacity') {
+      material.opacity = 1;
+    }
     changed = true;
   }
-  if (changed) material.needsUpdate = true;
+  if (changed) {
+    material.needsUpdate = true;
+  }
 }
 
 /**
@@ -131,35 +191,57 @@ export function attachTexture(material, path, isColor, textureFor) {
  * or the shader's default), as if it had no texture. The texture's `fallback`
  * is only for a texture node with no image at all (read when extracting).
  */
-export function applyFallback(material, path) {
+export function applyFallback(material: UsdMaterial, path: string): void {
   for (const [input, ref] of Object.entries(material.userData.usd.maps)) {
-    if (ref.path !== path || !ref.value) continue;
+    if (ref.path !== path || !ref.value) {
+      continue;
+    }
     const [r, g, b] = ref.value;
-    if (input === 'diffuseColor') material.color.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
-    if (input === 'emissiveColor') material.emissive.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
-    if (input === 'roughness') material.roughness = r;
-    if (input === 'metallic') material.metalness = r;
-    if (input === 'opacity') material.opacity = r;
+    if (input === 'diffuseColor') {
+      material.color.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
+    }
+    if (input === 'emissiveColor') {
+      material.emissive.setRGB(r, g, b, THREE.LinearSRGBColorSpace);
+    }
+    if (input === 'roughness') {
+      material.roughness = r;
+    }
+    if (input === 'metallic') {
+      material.metalness = r;
+    }
+    if (input === 'opacity') {
+      material.opacity = r;
+    }
   }
 }
 
 /** `sourceColorSpace`: explicit `raw`/`sRGB` wins; `auto` follows the image, so every input sampling it agrees. */
-function colorSpace(ref, isColor) {
-  if (ref.colorSpace === 'raw') return THREE.NoColorSpace;
-  if (ref.colorSpace === 'sRGB') return THREE.SRGBColorSpace;
+function colorSpace(ref: TextureRef, isColor: boolean): THREE.ColorSpace {
+  if (ref.colorSpace === 'raw') {
+    return THREE.NoColorSpace;
+  }
+  if (ref.colorSpace === 'sRGB') {
+    return THREE.SRGBColorSpace;
+  }
   return isColor ? THREE.SRGBColorSpace : THREE.NoColorSpace;
 }
 
+// UsdUVTexture wrap tokens; anything else (`repeat`, `useMetadata`) repeats. A
+// Map, so tokens from the file never reach Object.prototype. `black` has no
+// three.js equivalent (no border color); clamp is closest.
+const WRAP = new Map<string, THREE.Wrapping>([
+  ['mirror', THREE.MirroredRepeatWrapping],
+  ['clamp', THREE.ClampToEdgeWrapping],
+  ['black', THREE.ClampToEdgeWrapping],
+]);
+
 /** A texture for `ref` sharing the decoded image of `base`: color space, wrap, UV set and UsdTransform2d. */
-export function configureTexture(base, ref, colorSpaceValue, uvChannel) {
+export function configureTexture(base: THREE.Texture, ref: TextureRef, colorSpaceValue: THREE.ColorSpace, uvChannel: number): THREE.Texture {
   const texture = base.clone();
   texture.colorSpace = colorSpaceValue;
   texture.channel = uvChannel;
-  // `black` has no three.js equivalent (no border color); clamp is closest.
-  const wrap = (token) =>
-    ({ mirror: THREE.MirroredRepeatWrapping, clamp: THREE.ClampToEdgeWrapping, black: THREE.ClampToEdgeWrapping })[token] ?? THREE.RepeatWrapping;
-  texture.wrapS = wrap(ref.wrapS);
-  texture.wrapT = wrap(ref.wrapT);
+  texture.wrapS = WRAP.get(ref.wrapS ?? '') ?? THREE.RepeatWrapping;
+  texture.wrapT = WRAP.get(ref.wrapT ?? '') ?? THREE.RepeatWrapping;
   const [sx, sy] = ref.uvScale;
   const [tx, ty] = ref.uvTranslation;
   const angle = (ref.uvRotation * Math.PI) / 180;
