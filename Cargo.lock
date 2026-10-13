@@ -323,8 +323,9 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "openusd"
-version = "0.7.0"
-source = "git+https://github.com/mxpv/openusd?rev=2d53b64b5dba9005bb05faad46d839520cf05f12#2d53b64b5dba9005bb05faad46d839520cf05f12"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "54f38d869c64c96492e1a482fb621eda620d120d91dbe93072112ee315a8923c"
 dependencies = [
  "bitflags",
  "bytemuck",
@@ -336,13 +337,15 @@ dependencies = [
  "regex-lite",
  "strum",
  "thiserror",
+ "windows-sys",
  "zip",
 ]
 
 [[package]]
 name = "openusd-build"
-version = "0.7.0"
-source = "git+https://github.com/mxpv/openusd?rev=2d53b64b5dba9005bb05faad46d839520cf05f12#2d53b64b5dba9005bb05faad46d839520cf05f12"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ffbbcc78f97548fe2e4c6eaa164f6ec25414c6f685c73ee547504a7bc2361c6"
 dependencies = [
  "openusd",
  "prettyplease",
@@ -356,8 +359,9 @@ dependencies = [
 
 [[package]]
 name = "openusd-schemas"
-version = "0.7.0"
-source = "git+https://github.com/mxpv/openusd?rev=2d53b64b5dba9005bb05faad46d839520cf05f12#2d53b64b5dba9005bb05faad46d839520cf05f12"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "841935b1f1445c20c139f42478566459fac7b8830da0358d735526a7415057f4"
 dependencies = [
  "derive_more",
  "openusd",

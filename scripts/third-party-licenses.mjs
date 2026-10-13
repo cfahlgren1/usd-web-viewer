@@ -10,6 +10,8 @@ import path from 'node:path';
 const OUT = new URL('../packages/viewer/THIRD_PARTY_LICENSES', import.meta.url);
 const ROOT_CRATE = 'usd-wasm';
 const LICENSE_FILE = /^(licen[cs]e|copying|unlicense)/i;
+// The openusd crates are published without the repository's LICENSE, so its MIT text is kept here.
+const VENDORED = { openusd: 'openusd', 'openusd-schemas': 'openusd' };
 const FILE_FOR = { MIT: /mit/i, 'Apache-2.0': /apache|copying/i, Zlib: /zlib/i, 'Unicode-3.0': /unicode/i, 'BSD-2-Clause': /bsd/i, Unlicense: /unlicense/i };
 
 const metadata = JSON.parse(
@@ -43,9 +45,13 @@ function chosen(expression) {
     });
 }
 
-/** License files next to the manifest, or at the root of a git checkout holding it. */
-function licenseFiles(manifestPath) {
-  for (let dir = path.dirname(manifestPath); dir !== path.dirname(dir); dir = path.dirname(dir)) {
+/** License files next to the manifest, at the root of a git checkout holding it, or vendored in scripts/licenses. */
+function licenseFiles(p) {
+  if (VENDORED[p.name]) {
+    const dir = new URL(`licenses/${VENDORED[p.name]}/`, import.meta.url).pathname;
+    return fs.readdirSync(dir).map((f) => path.join(dir, f));
+  }
+  for (let dir = path.dirname(p.manifest_path); dir !== path.dirname(dir); dir = path.dirname(dir)) {
     const files = fs.readdirSync(dir).filter((f) => LICENSE_FILE.test(f) && fs.statSync(path.join(dir, f)).isFile());
     if (files.length) return files.map((f) => path.join(dir, f));
     if (fs.existsSync(path.join(dir, '.git'))) break;
@@ -56,7 +62,7 @@ function licenseFiles(manifestPath) {
 const crates = [...linked].map((id) => packages.get(id)).sort((a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version));
 const entries = crates.map((p) => {
   const licenses = chosen(p.license);
-  const files = licenseFiles(p.manifest_path);
+  const files = licenseFiles(p);
   const picked = files.length === 1 ? files : files.filter((f) => licenses.some((l) => FILE_FOR[l]?.test(path.basename(f))));
   if (!picked.length) throw new Error(`no license text for ${p.name} ${p.version} (${p.license}) among ${files.join(', ') || 'no files'}`);
   return { p, licenses, texts: picked.map((f) => [path.basename(f), fs.readFileSync(f, 'utf8').trim()]) };

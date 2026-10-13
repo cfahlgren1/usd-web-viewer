@@ -283,9 +283,6 @@ pub struct MemoryResolver {
     /// Move bytes into the stage instead of copying them, so a layer is held
     /// once (by the stage) rather than twice while composing.
     pub take: bool,
-    /// A layer copied rather than taken the first time it is opened: opening a
-    /// stage reads its root layer twice.
-    pub keep: RefCell<Option<String>>,
 }
 
 impl ar::Resolver for MemoryResolver {
@@ -325,12 +322,8 @@ impl ar::Resolver for MemoryResolver {
             let bytes = lock(&self.files).read_packaged(&key)?;
             return Ok(Box::new(MemAsset(io::Cursor::new(bytes))));
         }
-        let first_root_read = self.keep.borrow().as_deref() == Some(key.as_str());
-        if first_root_read {
-            self.keep.replace(None);
-        }
         // A package is read entry by entry, so it stays in the store.
-        let take = self.take && !first_root_read && extension(&key) != "usdz";
+        let take = self.take && extension(&key) != "usdz";
         let size = match lock(&self.files).bytes.get(&key) {
             Some(bytes) => bytes.len() as u64,
             None => return Err(io::Error::new(io::ErrorKind::NotFound, key)),

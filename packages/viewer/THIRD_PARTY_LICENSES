@@ -19,8 +19,8 @@ lz4_flex 0.14.0: MIT (https://github.com/pseitz/lz4_flex)
 memchr 2.8.3: Unlicense OR MIT, used under MIT (https://github.com/BurntSushi/memchr)
 num-traits 0.2.19: MIT OR Apache-2.0, used under MIT (https://github.com/rust-num/num-traits)
 once_cell 1.21.4: MIT OR Apache-2.0, used under MIT (https://github.com/matklad/once_cell)
-openusd 0.7.0: MIT (https://github.com/mxpv/openusd)
-openusd-schemas 0.7.0: MIT (https://github.com/mxpv/openusd)
+openusd 0.8.0: MIT (https://github.com/mxpv/openusd)
+openusd-schemas 0.8.0: MIT (https://github.com/mxpv/openusd)
 regex-lite 0.1.9: MIT OR Apache-2.0, used under MIT (https://github.com/rust-lang/regex)
 simd-adler32 0.3.10: MIT (https://github.com/mcountryman/simd-adler32)
 strum 0.28.0: MIT (https://github.com/Peternator7/strum)
@@ -764,7 +764,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 
 ================================================================================
-openusd 0.7.0: LICENSE
+openusd 0.8.0: LICENSE
 ================================================================================
 
 MIT License
@@ -790,7 +790,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-openusd-schemas 0.7.0: LICENSE
+openusd-schemas 0.8.0: LICENSE
 ================================================================================
 
 MIT License

@@ -30,42 +30,6 @@ pub struct Loader {
     unavailable: HashSet<String>,
 }
 
-/// Walks the whole stage, turning off `instanceable` on instances whose
-/// prototype composes to nothing so their subtree is drawn in place. openusd
-/// gives an instance made instanceable only through an ancestor's reference
-/// (common in robot assets) an empty prototype, where USD draws its meshes.
-/// One inside another instance cannot be authored: the enclosing instance is
-/// turned off first, and the next walk reaches it.
-fn uninstance_empty_prototypes(stage: &usd::Stage) -> openusd::Result<()> {
-    loop {
-        let mut paths = Vec::new();
-        stage.traverse(usd::PrimPredicate::DEFAULT_PROXIES, |path| {
-            paths.push(path.clone())
-        })?;
-        let mut empty = BTreeSet::new();
-        for path in paths {
-            let prim = stage.prim(path.clone())?;
-            let Some(prototype) = prim.prototype()? else {
-                continue;
-            };
-            if stage.prim(prototype)?.is_valid()? {
-                continue;
-            }
-            let mut editable = path;
-            while stage.prim(editable.clone())?.is_instance_proxy()? {
-                editable = editable.parent().unwrap_or_else(sdf::Path::abs_root);
-            }
-            empty.insert(editable);
-        }
-        if empty.is_empty() {
-            return Ok(());
-        }
-        for path in empty {
-            stage.override_prim(path)?.set_instanceable(false)?;
-        }
-    }
-}
-
 /// What [`Loader::compose`] produced: a planned scene (triangle data still to
 /// read, see [`Scene::read_geometry`] and [`Scene::read_all`]), or the layers
 /// it still needs.
@@ -92,7 +56,7 @@ impl Loader {
         resolver::lock(&self.files)
             .bytes
             .insert(path.to_owned(), bytes);
-        let layer = sdf::Layer::open_with(self.resolver(false, None), path)?;
+        let layer = sdf::Layer::open_with(self.resolver(false), path)?;
         let real_path = layer.resolved_path().unwrap_or(path).to_owned();
         let mut deps = deps::layer_dependencies(layer.data(), &real_path);
         // Files inside a package we hold need no fetching.
@@ -119,7 +83,7 @@ impl Loader {
     /// at most `max_instances` mesh instances.
     pub fn compose(&self, root: &str, max_instances: usize) -> openusd::Result<Composed> {
         resolver::lock(&self.files).restart_budget();
-        let resolver = self.resolver(true, Some(root));
+        let resolver = self.resolver(true);
         let missing = resolver.missing.clone();
         let stage = usd::Stage::builder()
             .resolver(resolver)
@@ -127,7 +91,7 @@ impl Loader {
             .open(root)?;
         // Composition opens references and payloads lazily: walk the whole
         // stage first so every layer it needs is asked for before extracting.
-        uninstance_empty_prototypes(&stage)?;
+        stage.traverse(usd::PrimPredicate::DEFAULT_PROXIES, |_| {})?;
         let mut missing: Vec<String> = missing
             .borrow()
             .iter()
@@ -191,12 +155,11 @@ impl Loader {
         files.nested.clear();
     }
 
-    fn resolver(&self, take: bool, keep: Option<&str>) -> MemoryResolver {
+    fn resolver(&self, take: bool) -> MemoryResolver {
         MemoryResolver {
             files: self.files.clone(),
             missing: Rc::new(RefCell::new(BTreeSet::new())),
             take,
-            keep: RefCell::new(keep.map(str::to_owned)),
         }
     }
 }
