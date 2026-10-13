@@ -159,7 +159,9 @@ pub fn check_package(package: &[u8]) -> io::Result<()> {
             )));
         }
         if entry.compression() != zip::CompressionMethod::Stored {
-            let name = entry.name().to_owned();
+            let name = entry
+                .name()
+                .map_or_else(|_| "a packaged file".to_owned(), |name| name.into_owned());
             if io::copy(&mut entry.take(declared + 1), &mut io::sink())? != declared {
                 return Err(io::Error::other(format!(
                     "{name} does not expand to the size its header declares"

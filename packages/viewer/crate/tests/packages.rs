@@ -57,12 +57,17 @@ fn package_bombs_are_refused_when_added() {
     let prefixed = [b"JUNK".as_slice(), &under_declared].concat();
     for (case, bytes, expected) in [
         ("over-declared", over_declared, "resource limit exceeded"),
+        // zip itself stops reading past the declared size.
         (
             "under-declared",
             under_declared,
-            "does not expand to the size",
+            "larger than its declared uncompressed size",
         ),
-        ("junk-prefixed", prefixed, "does not expand to the size"),
+        (
+            "junk-prefixed",
+            prefixed,
+            "larger than its declared uncompressed size",
+        ),
     ] {
         let error = add(bytes).expect_err(case);
         assert!(error.contains(expected), "{case}: {error}");
