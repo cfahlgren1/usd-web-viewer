@@ -1,7 +1,8 @@
 {
-  "$schema": "./node_modules/oxfmt/configuration_schema.json",
-  "printWidth": 160,
-  "singleQuote": true,
-  "sortPackageJson": false,
-  "ignorePatterns": ["**/package-lock.json", "examples/vite/dist", "packages/viewer/dist", "packages/viewer/.tshy", "packages/viewer/wasm"]
+	"$schema": "./node_modules/oxfmt/configuration_schema.json",
+	"ignorePatterns": [],
+	"useTabs": true,
+	"printWidth": 120,
+	// Because tshy modifies the package.json file, the "exports" subprop
+	"experimentalSortPackageJson": false
 }
