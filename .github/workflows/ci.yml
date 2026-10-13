@@ -5,34 +5,32 @@ on:
     branches: [main]
   pull_request:
 
+defaults:
+  run:
+    working-directory: packages/viewer
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # The toolchain rust-toolchain.toml pins.
-      - run: rustup target add wasm32-unknown-unknown && rustup component add clippy rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          workspaces: packages/viewer
           # PR runs restore main's cache but don't save their own, which would evict it.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-bindgen-cli@0.2.129
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: packages/viewer/package-lock.json
       - run: npm ci
-      - run: npm run lint
+      - run: npm run lint:check
       - run: npm run format:check
-      - run: cargo fmt --check
-      - run: npm run build:wasm
-      - run: npm run build
+      # cargo test and clippy, build:wasm (and its committed .d.ts), vitest.
       - run: npm test
+      - run: npm run build
       - run: npm run check
-      - run: cargo test --locked
-      - run: cargo clippy --locked -- -D warnings
       - run: npx playwright install --with-deps chromium
       - name: Vite example
         working-directory: examples/vite
@@ -43,19 +41,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - run: rustup target add wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
+          workspaces: packages/viewer
           # PR runs restore main's cache but don't save their own, which would evict it.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@v2
-        with:
-          tool: wasm-bindgen-cli@0.2.129
       - uses: actions/setup-node@v6
         with:
           node-version: 24
           cache: npm
+          cache-dependency-path: packages/viewer/package-lock.json
       - run: npm ci
       - run: npm install --no-save three@0.162.0 @types/three@0.162.0
       - run: npm run build:wasm
-      - run: npm test
+      - run: npx vitest run

@@ -12,6 +12,7 @@
     "usd-web-viewer": "file:../../packages/viewer"
   },
   "devDependencies": {
+    "playwright": "1.64.0",
     "vite": "^7.1.0"
   }
 }

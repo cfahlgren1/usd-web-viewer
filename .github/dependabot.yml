@@ -1,7 +1,9 @@
 version: 2
 updates:
   - package-ecosystem: npm
-    directory: /
+    directories:
+      - /packages/viewer
+      - /examples/vite
     schedule:
       interval: weekly
     groups:
@@ -10,7 +12,7 @@ updates:
           - three
           - "@types/three"
   - package-ecosystem: cargo
-    directory: /
+    directory: /packages/viewer
     schedule:
       interval: weekly
   - package-ecosystem: github-actions

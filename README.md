@@ -77,10 +77,12 @@ Checked against Pixar's `usd-core` on all 2,503 packages in [nvidia/simready-ass
 
 ## Develop
 
-    npm install && npm run build:wasm   # needs Rust (wasm32-unknown-unknown) and wasm-bindgen-cli 0.2.129
-    npm run build                       # TypeScript to packages/viewer/dist (tshy)
-    npm test && cargo test              # vitest; fixture snapshots: cargo insta review
-    npm run test:browser                # Playwright, local only: real worker, fetch and rendering, against dist
-    npm run lint && npm run check && npm run format:check # oxlint and eslint, tsc, oxfmt
+Everything lives in `packages/viewer` (the Cargo workspace, fixtures and scripts included); run these there:
 
-Built on [openusd](https://github.com/mxpv/openusd) (MIT, Maksym Pavlenko) and [three.js](https://github.com/mrdoob/three.js) (MIT). Security model: [SECURITY.md](SECURITY.md). MIT licensed.
+    npm install && npm run build:wasm   # needs Rust (rustup); fetches wasm-bindgen-cli 0.2.129 if it isn't installed
+    npm run build                       # TypeScript to dist (tshy)
+    npm test                            # cargo test, clippy, build:wasm, vitest; fixture snapshots: cargo insta review
+    npm run test:e2e                    # Playwright, local only: real worker, fetch and rendering, against dist
+    npm run lint:check && npm run check && npm run format:check # eslint and cargo fmt, tsc, oxfmt
+
+Built on [openusd](https://github.com/mxpv/openusd) (MIT, Maksym Pavlenko) and [three.js](https://github.com/mrdoob/three.js) (MIT). Security model: [SECURITY.md](packages/viewer/SECURITY.md). MIT licensed.
